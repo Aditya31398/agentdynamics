@@ -87,13 +87,31 @@ The console's **Get started** page shows the same snippets and turns green when 
 | **Workflows** | The real execution graph mined from your traces: path variants and their success rates, loops, the critical node, handoffs |
 | **Task snapshots** | Span-tree waterfall for each request: context growth, cost against the baseline, what went wrong, what the user said next |
 | **Baselines & Apdex** | "Normal" cost and latency per workflow, learned automatically, plus an agent Apdex score |
-| **Health rules & alerts** | 24 rules (runaway cost, retry loops, node loops, truncation, rate limits, ping-pong handoffs, unverified code changes, …) sent to Slack or webhooks |
+| **Health rules & alerts** | 28 rules (runaway cost, policy denials, boundary probing, revocations, retry loops, node loops, truncation, rate limits, ping-pong handoffs, unverified code changes, …) sent to Slack or webhooks |
 | **Tools & Models** | Error rate and p95 per tool; per model TTFT, tokens/s, truncation rate, cache hit rate and spend |
 | **SLOs** | Success rate, Apdex, latency and cost objectives with error budgets and burn rates |
-| **Process Review** | Scores how well the agent works (efficiency, focus, reliability, verification, context, autonomy) and suggests fixes |
+| **Governance** | Aegis policy enforcement per task: denials by rule, budget stops, kill-switch revocations, unused grants, policy export |
+| **Process Review** | Scores how well the agent works (efficiency, focus, reliability, verification, context, autonomy, compliance) and suggests fixes |
 | **Analytics & Compare** | Any metric by any dimension; compare models, prompts or releases side by side |
 
 The full metric catalog is in [docs/METRICS.md](docs/METRICS.md).
+
+## Governance with Aegis
+
+[Aegis](https://github.com/Aditya31398/aegis) decides what an agent may do. AgentDynamics shows what it did. Connecting them takes one call:
+
+```python
+from agentdynamics.integrations import aegis as governance
+governance.instrument(kernel, root, watchdog=governance.Watchdog(max_repeated_denials=3))
+```
+
+That call sets up four flows:
+1. **Every Aegis decision appears in its task.** Denials carry the rule id, and the Aegis audit log carries the task's run id so the two logs join.
+2. **Model calls are charged to the Aegis budget before they're sent.** When the budget runs out, the call is refused and never made.
+3. **A watchdog revokes the grant** of an agent that keeps probing a boundary, for example after a prompt injection.
+4. **`agentdynamics policy export` writes a tighter, least-privilege policy** from observed behaviour, which `aegis ratify` and `aegis drift` then verify.
+
+The console's **Governance** page shows denials, budget stops, revocations, unused grants and budget headroom per policy version. See [docs/GOVERNANCE.md](docs/GOVERNANCE.md).
 
 ## Python API
 
@@ -104,6 +122,7 @@ The full metric catalog is in [docs/METRICS.md](docs/METRICS.md).
 | `with agentdynamics.span("node")` | A stage or graph node. Model and tool calls inside it are attributed to the node. |
 | `@agentdynamics.tool` / `@tool(name="search")` | Records a function as a tool call: arguments, output size and errors. |
 | `t.feedback("user_rating", 0.0..1.0)` | Attach a user or eval score to a task (`with trace(...) as t`). |
+| `with agentdynamics.llm_call(model, max_tokens=..., input=...) as c: ... c.usage(input_tokens=..., output_tokens=...)` | Records a call from any other model client (local models, raw HTTP), with the same gating as the patched SDKs. |
 | `agentdynamics.flush()` | Wait for queued telemetry. This also runs automatically at exit. |
 
 **Environment variables:**
@@ -137,7 +156,7 @@ See [deploy/](deploy/) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 ## Development
 
 ```bash
-python -m unittest discover tests   # 22 tests: real LangSmith/Anthropic/OpenAI SDKs, OTLP protobuf, pull connectors, auth
+python -m unittest discover tests   # 28 tests: real LangSmith/Anthropic/OpenAI SDKs, Aegis kernel, OTLP protobuf, pull connectors
 python -m agentdynamics --data .demo-data --claude-root "" serve --port 8790 &
 python examples/langgraph_style_app.py 60          # LangGraph-style demo traffic
 python examples/otel_multiagent.py 60 http://127.0.0.1:8790

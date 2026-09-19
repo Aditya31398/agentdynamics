@@ -47,7 +47,7 @@ These metrics were chosen because each one maps to a decision someone can act on
 | *(no equivalent)* | **Workflow process mining** | The directly-follows graph of real node transitions, path variants with success rates, loops, critical node |
 | Dynamic baselines | **Baselines** | Median and p90 cost, latency and steps per task type, learned from history |
 | Apdex | **Agent Apdex** | Outcome combined with cost against the baseline: satisfied / tolerating / frustrated |
-| Health rules → Events → Alerts | **Health Rules → Events → Webhooks** | 24 built-in rules, editable thresholds, Slack/JSON webhooks |
+| Health rules → Events → Alerts | **Health Rules → Events → Webhooks** | 28 built-in rules (including Aegis governance), editable thresholds, Slack/JSON webhooks |
 | Backends / DB calls | **Tools** | Error rate, p95 latency and context bloat per tool / MCP server / retriever |
 | Infrastructure | **Models** | Spend, TTFT, tokens/s, truncations, rate limits, cache hit and context size per model |
 | Business iQ | **Analytics** | Any metric by any dimension, with CSV export |

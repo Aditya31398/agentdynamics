@@ -53,7 +53,7 @@
     ["Start", [["start", "Get started", "Connect an agent"]]],
     ["Monitor", [["overview", "Overview", "Dashboard"], ["flow", "Flow Map", "Topology"], ["workflows", "Workflows", "Agent graphs & paths"], ["types", "Task Types", "Business txns"], ["tasks", "Tasks", "Snapshots"], ["sessions", "Sessions", ""]]],
     ["Diagnose", [["tools", "Tools", "Backends"], ["models", "Models", "Infrastructure"], ["events", "Events", "Health violations"]]],
-    ["Assess", [["process", "Process Review", "How the agent works"], ["slos", "SLOs", "Objectives & error budgets"], ["analytics", "Analytics", "Query"], ["compare", "Compare", ""]]],
+    ["Assess", [["governance", "Governance", "Aegis policy enforcement"], ["process", "Process Review", "How the agent works"], ["slos", "SLOs", "Objectives & error budgets"], ["analytics", "Analytics", "Query"], ["compare", "Compare", ""]]],
     ["Configure", [["integrations", "Integrations", "Sources & setup"], ["rules", "Health Rules", ""], ["settings", "Settings", ""]]],
   ];
   const ALIAS = { task: "tasks", workflow: "workflows", integrate: "integrations" };
@@ -363,6 +363,7 @@
     verification: "Did the agent run tests, a build, or the app after its last code edit?",
     context: "Prompt-cache reuse and context-window pressure (compactions, >200k context)",
     autonomy: "Finished without you interrupting, rejecting a tool, or correcting it afterwards",
+    compliance: "Stayed inside its Aegis policy: no denied calls, no boundary probing, no revocation or budget stop (governed tasks only)",
   };
   PAGES.task = async (host, id, _p, alive) => {
     const d = await api(`task/${encodeURIComponent(id)}`);
@@ -379,7 +380,7 @@
     host.innerHTML = `<div class="between" style="margin-bottom:12px"><div class="small muted"><a href="#/tasks">Tasks</a> / <a href="#/tasks?run=${encodeURIComponent(t.run_id)}">${esc(d.run?.title || t.run_id.slice(0, 12))}</a> / task ${nav.pos} of ${nav.count}</div>
       <div class="row">${nav.prev ? `<a class="btn" href="#/task/${encodeURIComponent(nav.prev)}">← Previous</a>` : ""}${nav.next ? `<a class="btn" href="#/task/${encodeURIComponent(nav.next)}">Next →</a>` : ""}
       <a class="btn" href="#/flow?task=${encodeURIComponent(t.id)}">Flow map</a></div></div>` +
-      `<div class="card" style="margin-bottom:14px"><div class="row" style="margin-bottom:8px"><span class="tag">${esc(t.task_type)}</span>${t.framework && t.framework !== "claude-code" ? `<span class="tag">${esc(t.framework)}</span>` : ""}${t.environment && t.environment !== "default" ? `<span class="tag">env: ${esc(t.environment)}</span>` : ""}${pill(t.outcome)}${pill(t.apdex)}${t.is_subagent ? `<span class="tag">subagent</span>` : ""}
+      `<div class="card" style="margin-bottom:14px"><div class="row" style="margin-bottom:8px"><span class="tag">${esc(t.task_type)}</span>${t.framework && t.framework !== "claude-code" ? `<span class="tag">${esc(t.framework)}</span>` : ""}${t.environment && t.environment !== "default" ? `<span class="tag">env: ${esc(t.environment)}</span>` : ""}${t.policy_version ? `<span class="tag">🛡 ${esc(t.policy_version)}</span>` : ""}${t.policy_denials ? `<span class="tag bad">${t.policy_denials} denied</span>` : ""}${t.revocations ? `<span class="tag bad">revoked</span>` : ""}${pill(t.outcome)}${pill(t.apdex)}${t.is_subagent ? `<span class="tag">subagent</span>` : ""}
         <span class="small muted">${dt(t.started)} · ${esc(t.project)} · ${esc(t.models)}</span></div>
         <div class="prompt-box">${esc(t.prompt) || "<span class='muted'>(no prompt)</span>"}</div></div>` +
       `<div class="kpis">
@@ -429,11 +430,11 @@
     wf.innerHTML = rows.map((s, i) => {
       const st = (s.start_ts || s.ts || t0) - t0, en = (s.end_ts || s.ts || t0) - t0;
       const left = (100 * st) / span, width = Math.max(0.25, (100 * Math.max(0, en - st)) / span);
-      const col = s.is_error ? "var(--critical)" : s.kind === "llm" ? "var(--text-3)" : s.kind === "notice" ? "var(--critical)" : s.kind === "span" ? "var(--neutral)" : C.phaseColor(s.phase);
+      const col = s.denied ? "var(--critical)" : s.is_error ? "var(--critical)" : s.kind === "llm" ? "var(--text-3)" : s.kind === "notice" ? "var(--critical)" : s.kind === "span" ? "var(--neutral)" : C.phaseColor(s.phase);
       const base = s.kind === "llm" ? `model · ${s.model || ""}` : s.kind === "notice" ? `⚠ ${s.name}` : s.kind === "span" ? `▸ ${s.name}` : (s.name || "").replace(/^mcp__/, "");
       const name = (s.depth ? "\u2002".repeat(Math.min(s.depth, 8)) : "") + base + (s.node && s.kind !== "span" ? ` · ${s.node}` : "");
       const flags = (s.flags || []).map((f) => `<span class="tag warn">${f.replace(/_/g, " ")}</span>`).join("");
-      const val = s.kind === "llm" ? usd(s.cost) : s.kind === "tool" ? (s.is_error ? `<span style="color:var(--critical-text)">error</span>` : tok((s.output_chars || 0) / 4) + " tok") : "";
+      const val = s.denied ? `<span style="color:var(--critical-text)">⛔ denied</span>` : s.kind === "llm" ? usd(s.cost) : s.kind === "tool" ? (s.is_error ? `<span style="color:var(--critical-text)">error</span>` : tok((s.output_chars || 0) / 4) + " tok") : "";
       return `<div class="wf-row" data-i="${i}"><span class="muted">${s.seq}</span><span class="wf-name" title="${esc(s.target || "")}">${esc(name)} ${flags}</span>
         <div class="wf-track"><div class="wf-bar" style="left:${left}%;width:${width}%;background:${col}"></div></div><span class="num small">${ms(s.duration_ms)}</span><span class="num small">${val}</span></div>`;
     }).join("");
@@ -451,6 +452,7 @@
       } else if (s.kind === "tool") {
         lines.push(`tool: ${s.name}   phase: ${s.phase}   duration: ${ms(s.duration_ms)}   output: ${num(s.output_chars)} chars   attributed cost: ${usd(s.attributed_cost)}`);
         if ((s.flags || []).length) lines.push(`flags: ${s.flags.join(", ")}`);
+        if (s.rule) lines.push(`policy: ${s.denied ? "DENIED" : "allowed"} · rule ${s.rule}${s.guard ? " · guard " + s.guard : ""}${s.agent ? " · agent " + s.agent : ""}`);
         lines.push("\ninput: " + (s.input_preview || ""));
         if (s.error) lines.push("\nERROR: " + s.error);
       } else if (s.kind === "span") {
@@ -470,7 +472,7 @@
     for (const e of events) items.push(`<tr><td style="width:92px">${pill(e.severity)}</td><td><b>${esc(e.rule)}</b><div class="small muted">${esc(e.message)}</div></td></tr>`);
     const fc = {};
     flags.forEach(({ f }) => (fc[f] = (fc[f] || 0) + 1));
-    const FL = { duplicate_call: "Identical tool call repeated with no edit in between", redundant_read: "File re-read without having changed", error_streak: "Kept retrying after 2+ consecutive failures", large_output: "Tool returned >40k chars into context" };
+    const FL = { denied: "Tool call refused by the Aegis policy (tokens spent generating it are counted as waste)", duplicate_call: "Identical tool call repeated with no edit in between", redundant_read: "File re-read without having changed", error_streak: "Kept retrying after 2+ consecutive failures", large_output: "Tool returned >40k chars into context" };
     for (const f in fc) if (!events.some((e) => e.rule_id === f)) items.push(`<tr><td>${pill("info", "hotspot")}</td><td><b>${fc[f]}× ${f.replace(/_/g, " ")}</b><div class="small muted">${FL[f] || ""}</div></td></tr>`);
     if (t.code_changed && t.verified) items.push(`<tr><td>${pill("ok", "good")}</td><td><b>Verified</b><div class="small muted">Ran tests/build/app after the final edit</div></td></tr>`);
     if (t.churn_file && t.max_edits_one_file >= 5) items.push(`<tr><td>${pill("info", "churn")}</td><td><b>${t.max_edits_one_file} edits to one file</b><div class="small muted mono">${esc(t.churn_file)}</div></td></tr>`);
@@ -558,7 +560,7 @@
   PAGES.process = async (host, _a, _p, alive) => {
     const d = await api("process");
     if (!alive()) return;
-    const dims = ["efficiency", "focus", "reliability", "verification", "context", "autonomy"];
+    const dims = ["efficiency", "focus", "reliability", "verification", "context", "autonomy", "compliance"];
     host.innerHTML = head("Process Review", "How the agent works, not just what it costs. Each task is scored on six process dimensions. These findings are meant to help you judge the agent's habits and fix them (usually with better prompts or a CLAUDE.md).") +
       `<div class="kpis">${kpi("Overall process score", d.avg.overall == null ? "–" : Math.round(d.avg.overall), "average across tasks", "")}${dims.map((k) => kpi(k[0].toUpperCase() + k.slice(1), `<span style="color:${scoreColor(d.avg[k])}">${d.avg[k] == null ? "–" : Math.round(d.avg[k])}</span>`, esc(SCORE_HELP[k]))).join("")}</div>` +
       `<h2 style="margin:18px 0 10px">Findings</h2><div class="grid g3">${d.insights.map((i) => `<div class="insight ${i.severity}"><div class="between"><b>${esc(i.title)}</b>${pill(i.severity === "ok" ? "ok" : i.severity, i.severity)}</div>
@@ -622,7 +624,7 @@
       ["Verification rate", "verification_rate", pct, 1], ["Avoidable spend", "waste_cost", usd, -1], ["Cache hit", "cache_hit", pct, 1], ["Avg process score", "avg_score", (v) => (v == null ? "–" : v.toFixed(1)), 1]];
     const a = d.a, b = d.b;
     host.innerHTML = head("Compare", "Side-by-side comparison of two models, task types, projects or time periods: the agent equivalent of comparing releases. Use it to check whether a model, prompt or CLAUDE.md change helped.") +
-      `<div class="card"><div class="row"><label class="small muted">Dimension <select id="c-dim">${["models", "task_type", "project", "source", "period"].map((x) => `<option ${x === dim ? "selected" : ""}>${x}</option>`).join("")}</select></label>
+      `<div class="card"><div class="row"><label class="small muted">Dimension <select id="c-dim">${["models", "task_type", "workflow", "project", "source", "policy", "period"].map((x) => `<option ${x === dim ? "selected" : ""}>${x}</option>`).join("")}</select></label>
         <label class="small muted">A ${sel("c-a", A)}</label><label class="small muted">B ${sel("c-b", B)}</label><button class="primary" id="c-go">Compare</button></div></div>` +
       (a && b ? `<div class="grid g2" style="margin-top:14px">${card("Key metrics", `<table><thead><tr><th>Metric</th><th class="num">A</th><th class="num">B</th><th class="num">B vs A</th></tr></thead><tbody>${rowsDef.map(([l, k, f, dir]) => {
         const va = a[k], vb = b[k];
@@ -663,6 +665,7 @@
     ["langfuse", "Already on Langfuse", "pull traces, change nothing"],
     ["logs", "Log pipeline", "Fluent Bit, Vector, files"],
     ["http", "Any language", "one HTTP call"],
+    ["aegis", "Aegis-governed agent", "enforce + observe"],
     ["claude-code", "Claude Code", "automatic"],
   ];
   let startPoll = null;
@@ -811,6 +814,85 @@
     }
     host.innerHTML = svg + "</svg>";
   }
+
+  // ------------------------------------------------------------------ governance (Aegis)
+  PAGES.governance = async (host, _a, p, alive) => {
+    const d = await api("governance");
+    if (!alive()) return;
+    const k = d.kpis;
+    if (!k.governed_tasks) {
+      host.innerHTML = head("Governance", "Policy enforcement from <b>Aegis</b>, seen from the agent's side: what was blocked, why, what it cost, and which grants are never used.") +
+        `<div class="card"><h2>No governed runs yet</h2><p class="small muted">Wrap your Aegis kernel. Every decision is then recorded here, model spend is charged to the Aegis budget, and a watchdog can revoke misbehaving agents.</p>
+        <div class="code-block">pip install aegis-guard agentdynamics
+
+import agentdynamics
+from agentdynamics.integrations import aegis as governance
+from aegis import build_kernel, load_policy
+
+agentdynamics.init(project="support")
+kernel, root = build_kernel(load_policy("policy.yaml"), registry)
+governance.instrument(kernel, root, watchdog=governance.Watchdog(max_repeated_denials=3))</div>
+        <p class="small muted" style="margin-top:10px">Already have Aegis audit logs? Send the JSONL to <code>/api/ingest/records</code> or point an <code>inbox</code> source at it.</p></div>`;
+      return;
+    }
+    host.innerHTML = head("Governance", "Aegis decides what agents may do; AgentDynamics shows what they tried. Denials, budget stops and watchdog revocations are tied back to the task, workflow and node they happened in. <b>Generate tightened policy</b> turns observed behaviour into a least-privilege Aegis policy.") +
+      `<div class="kpis">
+        ${kpi("Governed tasks", num(k.governed_tasks), `${k.policies} policy version(s)`)}
+        ${kpi("Policy decisions", num(k.decisions), "allowed + denied")}
+        ${kpi("Denials", num(k.denials), `${pct(k.denial_rate, 1)} of tool calls`)}
+        ${kpi("Budget stops", num(k.budget_stops), `${num(k.spend_denials)} model calls blocked`)}
+        ${kpi("Revocations", num(k.revocations), "watchdog / operator kill switch")}
+        ${kpi("Boundary probing", num(k.probing_tasks), "tasks where one tool was refused 3+ times in a row")}
+        ${kpi("Spend on blocked calls", usd(k.blocked_cost), "tokens used to generate refused calls")}
+        ${kpi("Compliance score", k.compliance == null ? "–" : Math.round(k.compliance), "avg over governed tasks")}
+      </div>
+      <div class="grid g2">
+        ${card("Denials by rule", `<div id="gv-rule"></div>`, "Aegis rule ids")}
+        ${card("Denials over time", `<div id="gv-daily"></div>`, "by guard")}
+      </div>
+      <div class="grid g2" style="margin-top:14px">
+        ${card("Blocked tools & model calls", `<div id="gv-tool"></div>`)}
+        ${card("By agent", `<div id="gv-agent"></div>`, "who attempted the blocked actions")}
+      </div>
+      <div style="margin-top:14px">${card("Policies in use", `<div class="table-wrap"><table><thead><tr><th>Policy</th><th class="num">Tasks</th><th class="num">Success</th><th class="num">Denials</th><th class="num">Revoked</th>
+        <th>Grants used</th><th>Unused grants</th><th>Budget headroom (limit ÷ p95 used)</th><th></th></tr></thead><tbody>
+        ${d.policies.map((pl, i) => `<tr><td><b>${esc(pl.name || pl.policy)}</b><div class="small muted mono">${esc(pl.policy)}</div><div class="small muted">${esc(pl.workflows.join(", "))}</div></td>
+          <td class="num">${pl.tasks}</td><td class="num">${pct(pl.success_rate)}</td><td class="num">${pl.denials}</td><td class="num">${pl.revocations}</td>
+          <td class="small">${pl.used.length} of ${pl.granted.length}</td>
+          <td>${pl.unused.map((t) => `<span class="tag warn">${esc(t)}</span>`).join("") || `<span class="muted small">none</span>`}</td>
+          <td class="small">${Object.entries(pl.headroom).filter(([, v]) => v).map(([kk, v]) => `<span class="tag ${v > 10 ? "warn" : ""}">${kk} ${v}×</span>`).join("") || "–"}</td>
+          <td><button class="primary gv-export" data-i="${i}">Generate tightened policy</button></td></tr>`).join("")}</tbody></table></div>
+        <p class="small muted" style="margin:8px 0 0">Unused grants and 10×+ headroom are over-privilege: authority the agents hold but never need. Compare policy versions side by side under <a href="#/compare?dim=policy">Compare → policy</a>.</p>
+        <div id="gv-export"></div>`)}</div>
+      <div class="grid g-2-1" style="margin-top:14px">
+        ${card("Recent denials", `<div class="table-wrap"><table><thead><tr><th>When</th><th>Rule</th><th>Attempt</th><th>Agent</th><th>Task</th></tr></thead><tbody>
+          ${d.recent.map((r) => `<tr class="click" data-href="#/task/${encodeURIComponent(r.task_id)}"><td class="small muted" style="white-space:nowrap">${dt(r.ts)}</td>
+            <td><span class="tag bad">${esc(r.rule)}</span></td><td><b>${esc(r.kind === "llm" ? "model call" : r.tool)}</b><div class="small muted">${esc(r.error)}</div></td>
+            <td class="small">${esc(r.agent || "–")}</td><td><div class="truncate small" style="max-width:240px">${esc(r.prompt)}</div><span class="tag">${esc(r.workflow || "")}</span></td></tr>`).join("")}</tbody></table></div>`)}
+        ${card("Revocations", d.revocations.length ? `<table><tbody>${d.revocations.map((r) => `<tr class="click" data-href="#/task/${encodeURIComponent(r.task_id)}"><td>${pill("critical", "revoked")}</td><td class="small">${esc(r.text)}<div class="muted">${dt(r.ts)}</div></td></tr>`).join("")}</tbody></table>`
+          : `<div class="empty">No grants revoked.</div>`, "kill switch")}
+      </div>`;
+    C.hbars($("#gv-rule"), d.by_rule.map((r) => ({ label: esc(r.rule), value: r.n, color: r.rule.startsWith("budget") ? "var(--s4)" : r.rule.startsWith("grant") ? "var(--critical)" : "var(--s2)" })), { fmt: num });
+    C.hbars($("#gv-tool"), d.by_tool.map((r) => ({ label: esc(r.tool), value: r.n, color: "var(--s2)" })), { fmt: num });
+    C.hbars($("#gv-agent"), d.by_agent.map((r) => ({ label: esc(r.agent), value: r.n, color: "var(--s7)" })), { fmt: num });
+    const GCOL = { capability: "var(--s2)", budget: "var(--s4)", grant: "var(--critical)", data: "var(--s5)", spawn: "var(--s7)", kernel: "var(--s1)", registry: "var(--neutral)" };
+    C.columns($("#gv-daily"), d.daily, { x: "day", keys: d.guards.map((g, i) => ({ key: g, label: g, color: GCOL[g] || C.color(i) })), fmt: num, xfmt: dayLabel, height: 200 });
+    $$(".gv-export", host).forEach((b) => b.onclick = async () => {
+      const pl = d.policies[+b.dataset.i];
+      const box = $("#gv-export");
+      box.innerHTML = `<div class="loading">Synthesizing from observed behaviour…</div>`;
+      const r = await api(`governance/policy?policy=${encodeURIComponent(pl.policy)}`);
+      if (r.error) { box.innerHTML = `<div class="empty">${esc(r.error)}</div>`; return; }
+      box.innerHTML = `<div class="card" style="margin-top:12px;background:var(--surface-2)"><div class="between"><h2 style="margin:0">Tightened policy · ${esc(r.policy.name)} v${r.policy.version}</h2>
+        <div class="row"><button id="gv-copy">Copy</button><button class="primary" id="gv-dl">Download YAML</button></div></div>
+        <p class="small muted">From ${r.stats.tasks} tasks and ${r.stats.tool_calls} allowed calls. ${r.changes.length} change(s). The result can only be tighter than <code>${esc(r.base || "none")}</code>. Verify with <code>aegis ratify</code> and <code>aegis drift --baseline &lt;base&gt; --candidate &lt;this&gt;</code>.</p>
+        <ul class="small" style="margin:6px 0 10px;padding-left:18px">${r.changes.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>
+        <div class="code-block" style="max-height:360px;overflow:auto">${esc(r.yaml)}</div></div>`;
+      $("#gv-copy").onclick = async () => { try { await navigator.clipboard.writeText(r.yaml); toast("Copied"); } catch { toast("Select and copy"); } };
+      $("#gv-dl").onclick = () => { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([r.yaml], { type: "text/yaml" })); a.download = `${r.policy.name}.yaml`; a.click(); };
+    });
+    bindRows(host);
+  };
 
   // ------------------------------------------------------------------ SLOs
   PAGES.slos = async (host, _a, _p, alive) => {

@@ -41,6 +41,22 @@ _sender = None
 _patched = set()
 _warned = set()
 
+# Extension points used by integrations (e.g. agentdynamics.integrations.aegis):
+#   llm_gates: objects with before(provider, model, kwargs) -> handle   (may raise to block the call)
+#                           and after(handle, usd, tokens, error)        (settle what before() reserved)
+#   step(run, step)          observe every recorded step (watchdogs)
+#   run_meta(run) -> dict    extra fields for the run payload
+_hooks = {"llm_gates": [], "step": [], "run_meta": []}
+
+
+def current_run():
+    """The task being traced in this context, or None."""
+    return _current.get()
+
+
+def current_node():
+    return _node.get()
+
 
 def _warn(key, msg):
     if key not in _warned:
@@ -136,12 +152,23 @@ class _Run:
             if node and "node" not in step:
                 step["node"] = node
             self.steps.append(step)
+        for hook in list(_hooks["step"]):
+            try:
+                hook(self, step)
+            except Exception as ex:  # observers never break the agent
+                _warn(f"step-hook:{id(hook)}", f"step hook failed: {ex!r}")
 
     def payload(self):
-        return {"id": self.id, "agent": self.name, "workflow": self.name, "project": _cfg["project"] or "default",
-                "environment": _cfg["environment"], "source": "sdk", "framework": "agentdynamics-sdk",
-                "thread_id": self.thread_id, "user_id": self.user_id, "status": "error" if self.error else "ok",
-                "error": self.error, "complete": True, "feedback": self.feedback, "steps": self.steps}
+        out = {"id": self.id, "agent": self.name, "workflow": self.name, "project": _cfg["project"] or "default",
+               "environment": _cfg["environment"], "source": "sdk", "framework": "agentdynamics-sdk",
+               "thread_id": self.thread_id, "user_id": self.user_id, "status": "error" if self.error else "ok",
+               "error": self.error, "complete": True, "feedback": self.feedback, "steps": self.steps}
+        for hook in list(_hooks["run_meta"]):
+            try:
+                out.update(hook(self) or {})
+            except Exception as ex:
+                _warn(f"meta-hook:{id(hook)}", f"run metadata hook failed: {ex!r}")
+        return out
 
 
 class trace:
@@ -288,15 +315,48 @@ def tool(fn=None, *, name=None):
     return deco(fn) if fn else deco
 
 
-def _record_llm(model, it, ot, cr, cw, stop, t0, t1, text="", err=None, ttft=None, provider=None):
+def _llm_begin(provider, model, kwargs):
+    """Ask every gate before the request is sent. A gate may raise to block it; gates that already
+    reserved something are released so nothing leaks."""
+    done = []
+    for gate in list(_hooks["llm_gates"]):
+        try:
+            done.append((gate, gate.before(provider, model, kwargs)))
+        except Exception as ex:
+            for g, h in done:
+                g.after(h, 0.0, 0, ex)
+            raise
+    return done
+
+
+def _is_denial(err):
+    v = getattr(err, "verdict", None)
+    return v is not None and getattr(v, "allowed", True) is False
+
+
+def _record_llm(model, it, ot, cr, cw, stop, t0, t1, text="", err=None, ttft=None, provider=None, handles=()):
+    from .pricing import cost as _price
+    usd = _price(model, it or 0, ot or 0, cr or 0, cw or 0, 0)
     step = {"kind": "llm", "model": model, "ts": t0, "end_ts": t1, "input_tokens": it or 0, "output_tokens": ot or 0,
-            "cache_read": cr or 0, "cache_write": cw or 0, "stop_reason": stop, "text": _clip(text), "provider": provider}
+            "cache_read": cr or 0, "cache_write": cw or 0, "stop_reason": stop, "text": _clip(text), "provider": provider,
+            "cost": usd}
     if ttft is not None:
         step["ttft_ms"] = ttft
-    if err is not None:
+    if err is not None and _is_denial(err):  # blocked before it was sent (budget / revoked grant)
+        step["denied"] = True
+        step["rule"] = err.verdict.rule
+        step["guard"] = getattr(err.verdict, "guard", None)
+        step["error"] = str(err)[:300]
+    elif err is not None:
         step["is_error"] = True
         step["error"] = f"{type(err).__name__}: {err}"[:300]
         step["rate_limited"] = getattr(err, "status_code", None) in (429, 529) or "rate" in str(err).lower()
+    tokens = (it or 0) + (ot or 0) + (cr or 0) + (cw or 0)
+    for gate, handle in handles:
+        try:
+            gate.after(handle, usd, tokens, err)
+        except Exception as ex:
+            _warn(f"gate:{id(gate)}", f"model gate settle failed: {ex!r}")
     run = _current.get()
     if run is not None:
         run.add(step)
@@ -306,6 +366,48 @@ def _record_llm(model, it, ot, cr, cw, stop, t0, t1, text="", err=None, ttft=Non
         if err is not None:
             r.error = step["error"]
         _emit(r.payload())
+
+
+class llm_call:
+    """Record (and gate) a call to any model client the SDK doesn't patch: local models, other SDKs, raw HTTP.
+
+        with agentdynamics.llm_call("my-model", max_tokens=512, input=messages) as call:
+            resp = my_client.generate(...)
+            call.usage(input_tokens=resp.in_tok, output_tokens=resp.out_tok, stop_reason=resp.stop)
+
+    Integrations such as Aegis budget gating run before the body, so an exhausted budget stops the call.
+    """
+
+    def __init__(self, model, provider="custom", max_tokens=None, input=None):
+        self.model, self.provider = model, provider
+        self.kwargs = {"model": model, "max_tokens": max_tokens, "messages": input}
+        self._u = {"it": 0, "ot": 0, "cr": 0, "cw": 0, "stop": None, "text": ""}
+
+    def usage(self, input_tokens=0, output_tokens=0, cache_read=0, cache_write=0, stop_reason=None, text=""):
+        self._u.update(it=input_tokens, ot=output_tokens, cr=cache_read, cw=cache_write, stop=stop_reason, text=text)
+
+    def __enter__(self):
+        self.t0 = time.time()
+        try:
+            self.h = _llm_begin(self.provider, self.model, self.kwargs)
+        except Exception as ex:
+            _record_llm(self.model, 0, 0, 0, 0, None, self.t0, time.time(), err=ex, provider=self.provider)
+            raise
+        return self
+
+    def __exit__(self, et, ev, tb):
+        u = self._u
+        _record_llm(self.model, u["it"], u["ot"], u["cr"], u["cw"], u["stop"], self.t0, time.time(), u["text"], ev,
+                    provider=self.provider, handles=self.h)
+        return False
+
+
+def record_llm(model, input_tokens=0, output_tokens=0, cache_read=0, cache_write=0, stop_reason=None,
+               start=None, end=None, text="", provider="custom"):
+    """Record a model call after the fact (no gating). Prefer `llm_call` when you can wrap the call."""
+    end = end or time.time()
+    _record_llm(model, input_tokens, output_tokens, cache_read, cache_write, stop_reason, start or end, end, text,
+                provider=provider)
 
 
 # ---------------------------------------------------------------- Anthropic
@@ -320,8 +422,8 @@ def _anthropic_usage(msg):
 class _AnthropicStream:
     """Wraps a stream=True iterator, accumulating usage from message_start / message_delta events."""
 
-    def __init__(self, inner, model, t0):
-        self._inner, self._model, self._t0 = inner, model, t0
+    def __init__(self, inner, model, t0, handles=()):
+        self._inner, self._model, self._t0, self._handles = inner, model, t0, handles
         self._u = {"i": 0, "o": 0, "cr": 0, "cw": 0}
         self._stop, self._ttft, self._text, self._done = None, None, [], False
 
@@ -378,7 +480,7 @@ class _AnthropicStream:
         if not self._done:
             self._done = True
             _record_llm(self._model, self._u["i"], self._u["o"], self._u["cr"], self._u["cw"], self._stop, self._t0, time.time(),
-                        "".join(self._text), err, self._ttft, "anthropic")
+                        "".join(self._text), err, self._ttft, "anthropic", self._handles)
 
     def __enter__(self):
         return self
@@ -403,29 +505,33 @@ def _patch_anthropic():
     @functools.wraps(orig)
     def create(self, *a, **k):
         t0 = time.time()
+        h = ()
         try:
+            h = _llm_begin("anthropic", k.get("model"), k)
             r = orig(self, *a, **k)
         except Exception as ex:
-            _record_llm(k.get("model"), 0, 0, 0, 0, None, t0, time.time(), err=ex, provider="anthropic")
+            _record_llm(k.get("model"), 0, 0, 0, 0, None, t0, time.time(), err=ex, provider="anthropic", handles=h)
             raise
         if k.get("stream"):
-            return _AnthropicStream(r, k.get("model"), t0)
+            return _AnthropicStream(r, k.get("model"), t0, h)
         it, ot, cr, cw, stop, text = _anthropic_usage(r)
-        _record_llm(getattr(r, "model", k.get("model")), it, ot, cr, cw, stop, t0, time.time(), text, provider="anthropic")
+        _record_llm(getattr(r, "model", k.get("model")), it, ot, cr, cw, stop, t0, time.time(), text, provider="anthropic", handles=h)
         return r
 
     @functools.wraps(aorig)
     async def acreate(self, *a, **k):
         t0 = time.time()
+        h = ()
         try:
+            h = _llm_begin("anthropic", k.get("model"), k)
             r = await aorig(self, *a, **k)
         except Exception as ex:
-            _record_llm(k.get("model"), 0, 0, 0, 0, None, t0, time.time(), err=ex, provider="anthropic")
+            _record_llm(k.get("model"), 0, 0, 0, 0, None, t0, time.time(), err=ex, provider="anthropic", handles=h)
             raise
         if k.get("stream"):
-            return _AnthropicStream(r, k.get("model"), t0)
+            return _AnthropicStream(r, k.get("model"), t0, h)
         it, ot, cr, cw, stop, text = _anthropic_usage(r)
-        _record_llm(getattr(r, "model", k.get("model")), it, ot, cr, cw, stop, t0, time.time(), text, provider="anthropic")
+        _record_llm(getattr(r, "model", k.get("model")), it, ot, cr, cw, stop, t0, time.time(), text, provider="anthropic", handles=h)
         return r
 
     Messages.create, AsyncMessages.create = create, acreate
@@ -435,9 +541,9 @@ def _patch_anthropic():
 
 # ---------------------------------------------------------------- OpenAI
 
-def _openai_record(r, k, t0, err=None):
+def _openai_record(r, k, t0, err=None, handles=()):
     if err is not None:
-        _record_llm(k.get("model"), 0, 0, 0, 0, None, t0, time.time(), err=err, provider="openai")
+        _record_llm(k.get("model"), 0, 0, 0, 0, None, t0, time.time(), err=err, provider="openai", handles=handles)
         return
     u = getattr(r, "usage", None)
     it = getattr(u, "prompt_tokens", None) or getattr(u, "input_tokens", 0) or 0
@@ -451,7 +557,8 @@ def _openai_record(r, k, t0, err=None):
     elif hasattr(r, "output_text"):
         stop = getattr(r, "status", None)
         text = r.output_text or ""
-    _record_llm(getattr(r, "model", k.get("model")), max(0, it - cr), ot, cr, 0, stop, t0, time.time(), text, provider="openai")
+    _record_llm(getattr(r, "model", k.get("model")), max(0, it - cr), ot, cr, 0, stop, t0, time.time(), text, provider="openai",
+                handles=handles)
 
 
 def _patch_openai():
@@ -470,26 +577,30 @@ def _patch_openai():
             @functools.wraps(orig)
             async def acreate(self, *a, **k):
                 t0 = time.time()
+                h = ()
                 try:
+                    h = _llm_begin("openai", k.get("model"), k)
                     r = await orig(self, *a, **k)
                 except Exception as ex:
-                    _openai_record(None, k, t0, ex)
+                    _openai_record(None, k, t0, ex, h)
                     raise
                 if not k.get("stream"):
-                    _openai_record(r, k, t0)
+                    _openai_record(r, k, t0, handles=h)
                 return r
             cls.create = acreate
         else:
             @functools.wraps(orig)
             def create(self, *a, **k):
                 t0 = time.time()
+                h = ()
                 try:
+                    h = _llm_begin("openai", k.get("model"), k)
                     r = orig(self, *a, **k)
                 except Exception as ex:
-                    _openai_record(None, k, t0, ex)
+                    _openai_record(None, k, t0, ex, h)
                     raise
                 if not k.get("stream"):
-                    _openai_record(r, k, t0)
+                    _openai_record(r, k, t0, handles=h)
                 return r
             cls.create = create
 

@@ -18,7 +18,7 @@ import traceback
 import urllib.request
 
 from . import analysis, config as cfgmod, pricing, store
-from .collectors import claude_code, generic, inbox, langfuse, langsmith, otlp, spans as spanmod
+from .collectors import aegis_audit, claude_code, generic, inbox, langfuse, langsmith, otlp, spans as spanmod
 from .privacy import Redactor
 
 
@@ -63,6 +63,7 @@ class Engine:
         self.sources["sdk"] = SourceStatus("sdk", "push", "/api/ingest")
         self.sources["otlp"] = SourceStatus("otlp", "push", "/v1/traces (OTLP/HTTP json+protobuf)")
         self.sources["langsmith"] = SourceStatus("langsmith", "push", "/langsmith (LangSmith-compatible API)")
+        self.sources["aegis"] = SourceStatus("aegis", "push", "Aegis audit records (/api/ingest/records, inbox)")
         self.pullers = []
         for i, sc in enumerate(self.cfg.get("sources") or []):
             self._add_source(i, sc)
@@ -166,7 +167,7 @@ class Engine:
 
     def ingest_records(self, recs):
         """Auto-detected records from files/log pipelines."""
-        by = {"otlp": [], "langsmith": [], "langfuse": [], "span": []}
+        by = {"otlp": [], "langsmith": [], "langfuse": [], "span": [], "aegis": []}
         for fmt, r in recs:
             if fmt == "generic":
                 self.ingest(r)
@@ -181,7 +182,20 @@ class Engine:
             n += self.ingest_spans(langfuse.trace_to_spans(tr), "langfuse", count_source=False)
         for s in by["span"]:
             n += self.ingest_spans([s], s.get("source") or "inbox", count_source=False)
+        if by["aegis"]:
+            n += self.ingest_aegis(by["aegis"])
         return n
+
+    def ingest_aegis(self, records):
+        """Aegis audit records (JSONL audit log lines), grouped into runs by correlation id."""
+        items = [(aegis_audit.group_key(r), aegis_audit.span_id(r), "aegis", r) for r in records if aegis_audit.is_record(r)]
+        with self.lock:
+            store.upsert_spans(self.con, "aegis", items)
+        self.stats["spans_ingested"] += len(items)
+        if "aegis" in self.sources:
+            self.sources["aegis"].ok(len(items))
+        self._wake.set()
+        return len(items)
 
     # ------------------------------------------------------------------ health rules config
     @property
@@ -243,8 +257,16 @@ class Engine:
         now = time.time()
         touched = store.all_traces(self.con) if since == 0 else store.traces_updated_since(self.con, since - 2)
         runs = []
+        sdk_ids = {f[2]["id"] for f in self._files.values()}
         for source, trace_id in touched:
             docs = store.trace_spans(self.con, source, trace_id)
+            if source == "aegis":
+                if trace_id in sdk_ids:
+                    continue  # already recorded in-process by agentdynamics.integrations.aegis
+                run = generic.normalize(aegis_audit.build_payload(trace_id, [d for _, d in docs]))
+                run["source"] = "aegis"
+                runs.append(run)
+                continue
             canon = [c for c in (langsmith.to_span(d) if fmt == "langsmith" else d for fmt, d in docs) if c]
             run = spanmod.build_run(trace_id, canon, source)
             if run:

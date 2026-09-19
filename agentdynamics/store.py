@@ -10,11 +10,11 @@ import json
 import sqlite3
 import time
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 RUN_COLS = ["id", "source", "project", "environment", "framework", "workflow", "cwd", "title", "agent_name", "parent_id",
             "parent_task_id", "is_subagent", "thread_id", "user_id", "tags", "root_status", "complete", "version", "git_branch",
-            "entrypoint", "started", "ended", "file"]
+            "entrypoint", "started", "ended", "file", "policy_version", "policy"]
 TASK_COLS = ["id", "run_id", "idx", "project", "environment", "source", "framework", "workflow", "is_subagent", "parent_task_id",
              "prompt_kind", "prompt", "task_type", "started", "ended", "wall_s", "duration_s", "llm_calls", "tool_calls", "tool_errors",
              "tool_error_rate", "input_tokens", "output_tokens", "cache_read", "cache_write", "thinking_tokens", "total_tokens", "cost",
@@ -26,13 +26,17 @@ TASK_COLS = ["id", "run_id", "idx", "project", "environment", "source", "framewo
              # agent-flow metrics
              "steps_total", "llm_errors", "truncations", "refusals", "rate_limited", "ttft_ms", "out_tps", "retrievals",
              "empty_retrievals", "nodes", "max_node_visits", "loop_node", "handoffs", "pingpong", "hitl", "feedback_score",
-             "unpriced", "critical_node", "critical_share", "root_error"]
-TASK_JSON = ["phase_calls", "phase_cost", "scores", "path"]
+             "unpriced", "critical_node", "critical_share", "root_error",
+             # governance (Aegis)
+             "governed", "policy_version", "policy_denials", "spend_denials", "budget_denials", "repeated_denials",
+             "revocations", "blocked_cost"]
+TASK_JSON = ["phase_calls", "phase_cost", "scores", "path", "denied_rules"]
 STEP_COLS = ["run_id", "seq", "task_id", "kind", "name", "model", "phase", "target", "ts", "start_ts", "end_ts",
              "duration_ms", "cost", "attributed_cost", "input_tokens", "output_tokens", "cache_read", "cache_write",
              "context_tokens", "thinking_tokens", "is_error", "output_chars", "text", "input_preview", "error",
              "subagent_id", "stop_reason", "tool_calls", "effort",
-             "span_id", "parent_span_id", "depth", "node", "agent", "span_kind", "ttft_ms", "docs", "hitl", "rate_limited"]
+             "span_id", "parent_span_id", "depth", "node", "agent", "span_kind", "ttft_ms", "docs", "hitl", "rate_limited",
+             "denied", "rule", "guard", "grant_depth", "args_json"]
 EVENT_COLS = ["id", "ts", "rule_id", "rule", "severity", "task_id", "run_id", "project", "task_type", "message", "value"]
 
 DERIVED = ["runs", "tasks", "steps", "events", "baselines", "meta"]
@@ -109,6 +113,7 @@ def write_runs(con, runs, removed_ids=(), red=None):
         for r in runs:
             row = [r.get(c) for c in RUN_COLS]
             row[RUN_COLS.index("tags")] = json.dumps(r.get("tags") or [])
+            row[RUN_COLS.index("policy")] = json.dumps(r["policy"]) if r.get("policy") else None
             row[RUN_COLS.index("title")] = red.text(r.get("title")) if red else r.get("title")
             rrows.append(row)
         _ins(con, "runs", RUN_COLS, rrows)
@@ -117,7 +122,7 @@ def write_runs(con, runs, removed_ids=(), red=None):
             for s in r["steps"]:
                 s2 = _redact_step(s, red)
                 row = [r["id"] if c == "run_id" else s2.get(c) for c in STEP_COLS]
-                for b in ("is_error", "hitl", "rate_limited"):
+                for b in ("is_error", "hitl", "rate_limited", "denied"):
                     row[STEP_COLS.index(b)] = 1 if s2.get(b) else 0
                 srows.append(row + [json.dumps(s2.get("flags") or [])])
         _ins(con, "steps", STEP_COLS + ["flags"], srows)
@@ -137,7 +142,8 @@ def write_analysis(con, tasks, baselines, events, meta, red=None):
             con.execute(f"DELETE FROM {t}")
         trows = []
         for t in tasks:
-            row = [t.get(c) for c in TASK_COLS] + [json.dumps(t.get(c) if t.get(c) is not None else ({} if c != "path" else [])) for c in TASK_JSON]
+            row = [t.get(c) for c in TASK_COLS] + [json.dumps(t.get(c) if t.get(c) is not None else ([] if c == "path" else {}))
+                                                   for c in TASK_JSON]
             if red:
                 for f in ("prompt", "final_text", "next_prompt", "root_error"):
                     i = TASK_COLS.index(f)
@@ -212,7 +218,7 @@ def rows(con, q, args=()):
     out = []
     for r in con.execute(q, args).fetchall():
         d = dict(r)
-        for k in TASK_JSON + ["flags", "data", "tags"]:
+        for k in TASK_JSON + ["flags", "data", "tags", "policy"]:
             if k in d and isinstance(d[k], str):
                 try:
                     d[k] = json.loads(d[k])

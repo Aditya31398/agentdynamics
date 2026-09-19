@@ -104,7 +104,7 @@ def segment(run):
 def task_metrics(run, idx, seg):
     steps = seg["steps"]
     p = seg["prompt_step"]
-    llm = [s for s in steps if s["kind"] == "llm"]
+    llm = [s for s in steps if s["kind"] == "llm" and not s.get("denied")]  # a denied model call was never made
     tools = [s for s in steps if s["kind"] == "tool"]
     notices = [s for s in steps if s["kind"] == "notice"]
     tss = [s["ts"] for s in steps if s.get("ts")] + [s["end_ts"] for s in steps if s.get("end_ts")]
@@ -126,7 +126,7 @@ def task_metrics(run, idx, seg):
         "duration_s": _active_seconds(tss),
         "llm_calls": len(llm),
         "tool_calls": len(tools),
-        "tool_errors": sum(1 for s in tools if s.get("is_error")),
+        "tool_errors": sum(1 for s in tools if s.get("is_error") and not s.get("denied")),
         "input_tokens": sum(s.get("input_tokens", 0) for s in llm),
         "output_tokens": sum(s.get("output_tokens", 0) for s in llm),
         "cache_read": sum(s.get("cache_read", 0) for s in llm),
@@ -233,7 +233,9 @@ def task_metrics(run, idx, seg):
         if s.get("output_chars", 0) > 40000:
             s["flags"].append("large_output")
             large += 1
-        if any(f in s["flags"] for f in ("redundant_read", "duplicate_call", "error_streak")):
+        if s.get("denied"):
+            s["flags"].append("denied")  # tokens spent generating a call the policy refused
+        if any(f in s["flags"] for f in ("redundant_read", "duplicate_call", "error_streak", "denied")):
             waste_cost += s.get("attributed_cost", 0)
     t["files_read"] = len(files_read)
     t["files_edited"] = len(edits_per_file)
@@ -267,6 +269,28 @@ def task_metrics(run, idx, seg):
         s["task_id"] = t["id"]
     flow_metrics(t, run, steps, llm, tools)
     return t
+
+
+def governance_metrics(t, run, steps, tools):
+    """Policy enforcement seen from the task's side (Aegis decisions recorded as steps)."""
+    denied = [s for s in steps if s.get("denied")]
+    tool_denied = [s for s in tools if s.get("denied")]
+    t["governed"] = 1 if (run.get("policy_version") or any(s.get("governed") or s.get("rule") for s in steps)) else 0
+    t["policy_version"] = run.get("policy_version")
+    t["policy_denials"] = len(tool_denied)
+    t["spend_denials"] = sum(1 for s in denied if s["kind"] == "llm")
+    t["budget_denials"] = sum(1 for s in denied if str(s.get("rule") or "").startswith("budget."))
+    t["revocations"] = sum(1 for s in steps if s["kind"] == "notice" and s.get("name") == "revoked")
+    t["blocked_cost"] = round(sum(s.get("attributed_cost") or 0 for s in tool_denied), 6)
+    t["denied_rules"] = dict(Counter(s.get("rule") or "unknown" for s in denied))
+    streak = best = 0
+    last = None
+    for s in tools:
+        key = s.get("name") if s.get("denied") else None  # same tool refused in a row, whatever the rule
+        streak = streak + 1 if key is not None and key == last else (1 if key else 0)
+        last = key
+        best = max(best, streak)
+    t["repeated_denials"] = best
 
 
 TRUNCATION = {"max_tokens", "length", "max_output_tokens", "MAX_TOKENS"}
@@ -330,6 +354,7 @@ def flow_metrics(t, run, steps, llm, tools):
     aseq = [a for i, a in enumerate(agents) if i == 0 or a != agents[i - 1]]
     t["handoffs"] = max(0, len(aseq) - 1)
     t["pingpong"] = sum(1 for i in range(2, len(aseq)) if aseq[i] == aseq[i - 2])
+    governance_metrics(t, run, steps, tools)
     fb = [f["score"] for f in run.get("feedback") or [] if isinstance(f.get("score"), (int, float))]
     t["feedback_score"] = round(statistics.mean(fb), 3) if fb and t["idx"] <= 1 else None
 
@@ -367,7 +392,13 @@ def score_task(t, base):
     else:
         s["context"] = None
     s["autonomy"] = clamp(100 - 45 * min(t["interrupts"], 2) - (35 if t.get("outcome") == "rework" else 0))
-    weights = {"efficiency": 0.25, "focus": 0.15, "reliability": 0.2, "verification": 0.15, "context": 0.1, "autonomy": 0.15}
+    if t.get("governed"):
+        s["compliance"] = clamp(100 - 12 * (t.get("policy_denials") or 0) - 20 * max(0, (t.get("repeated_denials") or 0) - 1)
+                                - 40 * (t.get("revocations") or 0) - 15 * (t.get("budget_denials") or 0))
+    else:
+        s["compliance"] = None
+    weights = {"efficiency": 0.25, "focus": 0.15, "reliability": 0.2, "verification": 0.15, "context": 0.1, "autonomy": 0.15,
+               "compliance": 0.15}
     tot = sum(weights[k] for k, v in s.items() if v is not None)
     s["overall"] = round(sum(weights[k] * v for k, v in s.items() if v is not None) / tot, 1) if tot else None
     t["scores"] = {k: (round(v, 1) if v is not None else None) for k, v in s.items()}
@@ -443,6 +474,15 @@ DEFAULT_RULES = [
      "severity": "info", "message": "{v} retrieval(s) returned no documents"},
     {"id": "negative_feedback", "name": "Negative user feedback", "metric": "feedback_score", "op": "<", "value": 0.5,
      "severity": "warning", "message": "Feedback score {v}"},
+    # --- governance rules (Aegis)
+    {"id": "policy_denials", "name": "Actions blocked by policy", "metric": "policy_denials", "op": ">=", "value": 3,
+     "severity": "warning", "message": "{v} tool calls were refused by the policy"},
+    {"id": "repeated_denials", "name": "Agent probing a boundary", "metric": "repeated_denials", "op": ">=", "value": 3,
+     "severity": "critical", "message": "Same forbidden call attempted {v} times in a row (prompt injection or stuck agent)"},
+    {"id": "revoked", "name": "Grant revoked", "metric": "revocations", "op": ">=", "value": 1, "severity": "critical",
+     "message": "The agent's authority was revoked mid-run"},
+    {"id": "budget_stop", "name": "Budget stop", "metric": "budget_denials", "op": ">=", "value": 1, "severity": "warning",
+     "message": "Budget limit reached {v} time(s); work was stopped"},
     {"id": "slow_ttft", "name": "Slow first token", "metric": "ttft_ms", "op": ">", "value": 8000, "severity": "info",
      "message": "Median time to first token {v:,.0f} ms"},
 ]

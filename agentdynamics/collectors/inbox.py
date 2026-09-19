@@ -25,6 +25,8 @@ def detect(rec):
         return "generic"
     if "trace_id" in rec and "span_id" in rec:
         return "span"
+    if {"seq", "grant_id", "prev_hash", "rule", "allowed", "tool"} <= set(rec):
+        return "aegis"
     return None
 
 

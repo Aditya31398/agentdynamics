@@ -19,5 +19,7 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: Install (SDK versions the integration tests are verified against)
         run: pip install -e ".[test,toml]"
+      - name: Install Aegis (observe + reserve_spend are on main, not yet on PyPI)
+        run: pip install "aegis-guard @ git+https://github.com/Aditya31398/aegis.git@main"
       - name: Test
         run: python -m unittest discover tests -v

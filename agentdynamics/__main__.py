@@ -75,6 +75,19 @@ curl -X POST {url}/api/ingest -H 'Content-Type: application/json' -d '{{
     {{"kind": "prompt", "ts": 1726700000, "text": "Refund order 42"}},
     {{"kind": "llm", "ts": 1726700000, "end_ts": 1726700002, "model": "claude-sonnet-5",
      "input_tokens": 1200, "output_tokens": 300, "stop_reason": "end_turn"}}]}}'"""),
+    "aegis": ("Agents governed by Aegis: every decision recorded, model spend gated, watchdog kill switch", """\
+pip install agentdynamics aegis-guard
+
+import agentdynamics
+from agentdynamics.integrations import aegis as governance
+from aegis import build_kernel, load_policy
+
+agentdynamics.init(url="{url}", project="my-agent")
+kernel, root = build_kernel(load_policy("policy.yaml"), registry)
+governance.instrument(kernel, root, watchdog=governance.Watchdog(max_repeated_denials=3))
+
+# later: least-privilege policy from what the agent actually did
+agentdynamics policy export --workflow my_workflow --base policy.yaml --out tightened.yaml"""),
     "claude-code": ("Claude Code", "Nothing to do: sessions in ~/.claude/projects are read automatically by `agentdynamics serve`."),
 }
 
@@ -151,6 +164,46 @@ def cmd_keys(a, data):
         print(f"Revoked {len(keys) - len(left)} key(s).")
 
 
+def cmd_policy(a, eng):
+    from .server import Api
+    api = Api(eng)
+    q = {k: v for k, v in (("workflow", a.workflow), ("project", a.project), ("environment", a.environment),
+                           ("days", a.days), ("policy", a.policy), ("headroom", a.headroom)) if v}
+    if a.base:
+        try:
+            from aegis import dump_policy, load_policy
+        except ImportError:
+            print("--base needs aegis-guard: pip install aegis-guard", file=sys.stderr)
+            return 2
+        q["base_doc"] = dump_policy(load_policy(a.base))
+    if a.action == "report":
+        g = api.governance(q)
+        k = g["kpis"]
+        print(f"Governed tasks {k['governed_tasks']} - decisions {k['decisions']} - denials {k['denials']} "
+              f"({k['denial_rate']:.1%} of tool calls) - budget stops {k['budget_stops']} - revocations {k['revocations']}")
+        for p in g["policies"]:
+            print()
+            print(f"{p['policy']}: {p['tasks']} tasks, success {p['success_rate']:.0%}, {p['denials']} denials")
+            print(f"  granted {len(p['granted'])} tools, used {len(p['used'])}; unused: {', '.join(p['unused']) or 'none'}")
+            print("  budget headroom (limit / p95 used): " + ", ".join(f"{k2} {v}x" for k2, v in p["headroom"].items() if v))
+        for r in g["by_rule"][:8]:
+            print(f"  {r['n']:>5}  {r['rule']}")
+        return 0
+    res = api.export_policy(q)
+    if res.get("error"):
+        print(res["error"], file=sys.stderr)
+        return 1
+    if a.out:
+        with open(a.out, "w", encoding="utf-8") as f:
+            f.write(res["yaml"])
+        print(f"wrote {a.out}: {len(res['changes'])} change(s) vs {res['base'] or 'no base'}", file=sys.stderr)
+        for c in res["changes"]:
+            print(f"  - {c}", file=sys.stderr)
+    else:
+        print(res["yaml"])
+    return 0
+
+
 def cmd_run(a):
     if not a.command:
         print("usage: agentdynamics run python app.py [args...]")
@@ -188,6 +241,16 @@ def main(argv=None):
     k.add_argument("action", choices=["create", "list", "revoke"])
     k.add_argument("--role", choices=["ingest", "read", "admin"], default="ingest")
     k.add_argument("--name", default=None)
+    po = sub.add_parser("policy", help="Aegis policy from observed behaviour (observe -> govern)")
+    po.add_argument("action", choices=["export", "report"])
+    po.add_argument("--workflow")
+    po.add_argument("--project")
+    po.add_argument("--environment")
+    po.add_argument("--days", type=float)
+    po.add_argument("--policy", help="policy label as shown in the console (name@vN#digest)")
+    po.add_argument("--base", help="Aegis policy file to tighten (needs aegis-guard installed)")
+    po.add_argument("--headroom", type=float, default=1.5)
+    po.add_argument("--out", help="write the YAML here (default: stdout)")
     sub.add_parser("ingest", help="scan sources once and rebuild the database")
     rp = sub.add_parser("report", help="print a text summary")
     rp.add_argument("--project")
@@ -222,9 +285,11 @@ def main(argv=None):
         eng.refresh()
         return 0
     eng.refresh(force=True)
-    print(f"indexed in {eng.last_duration}s -> {os.path.join(a.data, 'agentdynamics.db')}")
+    print(f"indexed in {eng.last_duration}s -> {os.path.join(a.data, 'agentdynamics.db')}", file=sys.stderr)
     if cmd == "ingest":
         return 0
+    if cmd == "policy":
+        return cmd_policy(a, eng)
     if cmd == "report":
         from .server import Api
         api = Api(eng)

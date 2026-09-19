@@ -5,8 +5,8 @@
 
 See agentdynamics.autotrace for @trace / @tool / span.
 """
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
-from .autotrace import flush, init, span, tool, trace  # noqa: E402,F401
+from .autotrace import flush, init, llm_call, record_llm, span, tool, trace  # noqa: E402,F401
 
-__all__ = ["init", "trace", "tool", "span", "flush", "__version__"]
+__all__ = ["init", "trace", "tool", "span", "llm_call", "record_llm", "flush", "__version__"]

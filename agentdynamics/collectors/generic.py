@@ -34,6 +34,7 @@ def normalize(payload):
         "framework": payload.get("framework") or "sdk", "thread_id": payload.get("thread_id"), "user_id": payload.get("user_id"),
         "feedback": payload.get("feedback") or [], "tags": payload.get("tags") or [],
         "root_status": payload.get("status"), "root_error": payload.get("error"), "complete": payload.get("complete", True),
+        "policy_version": payload.get("policy_version"), "policy": payload.get("policy"),
         "steps": [],
     }
     last_llm = None
@@ -66,6 +67,8 @@ def normalize(payload):
             st.setdefault("target", target)
             st["input_hash"] = hashlib.sha1((str(st.get("name")) + json.dumps(inp, sort_keys=True, default=str)).encode()).hexdigest()[:16]
             st["input_preview"] = json.dumps(inp, default=str)[:400]
+            if inp:
+                st["args_json"] = json.dumps(inp, default=str)[:4000]
             st["is_error"] = bool(st.get("is_error"))
             st["output_chars"] = int(st.get("output_chars") or 0)
             if last_llm is not None:
