@@ -1,0 +1,44 @@
+# Production configuration example. Mounted at /data/agentdynamics.toml in the container.
+# API keys are better supplied via AGENTDYNAMICS_API_KEYS than written here.
+
+[server]
+host = "0.0.0.0"
+port = 8787
+
+[auth]
+enabled = true
+
+[privacy]
+store_content = true
+redact = ["email", "api_key", "credit_card", "bearer", "aws_key"]
+extra_patterns = ['\b\d{3}-\d{2}-\d{4}\b']      # e.g. US SSNs
+
+[retention]
+days = 90
+
+[analysis]
+interval = 15
+
+# [[alerts.webhooks]]
+# url = "https://hooks.slack.com/services/T000/B000/XXXX"
+# min_severity = "warning"
+# format = "slack"
+
+# Pull from an existing LangSmith project (keeps LangSmith as the system of record)
+# [[sources]]
+# type = "langsmith_api"
+# project = "support-bot-prod"
+# api_key_env = "LANGSMITH_API_KEY"
+# interval = 60
+
+# Pull from Langfuse
+# [[sources]]
+# type = "langfuse_api"
+# host = "https://cloud.langfuse.com"
+# public_key_env = "LANGFUSE_PUBLIC_KEY"
+# secret_key_env = "LANGFUSE_SECRET_KEY"
+
+# Tail JSONL written by Fluent Bit / Vector / S3 sync
+# [[sources]]
+# type = "inbox"
+# path = "/var/log/agent-traces"

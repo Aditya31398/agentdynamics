@@ -1,0 +1,9 @@
+.data/
+.demo-data/
+.fresh-data/
+.claude/
+__pycache__/
+*.pyc
+build/
+*.egg-info/
+dist/

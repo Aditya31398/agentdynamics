@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentDynamics</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M2 13h4l3-8 4 14 3-9 2 3h4' fill='none' stroke='%232a78d6' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="brand">
+      <svg width="22" height="22" viewBox="0 0 24 24"><path d="M2 13h4l3-8 4 14 3-9 2 3h4" fill="none" stroke="var(--accent)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      AgentDynamics
+    </div>
+    <nav id="nav"></nav>
+  </aside>
+  <div class="main">
+    <div class="topbar">
+      <label>Project <select id="f-project"><option value="">All projects</option></select></label>
+      <label id="f-env-wrap" hidden>Env <select id="f-env"></select></label>
+      <div class="seg" id="f-days">
+        <button data-v="1">24h</button><button data-v="7">7d</button><button data-v="30">30d</button><button data-v="">All</button>
+      </div>
+      <label title="Include delegated subagent runs as separate tasks"><input type="checkbox" id="f-sub"> Subagents as tasks</label>
+      <div class="spacer"></div>
+      <span class="small muted" id="refreshed"></span>
+      <button id="btn-refresh" title="Re-scan sources now">Refresh</button>
+      <button id="btn-theme" title="Toggle theme" aria-label="Toggle theme">◐</button>
+    </div>
+    <div id="page" class="page"><div class="loading">Loading…</div></div>
+  </div>
+</div>
+<div class="tip" id="tip"></div>
+<div class="toast" id="toast"></div>
+<script src="/charts.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>

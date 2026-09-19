@@ -1,0 +1,36 @@
+[project]
+name = "agentdynamics"
+version = "0.3.0"
+description = "Application performance monitoring for AI agents: flows, cost, reliability and process quality"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.10"
+dependencies = []
+keywords = ["ai-agents", "observability", "apm", "llm", "langgraph", "opentelemetry", "tracing"]
+classifiers = [
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Topic :: System :: Monitoring",
+  "Topic :: Software Development :: Libraries",
+]
+
+[project.optional-dependencies]
+toml = ["tomli; python_version < '3.11'"]
+test = ["langchain-core==0.2.33", "langsmith==0.1.99", "anthropic==0.87.0", "openai==2.30.0"]
+
+[project.urls]
+Homepage = "https://github.com/Aditya31398/agentdynamics"
+Issues = "https://github.com/Aditya31398/agentdynamics/issues"
+
+[project.scripts]
+agentdynamics = "agentdynamics.__main__:main"
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["agentdynamics*"]
+
+[tool.setuptools.package-data]
+agentdynamics = ["web/*", "bootstrap/*.py"]

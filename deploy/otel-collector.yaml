@@ -1,0 +1,48 @@
+# OpenTelemetry Collector gateway: receives OTLP from every agent service, keeps only agent/LLM spans,
+# and forwards them to AgentDynamics. Add your existing APM exporter to the same pipeline to fan out.
+receivers:
+  otlp:
+    protocols:
+      grpc: { endpoint: 0.0.0.0:4317 }
+      http: { endpoint: 0.0.0.0:4318 }
+
+processors:
+  batch:
+    send_batch_size: 512
+    timeout: 2s
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 20
+  # Drop spans that carry no agent semantics (plain HTTP/DB spans). Traces keep their agent spans intact.
+  filter/agents:
+    error_mode: ignore
+    traces:
+      span:
+        - >-
+          attributes["gen_ai.operation.name"] == nil and
+          attributes["gen_ai.request.model"] == nil and
+          attributes["openinference.span.kind"] == nil and
+          attributes["traceloop.span.kind"] == nil and
+          attributes["langsmith.span.kind"] == nil
+  # Optional: scrub prompt content at the edge before it leaves the network.
+  # attributes/redact:
+  #   actions:
+  #     - { key: input.value, action: delete }
+  #     - { key: output.value, action: delete }
+
+exporters:
+  otlphttp/agentdynamics:
+    endpoint: http://agentdynamics:8787
+    compression: gzip
+    headers:
+      Authorization: "Bearer ${env:AGENTDYNAMICS_INGEST_KEY}"
+    retry_on_failure: { enabled: true, max_elapsed_time: 300s }
+    sending_queue: { enabled: true, queue_size: 5000 }
+
+service:
+  pipelines:
+    traces/agents:
+      receivers: [otlp]
+      processors: [memory_limiter, filter/agents, batch]
+      exporters: [otlphttp/agentdynamics]
