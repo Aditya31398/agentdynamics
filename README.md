@@ -1,5 +1,10 @@
 # AgentDynamics
 
+[![CI](https://github.com/Aditya31398/agentdynamics/actions/workflows/ci.yml/badge.svg)](https://github.com/Aditya31398/agentdynamics/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/agentdynamics)](https://pypi.org/project/agentdynamics/)
+[![Python](https://img.shields.io/pypi/pyversions/agentdynamics)](https://pypi.org/project/agentdynamics/)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+
 **APM for AI agents.** AgentDynamics does for agents what AppDynamics does for services. It shows how your agents work through tasks, what each step costs, where flows loop, stall or fail, and whether the agent's *process* is any good.
 
 - **Works with what you already have:** LangGraph, LangChain, the OpenAI Agents SDK, the Anthropic and OpenAI SDKs, CrewAI, LlamaIndex, anything that speaks OpenTelemetry, LangSmith, Langfuse, log pipelines and Claude Code.
@@ -11,7 +16,7 @@
 ## Quickstart (2 minutes)
 
 ```bash
-pip install git+https://github.com/Aditya31398/agentdynamics.git
+pip install agentdynamics
 agentdynamics serve --open          # console at http://127.0.0.1:8787
 ```
 
