@@ -236,7 +236,7 @@ class IntegrationTest(unittest.TestCase):
 
     @unittest.skipUnless(HAS_LANGCHAIN, "langchain-core / langsmith not installed")
     def test_2_langsmith_sdk_langgraph(self):
-        env = dict(os.environ, LANGSMITH_ENDPOINT=self.url + "/langsmith", LANGCHAIN_ENDPOINT=self.url + "/langsmith",
+        env = dict(os.environ, LANGSMITH_TRACING="true", LANGCHAIN_TRACING_V2="true", LANGSMITH_ENDPOINT=self.url + "/langsmith", LANGCHAIN_ENDPOINT=self.url + "/langsmith",
                    LANGSMITH_API_KEY=KEYS["ingest"], LANGCHAIN_API_KEY=KEYS["ingest"], LANGSMITH_PROJECT="support-bot-prod",
                    LANGCHAIN_PROJECT="support-bot-prod", PYTHONPATH=ROOT)
         code = "import sys; sys.path.insert(0, 'examples'); import langgraph_style_app as a; a.run_demo(14, seed=3)"

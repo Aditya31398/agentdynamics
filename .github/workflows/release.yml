@@ -1,0 +1,156 @@
+name: release
+
+# Push a tag like v0.4.0. The tag must equal agentdynamics.__version__ and CHANGELOG.md must have an entry.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Tag matches package version
+        id: v
+        run: |
+          pkg=$(python -c "import re;print(re.search(r'__version__ = \"(.+?)\"', open('agentdynamics/__init__.py').read())[1])")
+          tag="${GITHUB_REF_NAME#v}"
+          [ "$pkg" = "$tag" ] || { echo "tag $tag != package $pkg"; exit 1; }
+          grep -q "^version = \"$pkg\"" pyproject.toml || { echo "pyproject version != $pkg"; exit 1; }
+          echo "version=$pkg" >> "$GITHUB_OUTPUT"
+
+      - name: Changelog has an entry for this version
+        run: grep -q "^## \[${{ steps.v.outputs.version }}\]" CHANGELOG.md
+
+      - run: pip install build twine && python -m build && twine check --strict dist/*
+
+      - name: Smoke-test the built wheel outside the source tree
+        run: |
+          python -m venv /tmp/v && /tmp/v/bin/pip install --quiet dist/*.whl
+          cd /tmp
+          /tmp/v/bin/python -c "import agentdynamics, os; assert 'site-packages' in agentdynamics.__file__; \
+            d=os.path.dirname(agentdynamics.__file__); \
+            assert all(os.path.exists(os.path.join(d, p)) for p in ('web/app.js','web/index.html','bootstrap/sitecustomize.py'))"
+          /tmp/v/bin/agentdynamics --version
+          /tmp/v/bin/agentdynamics --data /tmp/ad --claude-root "" serve --port 8799 &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8799/healthz && break; sleep 1; done
+          curl -sf http://127.0.0.1:8799/app.js > /dev/null
+          /tmp/v/bin/agentdynamics doctor --url http://127.0.0.1:8799
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+  test:
+    # the full suite, same as CI, gating the publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[test,toml]" && pip install "aegis-guard @ git+https://github.com/Aditya31398/aegis.git@main"
+      - run: python -m unittest discover tests -v
+
+  provenance:
+    needs: [build, test]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/*
+
+  pypi:
+    # Trusted publishing: PyPI verifies this workflow's OIDC identity; no API token exists. See RELEASING.md.
+    needs: [build, provenance]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/agentdynamics/${{ needs.build.outputs.version }}/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@v1.14.2
+
+  github-release:
+    needs: [build, provenance]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist
+      - name: Extract release notes from CHANGELOG
+        run: |
+          v="${{ needs.build.outputs.version }}"
+          awk -v v="$v" '$0 ~ "^## \\[" v "\\]" {f=1; next} /^## \[/ {f=0} f' CHANGELOG.md > notes.md
+          test -s notes.md
+      - uses: softprops/action-gh-release@v3
+        with:
+          body_path: notes.md
+          files: dist/*
+
+  image:
+    needs: [build, test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/aditya31398/agentdynamics
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+      - id: push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: true
+          sbom: true
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ghcr.io/aditya31398/agentdynamics
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true

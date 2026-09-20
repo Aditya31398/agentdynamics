@@ -3,9 +3,16 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: "17 5 * * *"      # nightly: catch upstream SDK / API drift
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   test:
+    name: test (pinned, ${{ matrix.os }}, ${{ matrix.python }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -13,8 +20,8 @@ jobs:
         os: [ubuntu-latest, windows-latest]
         python: ["3.10", "3.12"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
       - name: Install (SDK versions the integration tests are verified against)
@@ -23,3 +30,37 @@ jobs:
         run: pip install "aegis-guard @ git+https://github.com/Aditya31398/aegis.git@main"
       - name: Test
         run: python -m unittest discover tests -v
+
+  ecosystem:
+    name: ecosystem (latest releases)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install the newest LangGraph, LangSmith, OpenTelemetry, OpenInference, Anthropic, OpenAI
+        run: |
+          pip install -e ".[toml]"
+          pip install --upgrade langgraph langchain-core langsmith opentelemetry-sdk \
+            opentelemetry-exporter-otlp-proto-http openinference-instrumentation-langchain anthropic openai
+          pip install "aegis-guard @ git+https://github.com/Aditya31398/aegis.git@main"
+          pip list | grep -iE "langgraph|langchain-core|langsmith|opentelemetry-sdk|openinference-instrumentation-langchain|anthropic|openai|zstandard"
+      - name: Test
+        run: python -m unittest discover tests -v
+
+  live:
+    name: live Anthropic API smoke test
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install -e . anthropic
+      - name: Smoke test (skips when the ANTHROPIC_API_KEY secret is not configured)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          AGENTDYNAMICS_LIVE: "1"
+        run: python -m unittest tests.test_live_anthropic -v
