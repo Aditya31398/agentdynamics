@@ -794,6 +794,13 @@ class Handler(BaseHTTPRequestHandler):
             body = gzip.decompress(body)
         elif enc == "deflate":
             body = zlib.decompress(body)
+        elif enc == "zstd":
+            from .collectors.langsmith import zstd_available, zstd_decompress
+            if not zstd_available():
+                raise ValueError("Content-Encoding zstd needs `pip install zstandard`")
+            body = zstd_decompress(body)
+            if len(body) > MAX_BODY:
+                raise ValueError("payload too large")
         elif enc and enc != "identity":
             raise ValueError(f"unsupported Content-Encoding {enc}")
         return body
@@ -807,8 +814,8 @@ class Handler(BaseHTTPRequestHandler):
             if p == "/healthz":
                 return self._send(200, api.healthz())
             if p in ("/langsmith/info", "/langsmith/api/v1/info"):
-                from .collectors.langsmith import INFO
-                return self._send(200, INFO)
+                from .collectors.langsmith import info
+                return self._send(200, info())
             if p.startswith("/api/") or p == "/metrics":
                 if not self._require("read"):
                     return

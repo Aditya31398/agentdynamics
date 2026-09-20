@@ -219,7 +219,9 @@ def cmd_run(a):
 
 
 def main(argv=None):
+    from . import __version__
     ap = argparse.ArgumentParser(prog="agentdynamics", description="APM for AI agents")
+    ap.add_argument("--version", action="version", version=f"agentdynamics {__version__}")
     ap.add_argument("--data", default=os.environ.get("AGENTDYNAMICS_DATA", DEFAULT_DATA), help="data directory")
     ap.add_argument("--claude-root", default=DEFAULT_ROOT, help="Claude Code projects dir ('' to disable)")
     sub = ap.add_subparsers(dest="cmd")

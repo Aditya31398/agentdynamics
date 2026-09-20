@@ -183,12 +183,35 @@ def parse_multipart(body, content_type):
     return list(posts.values()), list(patches.values()), feedback
 
 
-INFO = {
-    "version": "agentdynamics-0.2",
-    "batch_ingest_config": {"scale_up_qsize_trigger": 1000, "scale_up_nthreads_limit": 16, "scale_down_nempty_trigger": 4,
-                            "size_limit": 100, "size_limit_bytes": 20_971_520, "use_multipart_endpoint": False},
-    "instance_flags": {"zstd_compression_enabled": False},
-}
+def zstd_available():
+    try:
+        import zstandard  # noqa: F401  (installed alongside recent langsmith SDKs)
+        return True
+    except ImportError:
+        return False
+
+
+def zstd_decompress(body):
+    import io
+
+    import zstandard
+    # the SDK streams frames without a content size, so read through a stream reader
+    return zstandard.ZstdDecompressor().stream_reader(io.BytesIO(body)).read()
+
+
+def info():
+    """What we tell the LangSmith SDK (GET /info). With zstandard available we accept compressed multipart
+    (about 10x smaller uploads); otherwise the SDK falls back to plain JSON /runs/batch."""
+    z = zstd_available()
+    return {
+        "version": "agentdynamics-0.4",
+        "batch_ingest_config": {"scale_up_qsize_trigger": 1000, "scale_up_nthreads_limit": 16, "scale_down_nempty_trigger": 4,
+                                "size_limit": 100, "size_limit_bytes": 20_971_520, "use_multipart_endpoint": z},
+        "instance_flags": {"zstd_compression_enabled": z},
+    }
+
+
+INFO = info()
 
 
 # ---------------------------------------------------------------- pull connector
