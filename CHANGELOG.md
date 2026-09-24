@@ -16,6 +16,14 @@ bumps the minor version.
   compare declarations, so only the recorded calls can catch that.
 
 ### Fixed
+- The watchdog's `max_repeated_denials` counted refusals of the *same* tool in a row, so an agent
+  alternating between two forbidden tools was never revoked however often it was refused -- the
+  shape a prompt-injected agent produces on its own ("do X, then confirm by Y"). Consecutive
+  refusals are now counted across tools as well, ending at the first call that succeeds. The same
+  blind spot in the server-side `repeated_denials` metric (the Governance page's boundary-probing
+  count) is fixed too, so that number can rise for existing data.
+- Two `Watchdog`s on one run shared their per-run state, so the first to trip silently switched
+  off every other one.
 - `policy export` turned observed *numeric* arguments into a `one_of` list of those values,
   written as strings. Aegis compares the raw value, so the generated policy denied every call
   including the ones it was built from. Numbers now tighten `max_value` instead, which keeps the

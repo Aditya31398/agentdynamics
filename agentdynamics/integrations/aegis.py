@@ -228,10 +228,15 @@ class Watchdog:
         self._lock = threading.Lock()
 
     def _stats(self, run):
-        st = getattr(run, "_ad_watch", None)
+        # Keyed per watchdog: two of them on one run used to share this dict, so the first to
+        # trip set "tripped" and silently switched off every other one.
+        all_ = getattr(run, "_ad_watch", None)
+        if all_ is None:
+            all_ = run._ad_watch = {}
+        st = all_.get(id(self))
         if st is None:
-            st = run._ad_watch = {"streak": 0, "last": None, "denials": 0, "nodes": Counter(), "cost": 0.0,
-                                  "llm": 0, "tripped": False}
+            st = all_[id(self)] = {"streak": 0, "run": 0, "last": None, "denials": 0, "nodes": Counter(),
+                                   "cost": 0.0, "llm": 0, "tripped": False}
         return st
 
     def __call__(self, run, step):
@@ -242,14 +247,19 @@ class Watchdog:
             if st["tripped"]:
                 return
             if step.get("denied"):
-                # keyed on the tool, not the rule: an agent that varies its payload (/etc/passwd, then
-                # /workspace/../etc/passwd) trips different rules but is still probing the same boundary
+                # Two counters, because an agent evades each one differently. `streak` is the same
+                # tool refused in a row whatever the rule, so varying the payload (/etc/passwd, then
+                # /workspace/../etc/passwd) still trips it. `run` is denials in a row whatever the
+                # tool, so alternating between two forbidden tools trips it too -- which a prompt
+                # injected agent does naturally, without trying to evade anything. Either ends at
+                # the first call that actually succeeds.
                 key = step.get("name")
                 st["streak"] = st["streak"] + 1 if key == st["last"] else 1
+                st["run"] += 1
                 st["last"] = key
                 st["denials"] += 1
             elif step.get("kind") == "tool":
-                st["streak"], st["last"] = 0, None
+                st["streak"], st["run"], st["last"] = 0, 0, None
             if step.get("kind") == "span" and step.get("node"):
                 st["nodes"][step["node"]] += 1
             if step.get("kind") == "llm" and not step.get("denied"):
@@ -257,8 +267,11 @@ class Watchdog:
                 st["cost"] += step.get("cost") or 0.0
             lim = self.limits
             reason = None
-            if lim["max_repeated_denials"] and st["streak"] >= lim["max_repeated_denials"]:
-                reason = f"repeated_denials: {st['last']} refused {st['streak']}x in a row (last rule {step.get('rule')})"
+            if lim["max_repeated_denials"] and max(st["streak"], st["run"]) >= lim["max_repeated_denials"]:
+                reason = (f"repeated_denials: {st['last']} refused {st['streak']}x in a row "
+                          f"(last rule {step.get('rule')})" if st["streak"] >= lim["max_repeated_denials"]
+                          else f"repeated_denials: {st['run']} refusals in a row across tools "
+                               f"(last {st['last']}, rule {step.get('rule')})")
             elif lim["max_denials"] and st["denials"] >= lim["max_denials"]:
                 reason = f"denials: {st['denials']} denials in one run"
             elif lim["max_node_visits"] and st["nodes"] and max(st["nodes"].values()) >= lim["max_node_visits"]:

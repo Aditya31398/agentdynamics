@@ -283,13 +283,21 @@ def governance_metrics(t, run, steps, tools):
     t["revocations"] = sum(1 for s in steps if s["kind"] == "notice" and s.get("name") == "revoked")
     t["blocked_cost"] = round(sum(s.get("attributed_cost") or 0 for s in tool_denied), 6)
     t["denied_rules"] = dict(Counter(s.get("rule") or "unknown" for s in denied))
-    streak = best = 0
+    # Probing is "refused again and again without getting anywhere". Counting only repeats of the
+    # *same* tool misses the agent that alternates between two forbidden ones -- which is what a
+    # prompt-injected agent told to "refund, then confirm by email" does without trying to evade
+    # anything. Track both, and report the longer: consecutive denials end at the first success.
+    streak = run_ = best = 0
     last = None
     for s in tools:
-        key = s.get("name") if s.get("denied") else None  # same tool refused in a row, whatever the rule
-        streak = streak + 1 if key is not None and key == last else (1 if key else 0)
-        last = key
-        best = max(best, streak)
+        if s.get("denied"):
+            name = s.get("name")
+            streak = streak + 1 if name == last else 1
+            run_ += 1
+            last = name
+        else:
+            streak, run_, last = 0, 0, None
+        best = max(best, streak, run_)
     t["repeated_denials"] = best
 
 
