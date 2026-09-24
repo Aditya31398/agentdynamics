@@ -108,6 +108,8 @@ class Api:
             "p95_wall": round(pct([t["wall_s"] or 0 for t in ts], 0.95) or 0, 1),
             "feedback_avg": round(statistics.mean(fb), 3) if (fb := [t["feedback_score"] for t in ts if t["feedback_score"] is not None]) else None,
             "unpriced": sum(t["unpriced"] or 0 for t in ts),
+            # how much of success_rate / apdex is stated rather than guessed
+            "outcomes_by_source": dict(Counter(t.get("outcome_source") or "inferred" for t in ts)),
         }
 
     @staticmethod
@@ -801,6 +803,20 @@ class Handler(BaseHTTPRequestHandler):
                 return ROLE_FOR.get(k.get("role"), 0)
         return 0
 
+    def _key_name(self):
+        """Who is calling, for the audit trail on a grade: the matched key's name, or 'local'."""
+        auth = self.api.e.cfg["auth"]
+        if not auth.get("enabled"):
+            return "local"
+        key = self.headers.get("x-api-key") or ""
+        h = self.headers.get("Authorization") or ""
+        if h.lower().startswith("bearer "):
+            key = h[7:].strip()
+        for k in auth.get("keys") or []:
+            if key and hmac.compare_digest(key, str(k.get("key", ""))):
+                return k.get("name") or k.get("role")
+        return None
+
     def _require(self, need):
         r = self._role()
         if need in CAN.get(r, set()):
@@ -940,6 +956,25 @@ class Handler(BaseHTTPRequestHandler):
                 recs = [unwrap(r) for r in recs]
                 n = e.ingest_records([(detect(r), r) for r in recs if detect(r)])
                 return self._send(200, {"ok": True, "accepted": n, "received": len(recs)})
+            # ---- outcome grades: state what happened instead of leaving it to inference.
+            # Needs `ingest`, like feedback: whoever writes telemetry may say how a task ended.
+            if p == "/api/outcomes" or (p.startswith("/api/tasks/") and p.endswith("/outcome")):
+                if not self._require("ingest"):
+                    return
+                body = json.loads(self._body() or b"{}")
+                if p == "/api/outcomes":
+                    items = body if isinstance(body, list) else body.get("grades", [])
+                else:
+                    items = [dict(body, task_id=unquote(p[len("/api/tasks/"):-len("/outcome")]))]
+                who, graded, cleared = self._key_name(), 0, 0
+                for it in items:
+                    if it.get("outcome") is None:          # null clears: back to feedback, then inference
+                        cleared += e.ungrade(it["task_id"])
+                    else:
+                        e.grade(it["task_id"], it["outcome"], it.get("reason"), who)
+                        graded += 1
+                e.refresh()                                  # one re-finalize for the whole request
+                return self._send(200, {"ok": True, "graded": graded, "cleared": cleared})
             # ---- operations
             if p == "/api/refresh":
                 if not self._require("read"):

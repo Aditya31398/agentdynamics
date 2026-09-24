@@ -101,7 +101,8 @@ deploy/               Dockerfile companion: compose, OTel Collector config, exam
 
 1. **Scale.** Each refresh rewrites the whole `tasks` table and `finalize()` runs over every run in memory. Fine
    to about 100k tasks. The fix is incremental finalize plus a Postgres/ClickHouse backend behind `store.py`.
-2. **Outcomes are inferred** from signals (errors, interrupts, corrections, feedback), not graded.
+2. **Most outcomes are still inferred.** They *can* be graded now (`agentdynamics.outcome`, `/api/outcomes`)
+   and every task says which (`outcome_source`), but nothing grades them automatically.
 3. **Coding-task typing is keyword rules.** Traced apps use the entry-point name instead.
 4. **`server.py` and `web/app.js` are large single files.** Split by feature before adding much more.
 5. **UI tests are smoke-level.** `tests/test_console_ui.py` renders every page in headless Chrome and

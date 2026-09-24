@@ -215,6 +215,10 @@ class trace:
         """Attach a user/eval score (0..1) to this task."""
         self.run.feedback.append({"key": key, "score": score})
 
+    def outcome(self, result, reason=None):
+        """State how this task ended. See agentdynamics.outcome."""
+        _record_outcome(self.run, result, reason)
+
     # decorator
     def __call__(self, *args, **kwargs):
         if self._fn is None:  # used as @trace("name")
@@ -400,6 +404,38 @@ class llm_call:
         _record_llm(self.model, u["it"], u["ot"], u["cr"], u["cw"], u["stop"], self.t0, time.time(), u["text"], ev,
                     provider=self.provider, handles=self.h)
         return False
+
+
+OUTCOMES = ("completed", "failed", "rework", "interrupted")
+
+
+def _record_outcome(run, result, reason):
+    if result not in OUTCOMES:
+        # telemetry never breaks the agent: a typo is a warning, not an exception in their code path
+        _warn(f"outcome:{result!r}", f"outcome({result!r}) ignored: must be one of {', '.join(OUTCOMES)}")
+        return
+    run.add({"kind": "notice", "name": "outcome", "outcome": result, "ts": time.time(),
+             "text": _clip(str(reason), 500) if reason is not None else None})
+
+
+def outcome(result, reason=None):
+    """State how the current task ended, instead of leaving it to inference.
+
+        @agentdynamics.trace
+        def handle(ticket):
+            ...
+            if not resolved:
+                agentdynamics.outcome("failed", reason="customer escalated")
+
+    `result` is completed | failed | rework | interrupted. The last call in a task wins, and it
+    overrides both inference and recorded feedback; only a grade set later through the API ranks
+    above it. Outside a traced task there is nothing to grade, so it warns once and does nothing.
+    """
+    run = _current.get()
+    if run is None:
+        _warn("outcome:no-run", "agentdynamics.outcome() called outside a traced task; ignored")
+        return
+    _record_outcome(run, result, reason)
 
 
 def record_llm(model, input_tokens=0, output_tokens=0, cache_read=0, cache_write=0, stop_reason=None,

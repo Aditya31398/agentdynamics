@@ -219,6 +219,8 @@ class ConsoleUITest(unittest.TestCase):
         self.assertIn("support_flow", txt)          # the workflow reached the task-type table
         # 1200 + 300 + 400 + 120 tokens across the two model calls
         self.assertIn("2.0k tokens processed", txt)
+        # nothing in the fixture is graded, and the success rate has to say so (#1)
+        self.assertIn("all inferred from signals", txt)
         self.assertIn("claude-sonnet-5", self.text(self.render("models")))
 
     def test_governance_grants_used_never_exceeds_granted(self):

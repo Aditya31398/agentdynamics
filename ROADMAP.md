@@ -12,7 +12,7 @@ fixes one, it says so.
 Everything here is about the gap between *recorded* and *true*. The tool already shows a number
 for each of these; the work is making that number defensible to someone who will act on it.
 
-- [ ] [#1](https://github.com/Aditya31398/agentdynamics/issues/1) **Grade outcomes instead of inferring them** (weak area 2). `outcome` is derived from
+- [x] [#1](https://github.com/Aditya31398/agentdynamics/issues/1) **Grade outcomes instead of inferring them** (weak area 2). `outcome` is derived from
       signals — errors, interrupts, corrections, feedback. That is a guess, and the Apdex, success
       rate and process score all inherit it. Add an explicit outcome API (`agentdynamics.outcome()`
       / a `/api/tasks/{id}/outcome` PATCH), let recorded feedback override inference, and mark

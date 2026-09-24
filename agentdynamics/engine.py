@@ -60,6 +60,10 @@ class Engine:
         # health has to be judged on the failures too, not just on a timestamp existing.
         self.last_refresh_error = None
         self.failed_refreshes = 0
+        # A grade changes no run, so without this a new grade would sit unapplied until unrelated
+        # traffic happened to dirty something. force=True would also work, but it throws away every
+        # cache and re-parses every source to re-settle outcomes that only need re-finalizing.
+        self._regrade = False
         self.stats = {"spans_ingested": 0, "refreshes": 0, "alerts_sent": 0}
         self.sources = {}
         if claude_root:
@@ -119,6 +123,22 @@ class Engine:
                     self._wake.set()
                     time.sleep(interval)
             threading.Thread(target=loop, daemon=True, name=f"src-{name}").start()
+
+    # ------------------------------------------------------------------ outcome grades
+    def grade(self, task_id, outcome, reason=None, graded_by=None):
+        """State a task's outcome, overriding inference. Durable: survives schema rebuilds."""
+        with self.lock:
+            store.set_grade(self.con, task_id, outcome, reason, graded_by)
+            self._regrade = True
+        self._wake.set()
+
+    def ungrade(self, task_id):
+        """Drop a stated outcome; the task falls back to feedback, then to inference."""
+        with self.lock:
+            n = store.delete_grade(self.con, task_id)
+            self._regrade = True
+        self._wake.set()
+        return n
 
     # ------------------------------------------------------------------ push ingestion
     def ingest_spans(self, spans_, source, count_source=True):
@@ -318,8 +338,9 @@ class Engine:
                         removed.append(rid)
                         dirty.pop(rid, None)
             dirty = {k: v for k, v in dirty.items() if v["steps"]}
-            if not dirty and not removed and not force and not self._first:
+            if not dirty and not removed and not force and not self._first and not self._regrade:
                 return False
+            self._regrade = False
             for rid in removed:
                 self._runs.pop(rid, None)
                 self._tasks.pop(rid, None)
@@ -330,7 +351,8 @@ class Engine:
                 self._runs[rid] = run
                 self._tasks[rid] = analysis.run_tasks(run)
             runs = list(self._runs.values())
-            tasks, baselines, events = analysis.finalize(runs, self._tasks, self.rules())
+            tasks, baselines, events = analysis.finalize(runs, self._tasks, self.rules(),
+                                                         grades=store.get_grades(self.con))
             insights = analysis.process_insights(tasks)
             meta = {"refreshed": time.time(), "runs": len(runs), "tasks": len(tasks), "insights": insights}
             store.write_runs(self.con, list(dirty.values()), removed, self.redactor)

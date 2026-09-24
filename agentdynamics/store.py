@@ -1,7 +1,8 @@
 """SQLite storage (WAL mode).
 
 Two kinds of tables:
-  * durable  - spans_raw (pushed/pulled telemetry), source_state, alerts_sent. These are a system of record.
+  * durable  - spans_raw (pushed/pulled telemetry), source_state, alerts_sent, grades. These are a system of
+               record. grades holds outcomes stated after the fact, so it must survive a schema change.
   * derived  - runs, steps, tasks, events, baselines, meta. Rebuildable from sources; dropped on schema change.
 
 The storage layer is intentionally thin so it can be swapped for Postgres/ClickHouse at larger scale.
@@ -10,7 +11,7 @@ import json
 import sqlite3
 import time
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6   # 6: outcome_source / outcome_reason on tasks (graded outcomes)
 
 RUN_COLS = ["id", "source", "project", "environment", "framework", "workflow", "cwd", "title", "agent_name", "parent_id",
             "parent_task_id", "is_subagent", "thread_id", "user_id", "tags", "root_status", "complete", "version", "git_branch",
@@ -23,6 +24,8 @@ TASK_COLS = ["id", "run_id", "idx", "project", "environment", "source", "framewo
              "duplicate_calls", "max_error_streak", "large_outputs", "explore_ratio", "steps_to_first_edit", "code_changed",
              "verified", "unverified_edits", "waste_cost", "final_stop", "final_text", "ended_on_error", "next_prompt", "rework",
              "outcome", "cost_vs_baseline", "duration_vs_baseline", "score", "apdex",
+             # how the outcome was decided: graded (stated), feedback (a recorded score), or inferred
+             "outcome_source", "outcome_reason",
              # agent-flow metrics
              "steps_total", "llm_errors", "truncations", "refusals", "rate_limited", "ttft_ms", "out_tps", "retrievals",
              "empty_retrievals", "nodes", "max_node_visits", "loop_node", "handoffs", "pingpong", "hitl", "feedback_score",
@@ -59,6 +62,7 @@ CREATE INDEX IF NOT EXISTS spans_trace ON spans_raw(source, trace_id);
 CREATE INDEX IF NOT EXISTS spans_updated ON spans_raw(updated);
 CREATE TABLE IF NOT EXISTS source_state (name PRIMARY KEY, data);
 CREATE TABLE IF NOT EXISTS alerts_sent (event_id PRIMARY KEY, ts REAL);
+CREATE TABLE IF NOT EXISTS grades (task_id PRIMARY KEY, outcome, reason, graded_by, ts REAL);
 """
 
 
@@ -212,6 +216,30 @@ def get_state(con, name):
 def set_state(con, name, data):
     with con:
         con.execute("INSERT OR REPLACE INTO source_state (name, data) VALUES (?, ?)", (name, json.dumps(data)))
+
+
+# ---------------------------------------------------------------- durable outcome grades
+
+OUTCOMES = ("completed", "failed", "rework", "interrupted")
+
+
+def set_grade(con, task_id, outcome, reason=None, graded_by=None):
+    """State a task's outcome. Keyed by task id, so it may arrive before the task is ingested and
+    applies when it does (ingestion is order-independent). Re-grading replaces."""
+    if outcome not in OUTCOMES:
+        raise ValueError(f"outcome must be one of {', '.join(OUTCOMES)}")
+    with con:
+        con.execute("INSERT OR REPLACE INTO grades (task_id, outcome, reason, graded_by, ts) VALUES (?, ?, ?, ?, ?)",
+                    (task_id, outcome, (reason or None) and str(reason)[:500], graded_by, time.time()))
+
+
+def delete_grade(con, task_id):
+    with con:
+        return con.execute("DELETE FROM grades WHERE task_id=?", (task_id,)).rowcount
+
+
+def get_grades(con):
+    return {r["task_id"]: dict(r) for r in con.execute("SELECT * FROM grades").fetchall()}
 
 
 def rows(con, q, args=()):

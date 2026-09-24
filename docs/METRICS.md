@@ -3,7 +3,13 @@
 These metrics were chosen because each one maps to a decision someone can act on. Everything marked ✅ is computed today for every source that carries the data.
 
 **Outcome & quality: did the agent do the job?**
-- ✅ Task success, failure and rework rates. Rework is inferred when the user interrupts, sends a correcting follow-up in the same thread ("still not working"), or leaves negative feedback.
+- ✅ Task success, failure and rework rates. Each outcome records **how it was decided** (`outcome_source`), strongest evidence first:
+  1. **graded** after the fact: `POST /api/tasks/{id}/outcome`, or `POST /api/outcomes` with a list for eval pipelines (needs the `ingest` role; `"outcome": null` clears);
+  2. **graded** in the run: `agentdynamics.outcome("failed", reason=...)` inside a traced task (the last call wins);
+  3. **feedback**: a recorded score of 0.5 or more is `completed`, below is `rework`;
+  4. **inferred** from signals, when nothing states it: an error ends a run as `failed`, an interrupt as `interrupted`, a correcting follow-up in the same thread ("still not working") as `rework`.
+
+  The Overview shows how much of the success rate is stated and how much is guessed, and a task shows who graded it and why. Grades live in a durable table: they survive schema upgrades, and a grade may arrive before its task and applies when the task does.
 - ✅ First-time-right rate, Agent Apdex and user feedback score (from LangSmith/Langfuse feedback and scores).
 - ✅ Verification rate for coding agents: after the last code edit, did the agent run tests, a build or the app?
 

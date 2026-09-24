@@ -130,6 +130,18 @@
   const head = (title, desc, right = "") => `<div class="page-head"><div><h1>${title}</h1>${desc ? `<p>${desc}</p>` : ""}</div><div class="row">${right}</div></div>`;
   const kpi = (label, value, hint = "", extra = "") => `<div class="kpi"><div class="label">${label}${extra}</div><div class="value">${value}</div>${hint ? `<div class="hint">${hint}</div>` : ""}</div>`;
   const card = (title, body, sub = "", cls = "") => `<div class="card ${cls}"><div class="card-head"><h2>${title}</h2><span class="sub">${sub}</span></div>${body}</div>`;
+  const sourceMark = (t, long) => {
+    const src = t.outcome_source || "inferred";
+    const why = t.outcome_reason ? ` — ${t.outcome_reason}` : "";
+    if (src === "inferred") return long ? `<span class="tag" title="Inferred from errors, interrupts and corrections. Grade it with agentdynamics.outcome() or POST /api/tasks/{id}/outcome.">inferred</span>` : "";
+    return `<span class="tag" title="${esc(src + why)}">${src === "graded" ? "graded" : "rated"}${long && t.outcome_reason ? `: ${esc(t.outcome_reason)}` : ""}</span>`;
+  };
+  // "Completed cleanly 88%" means little if most of it is guessed; say how much was stated.
+  const evidence = (by, n) => {
+    if (!by || !n) return "";
+    const stated = (by.graded || 0) + (by.feedback || 0);
+    return stated ? `<br>${pct(stated / n)} graded or rated, ${pct((by.inferred || 0) / n)} inferred` : "<br>all inferred from signals";
+  };
   const healthOfApdex = (a) => a == null ? "unknown" : a >= 0.85 ? "normal" : a >= 0.7 ? "warning" : "critical";
 
   function taskTable(tasks, opts = {}) {
@@ -140,7 +152,7 @@
         <td class="muted small" style="white-space:nowrap">${dt(t.started)}</td>
         <td><div class="truncate" title="${esc(t.prompt)}">${t.is_subagent ? `<span class="tag">subagent</span>` : ""}${esc(t.prompt) || `<span class="muted">(no prompt)</span>`}</div><div class="small muted">${esc(t.project)}</div></td>
         <td><span class="tag">${esc(t.task_type)}</span></td>
-        <td>${pill(t.outcome)}</td><td>${pill(t.apdex)}</td>
+        <td>${pill(t.outcome)}${sourceMark(t)}</td><td>${pill(t.apdex)}</td>
         <td class="num" style="color:${scoreColor(t.score)};font-weight:600">${t.score == null ? "–" : Math.round(t.score)}</td>
         <td class="num">${usd(t.cost + (t.subagent_cost || 0))}${t.subagent_cost ? `<div class="small muted">${usd(t.subagent_cost)} sub</div>` : ""}</td>
         <td class="num" style="color:${t.cost_vs_baseline > 3 ? "var(--critical-text)" : "inherit"}">${t.cost_vs_baseline == null ? "–" : t.cost_vs_baseline.toFixed(1) + "×"}</td>
@@ -171,7 +183,7 @@
         ${kpi("Tasks", num(k.tasks), `${k.sessions} sessions`)}
         ${kpi("Spend", usd(k.cost), `median ${usd(k.median_cost)} / task`)}
         ${kpi("Agent Apdex", k.apdex == null ? "–" : k.apdex.toFixed(2), "satisfied + ½ tolerating", " " + pill(healthOfApdex(k.apdex)))}
-        ${kpi("Completed cleanly", pct(k.success_rate), `${pct(k.rework_rate)} interrupted or corrected`)}
+        ${kpi("Completed cleanly", pct(k.success_rate), `${pct(k.rework_rate)} interrupted or corrected${evidence(k.outcomes_by_source, k.tasks)}`)}
         ${kpi("Tool error rate", pct(k.tool_error_rate, 1), `${num(k.tool_calls)} tool calls`)}
         ${kpi("Verified code changes", pct(k.verification_rate), "tests/build/run after last edit")}
         ${kpi("Avoidable spend", usd(k.waste_cost), "duplicate calls, redundant reads, error loops")}
@@ -380,7 +392,7 @@
     host.innerHTML = `<div class="between" style="margin-bottom:12px"><div class="small muted"><a href="#/tasks">Tasks</a> / <a href="#/tasks?run=${encodeURIComponent(t.run_id)}">${esc(d.run?.title || t.run_id.slice(0, 12))}</a> / task ${nav.pos} of ${nav.count}</div>
       <div class="row">${nav.prev ? `<a class="btn" href="#/task/${encodeURIComponent(nav.prev)}">← Previous</a>` : ""}${nav.next ? `<a class="btn" href="#/task/${encodeURIComponent(nav.next)}">Next →</a>` : ""}
       <a class="btn" href="#/flow?task=${encodeURIComponent(t.id)}">Flow map</a></div></div>` +
-      `<div class="card" style="margin-bottom:14px"><div class="row" style="margin-bottom:8px"><span class="tag">${esc(t.task_type)}</span>${t.framework && t.framework !== "claude-code" ? `<span class="tag">${esc(t.framework)}</span>` : ""}${t.environment && t.environment !== "default" ? `<span class="tag">env: ${esc(t.environment)}</span>` : ""}${t.policy_version ? `<span class="tag">🛡 ${esc(t.policy_version)}</span>` : ""}${t.policy_denials ? `<span class="tag bad">${t.policy_denials} denied</span>` : ""}${t.revocations ? `<span class="tag bad">revoked</span>` : ""}${pill(t.outcome)}${pill(t.apdex)}${t.is_subagent ? `<span class="tag">subagent</span>` : ""}
+      `<div class="card" style="margin-bottom:14px"><div class="row" style="margin-bottom:8px"><span class="tag">${esc(t.task_type)}</span>${t.framework && t.framework !== "claude-code" ? `<span class="tag">${esc(t.framework)}</span>` : ""}${t.environment && t.environment !== "default" ? `<span class="tag">env: ${esc(t.environment)}</span>` : ""}${t.policy_version ? `<span class="tag">🛡 ${esc(t.policy_version)}</span>` : ""}${t.policy_denials ? `<span class="tag bad">${t.policy_denials} denied</span>` : ""}${t.revocations ? `<span class="tag bad">revoked</span>` : ""}${pill(t.outcome)}${sourceMark(t, true)}${pill(t.apdex)}${t.is_subagent ? `<span class="tag">subagent</span>` : ""}
         <span class="small muted">${dt(t.started)} · ${esc(t.project)} · ${esc(t.models)}</span></div>
         <div class="prompt-box">${esc(t.prompt) || "<span class='muted'>(no prompt)</span>"}</div></div>` +
       `<div class="kpis">

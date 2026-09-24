@@ -38,8 +38,14 @@ def handle_ticket(question):
         plan = client.messages.create(...)
     with agentdynamics.span("act"):
         lookup_order(order_id)           # decorate tools with @agentdynamics.tool
+    if escalated:
+        agentdynamics.outcome("failed", reason="customer escalated")   # state it, don't let it be guessed
     ...
 ```
+
+Without `outcome()`, success is inferred from errors, interrupts and follow-ups. The console always shows
+which outcomes were stated and which were guessed; grades can also be posted afterwards by a person or an
+eval pipeline (`POST /api/outcomes`).
 
 ### 2. Python, zero code changes
 

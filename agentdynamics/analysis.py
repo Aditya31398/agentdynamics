@@ -301,6 +301,9 @@ def governance_metrics(t, run, steps, tools):
     t["repeated_denials"] = best
 
 
+OUTCOMES = ("completed", "failed", "rework", "interrupted")   # what a grade may state (store.OUTCOMES)
+FEEDBACK_PASS = 0.5                                             # a feedback score at or above this is a pass
+
 TRUNCATION = {"max_tokens", "length", "max_output_tokens", "MAX_TOKENS"}
 REFUSAL = {"refusal", "content_filter", "SAFETY", "safety", "blocked"}
 RATE_HINTS = ("429", "rate limit", "rate_limit", "overloaded", "529", "too many requests", "quota")
@@ -314,6 +317,10 @@ def flow_metrics(t, run, steps, llm, tools):
     t["framework"] = run.get("framework") or run.get("source")
     t["workflow"] = run.get("workflow") or (t["task_type"] if run.get("source") == "claude-code" else None)
     t["steps_total"] = len(llm) + len(tools)
+    # agentdynamics.outcome() records a notice; the last one in the task wins. Kept on a transient
+    # key -- finalize decides precedence, and write_analysis persists only TASK_COLS.
+    graded = [s for s in notices if s.get("name") == "outcome" and s.get("outcome") in OUTCOMES]
+    t["_sdk_grade"] = {"outcome": graded[-1]["outcome"], "reason": graded[-1].get("text")} if graded else None
     t["llm_errors"] = sum(1 for s in llm if s.get("is_error"))
     t["truncations"] = sum(1 for s in llm if s.get("stop_reason") in TRUNCATION)
     t["refusals"] = sum(1 for s in llm if s.get("stop_reason") in REFUSAL)
@@ -573,7 +580,34 @@ def _outcome_trace(t, run, now):
     t["root_error"] = run.get("root_error")
 
 
-def finalize(runs, tasks_by_run, rules=None, now=None):
+def _apply_grades(tasks, grades):
+    """Settle each outcome by the strongest evidence available, and record which one it was.
+
+    stated after the fact (API)  >  stated in the run (agentdynamics.outcome)  >  recorded feedback
+    >  inference from signals.
+
+    Inference is a guess built from errors, interrupts and corrections. Apdex, success rate and the
+    process score all inherit it, so anything that states the outcome outright must win, and the
+    console has to be able to say how much of a success rate is guessed. Idempotent: the cached
+    per-run tasks are re-finalized on every refresh, so nothing here may consume its input.
+    """
+    for t in tasks:
+        api, sdk = grades.get(t["id"]), t.get("_sdk_grade")
+        if api:
+            t["outcome"], t["outcome_source"] = api["outcome"], "graded"
+            t["outcome_reason"] = api.get("reason") or f"graded by {api.get('graded_by') or 'api'}"
+        elif sdk:
+            t["outcome"], t["outcome_source"] = sdk["outcome"], "graded"
+            t["outcome_reason"] = sdk.get("reason") or "graded in the run"
+        elif t.get("feedback_score") is not None:
+            ok = t["feedback_score"] >= FEEDBACK_PASS
+            t["outcome"] = "completed" if ok else "rework"
+            t["outcome_source"], t["outcome_reason"] = "feedback", f"feedback score {t['feedback_score']:g}"
+        else:
+            t["outcome_source"], t["outcome_reason"] = "inferred", None
+
+
+def finalize(runs, tasks_by_run, rules=None, now=None, grades=None):
     """Cross-run analysis: outcomes, subagent roll-up, baselines, scores, events."""
     rules = rules or DEFAULT_RULES
     now = now or time.time()
@@ -599,6 +633,8 @@ def finalize(runs, tasks_by_run, rules=None, now=None):
         if not (run["source"] == "claude-code" or not run.get("workflow")):
             for t in tasks_by_run[run["id"]]:
                 _outcome_trace(t, run, now)
+    # before the roll-up, so baselines, scores and health events all see the settled outcome
+    _apply_grades(all_tasks, grades or {})
 
     # subagent roll-up: link child runs to the parent task that spawned them
     task_by_id = {t["id"]: t for t in all_tasks}

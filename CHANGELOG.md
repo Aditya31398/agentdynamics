@@ -8,6 +8,21 @@ bumps the minor version.
 
 ## [Unreleased]
 
+### Added
+- **Graded outcomes** (#1). An outcome can now be stated instead of inferred: `agentdynamics.outcome()`
+  (and `trace(...).outcome()`) inside a run, `POST /api/tasks/{id}/outcome` after the fact, or
+  `POST /api/outcomes` in bulk for eval pipelines. Every task records `outcome_source` (`graded`,
+  `feedback` or `inferred`) and `outcome_reason`, the Overview says how much of the success rate is
+  graded versus guessed, and `kpis.outcomes_by_source` carries the counts. Grades are durable: they
+  survive schema upgrades, and a grade that arrives before its task applies when the task does.
+
+### Changed
+- **Recorded feedback now settles the outcome** rather than being one signal among several. A score
+  of 0.5 or more makes a task `completed` even if the run ended in an error; below 0.5 makes it
+  `rework`. Success rate, failed-run rate and Apdex can shift for existing data on upgrade: on the
+  demo dataset, failed runs moved from 16.0% to 13.8% and Apdex from 0.69 to 0.72.
+- `SCHEMA_VERSION` 6. Derived tables rebuild from sources on first start; nothing needs migrating.
+
 ## [0.4.1] - 2026-09-24
 
 Governance fixes found by running a governed agent against the published packages. Two of them
