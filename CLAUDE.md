@@ -22,7 +22,7 @@ APM for AI agents. Telemetry from many sources is normalized into one run/step m
 ```bash
 pip install -e ".[test,toml]"
 pip install "aegis-kernel>=0.4.0"           # for the governance tests
-python -m unittest discover tests -v        # 32 tests; 4 skip without the optional ecosystem/live libs
+python -m unittest discover tests -v        # 4 skip without the optional ecosystem/live libs; UI tests need Chrome/Edge
 ruff check agentdynamics tests examples --select F,E9
 
 # latest-ecosystem run (what the `ecosystem` CI job does):
@@ -68,6 +68,11 @@ AGENTDYNAMICS_URL=http://127.0.0.1:8790 python examples/governed_agent.py 45   #
 - **Verify in the demo console.** Several real bugs (watchdog payload variation, the Aegis audit-file bug) only
   appeared when the demo traffic was viewed as a user would see it.
 - Tests that set `os.environ` must restore it (`addCleanup`); later tests spawn subprocesses that inherit it.
+- **Check that a new test can fail.** Reintroduce the bug and watch it go red before trusting it green.
+  The first version of the grants-used UI test passed against the broken code.
+- UI tests run `agentdynamics serve` as a subprocess. On a thread inside the test process the page
+  raced Chrome's DOM dump and was captured mid-boot, intermittently. Fixture timestamps must be
+  recent: the console defaults to the last 30 days, and an empty window looks like a failed load.
 - Optional-dependency checks: `importlib.util.find_spec("a.b")` raises when `a` is missing. Use the `has()`
   helper in `test_ecosystem.py`.
 - Prices come from `pricing.py` (list prices) plus `<data>/pricing.json`. Unknown models are reported as
@@ -87,7 +92,7 @@ agentdynamics/
   store.py            SQLite (WAL); durable vs derived tables
   server.py           API + receivers (/v1/traces, /langsmith/*, /api/ingest*) + auth roles
   web/                index.html, app.js (all pages), charts.js, style.css
-tests/                test_core, test_integrations, test_autotrace, test_aegis_integration, test_ecosystem, test_live_anthropic
+tests/                test_core, test_integrations, test_autotrace, test_aegis_integration, test_ecosystem, test_live_anthropic, test_console_ui
 examples/             langgraph_style_app, otel_multiagent, governed_agent, demo_agent
 deploy/               Dockerfile companion: compose, OTel Collector config, example TOML
 ```
@@ -99,7 +104,8 @@ deploy/               Dockerfile companion: compose, OTel Collector config, exam
 2. **Outcomes are inferred** from signals (errors, interrupts, corrections, feedback), not graded.
 3. **Coding-task typing is keyword rules.** Traced apps use the entry-point name instead.
 4. **`server.py` and `web/app.js` are large single files.** Split by feature before adding much more.
-5. **No UI tests.** Pages are checked by hand or by ad-hoc browser scripts.
+5. **UI tests are smoke-level.** `tests/test_console_ui.py` renders every page in headless Chrome and
+   checks headings plus the governance table cells. It does not click, filter or navigate.
 6. **Watchdog enforcement is in-process only.** Server-side events can alert but not revoke.
 7. **Input-token accounting with cache reads** assumes providers that report `input_tokens` inclusive of
    cache hits when `input >= cache_read` (see `collectors/spans.py`).

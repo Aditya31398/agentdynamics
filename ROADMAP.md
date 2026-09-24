@@ -12,17 +12,17 @@ fixes one, it says so.
 Everything here is about the gap between *recorded* and *true*. The tool already shows a number
 for each of these; the work is making that number defensible to someone who will act on it.
 
-- [ ] **Grade outcomes instead of inferring them** (weak area 2). `outcome` is derived from
+- [ ] [#1](https://github.com/Aditya31398/agentdynamics/issues/1) **Grade outcomes instead of inferring them** (weak area 2). `outcome` is derived from
       signals — errors, interrupts, corrections, feedback. That is a guess, and the Apdex, success
       rate and process score all inherit it. Add an explicit outcome API (`agentdynamics.outcome()`
       / a `/api/tasks/{id}/outcome` PATCH), let recorded feedback override inference, and mark
       which tasks are graded versus guessed so the console can show both.
-- [ ] **Input-token accounting with cache reads** (weak area 7). `collectors/spans.py` assumes a
+- [ ] [#2](https://github.com/Aditya31398/agentdynamics/issues/2) **Input-token accounting with cache reads** (weak area 7). `collectors/spans.py` assumes a
       provider reports `input_tokens` inclusive of cache hits when `input >= cache_read`. That
       heuristic is the only thing standing between the cost column and quiet double counting.
       Pin it per provider, and report *unknown* rather than guessing when the shape is unfamiliar
       — the same rule `pricing.py` already follows for unpriced models.
-- [ ] **Policy coverage report.** `govern.replay` (0.4.1) answers "would this candidate deny
+- [ ] [#3](https://github.com/Aditya31398/agentdynamics/issues/3) **Policy coverage report.** `govern.replay` (0.4.1) answers "would this candidate deny
       anything it has seen?". Extend it to report *how much* traffic each tool and argument
       constraint would deny, so a tightening can be judged before deploying rather than only
       rejected when it is obviously broken. This is the check neither `aegis ratify` nor
@@ -30,32 +30,32 @@ for each of these; the work is making that number defensible to someone who will
 - [ ] **Task typing beyond keywords** (weak area 3). Coding-task classification is keyword rules;
       traced apps already bypass it via the entry-point name. Prefer explicit workflow names, fall
       back to keywords, and say which one produced the label.
-- [ ] **UI tests** (weak area 5). Pages are checked by hand. A headless pass that loads each page
+- [x] [#4](https://github.com/Aditya31398/agentdynamics/issues/4) **UI tests** (weak area 5). Pages are checked by hand. A headless pass that loads each page
       against a fixture dataset and asserts the tables render with the expected columns would have
       caught the "6 of 5" grants count, which shipped in 0.4.0 and was found by a person looking
       at the screen.
 
 ## Phase 3 — hold up under real volume
 
-- [ ] **Incremental finalize** (weak area 1, the big one). Each refresh rewrites the whole `tasks`
+- [ ] [#5](https://github.com/Aditya31398/agentdynamics/issues/5) **Incremental finalize** (weak area 1, the big one). Each refresh rewrites the whole `tasks`
       table and `finalize()` runs over every run in memory. That is fine to roughly 100k tasks and
       then it is not. Recompute only dirty runs and the baselines they touch.
-- [ ] **A store backend behind `store.py`.** SQLite is right for a laptop and wrong for a fleet.
+- [ ] [#7](https://github.com/Aditya31398/agentdynamics/issues/7) **A store backend behind `store.py`.** SQLite is right for a laptop and wrong for a fleet.
       The interface is already narrow; the work is keeping `SCHEMA_VERSION` semantics (derived
       tables drop and rebuild) while a Postgres or ClickHouse backend holds the same model.
 - [ ] **Downsampling and rollups.** Retention currently purges. Keep daily aggregates past the
       raw-span horizon so a quarter-old cost trend survives without the spans behind it.
-- [ ] **A benchmark with a number in it.** "Fine to about 100k tasks" is an estimate, not a
+- [ ] [#6](https://github.com/Aditya31398/agentdynamics/issues/6) **A benchmark with a number in it.** "Fine to about 100k tasks" is an estimate, not a
       measurement. Generate a corpus, publish ingest and refresh timings per size, and make the
       nightly job fail when a change regresses them.
 
 ## Phase 4 — more than one person using it
 
-- [ ] **Server-side enforcement** (weak area 6). The watchdog revokes in-process; a server that
+- [ ] [#8](https://github.com/Aditya31398/agentdynamics/issues/8) **Server-side enforcement** (weak area 6). The watchdog revokes in-process; a server that
       sees the same probing across runs can alert but cannot stop anything. Out-of-process
       revocation needs a channel back to the kernel — the honest version of this is an Aegis-side
       feature, not something AgentDynamics can bolt on.
-- [ ] **Split `server.py` and `web/app.js`** (weak area 4). Both are large single files. This
+- [ ] [#9](https://github.com/Aditya31398/agentdynamics/issues/9) **Split `server.py` and `web/app.js`** (weak area 4). Both are large single files. This
       unblocks the two items above it more than it stands on its own.
 - [ ] **Teams and projects.** API-key roles (ingest / read / admin) are the whole authorization
       model. Multi-tenant use needs project scoping on keys at minimum.
