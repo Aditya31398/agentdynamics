@@ -1,6 +1,6 @@
 """A customer-support agent governed by Aegis and observed by AgentDynamics.
 
-    pip install aegis-guard
+    pip install aegis-kernel
     agentdynamics serve                      # in another terminal
     python examples/governed_agent.py 40
 

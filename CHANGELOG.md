@@ -13,7 +13,7 @@ bumps the minor version.
 First public release.
 
 ### Added
-- **Governance with Aegis** (`agentdynamics.integrations.aegis.instrument`). Aegis decisions become steps in
+- **Governance with Aegis** (`pip install aegis-kernel`; `agentdynamics.integrations.aegis.instrument`). Aegis decisions become steps in
   their task. Model calls reserve and settle against the Aegis budget, so an exhausted budget blocks the call.
   A `Watchdog` revokes the grant when one tool is refused N times in a row, on loops, and on cost or call caps.
   `agentdynamics policy export|report` and the Governance page generate a tightened, least-privilege policy from

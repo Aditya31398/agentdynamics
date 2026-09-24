@@ -21,7 +21,7 @@ APM for AI agents. Telemetry from many sources is normalized into one run/step m
 
 ```bash
 pip install -e ".[test,toml]"
-pip install "aegis-guard @ git+https://github.com/Aditya31398/aegis.git@main"   # for the governance tests
+pip install "aegis-kernel>=0.4.0"           # for the governance tests
 python -m unittest discover tests -v        # 32 tests; 4 skip without the optional ecosystem/live libs
 ruff check agentdynamics tests examples --select F,E9
 

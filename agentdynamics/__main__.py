@@ -76,7 +76,7 @@ curl -X POST {url}/api/ingest -H 'Content-Type: application/json' -d '{{
     {{"kind": "llm", "ts": 1726700000, "end_ts": 1726700002, "model": "claude-sonnet-5",
      "input_tokens": 1200, "output_tokens": 300, "stop_reason": "end_turn"}}]}}'"""),
     "aegis": ("Agents governed by Aegis: every decision recorded, model spend gated, watchdog kill switch", """\
-pip install agentdynamics aegis-guard
+pip install agentdynamics aegis-kernel
 
 import agentdynamics
 from agentdynamics.integrations import aegis as governance
@@ -173,7 +173,7 @@ def cmd_policy(a, eng):
         try:
             from aegis import dump_policy, load_policy
         except ImportError:
-            print("--base needs aegis-guard: pip install aegis-guard", file=sys.stderr)
+            print("--base needs aegis-kernel: pip install aegis-kernel", file=sys.stderr)
             return 2
         q["base_doc"] = dump_policy(load_policy(a.base))
     if a.action == "report":
@@ -250,7 +250,7 @@ def main(argv=None):
     po.add_argument("--environment")
     po.add_argument("--days", type=float)
     po.add_argument("--policy", help="policy label as shown in the console (name@vN#digest)")
-    po.add_argument("--base", help="Aegis policy file to tighten (needs aegis-guard installed)")
+    po.add_argument("--base", help="Aegis policy file to tighten (needs aegis-kernel installed)")
     po.add_argument("--headroom", type=float, default=1.5)
     po.add_argument("--out", help="write the YAML here (default: stdout)")
     sub.add_parser("ingest", help="scan sources once and rebuild the database")

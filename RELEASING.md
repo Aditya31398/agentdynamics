@@ -43,7 +43,8 @@ makes every PyPI publish wait for a click, which is recommended.
 **Optional: live API smoke test.** Add an `ANTHROPIC_API_KEY` repository secret to enable the nightly
 `live` CI job (it spends a fraction of a cent per run). Without it the job skips.
 
-## Release order with Aegis
+## Aegis
 
-AgentDynamics' governance tests need Aegis ≥ 0.3.0 (`aegis.observe`, `Kernel.reserve_spend`). Release Aegis
-first, then switch the `aegis-guard @ git+...@main` lines in `ci.yml` / `release.yml` to `aegis-guard>=0.3.0`.
+The governance tests need `aegis.observe` and `Kernel.reserve_spend`, so `ci.yml` and `release.yml` install
+`aegis-kernel>=0.4.0` from PyPI. The distribution is **`aegis-kernel`** (the import name is still `aegis`);
+it was called `aegis-guard` before 0.4.0 and that name was never published, so nothing should reference it.

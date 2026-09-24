@@ -58,7 +58,7 @@ def registry():
     return r
 
 
-@unittest.skipUnless(HAS_AEGIS, "aegis-guard with observe/reserve_spend not installed")
+@unittest.skipUnless(HAS_AEGIS, "aegis-kernel with observe/reserve_spend not installed")
 class AegisIntegrationTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

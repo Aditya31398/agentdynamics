@@ -59,7 +59,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - run: pip install -e ".[test,toml]" && pip install "aegis-guard @ git+https://github.com/Aditya31398/aegis.git@main"
+      - run: pip install -e ".[test,toml]" && pip install "aegis-kernel>=0.4.0"
       - run: python -m unittest discover tests -v
 
   provenance:

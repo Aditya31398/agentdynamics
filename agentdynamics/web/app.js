@@ -823,7 +823,7 @@
     if (!k.governed_tasks) {
       host.innerHTML = head("Governance", "Policy enforcement from <b>Aegis</b>, seen from the agent's side: what was blocked, why, what it cost, and which grants are never used.") +
         `<div class="card"><h2>No governed runs yet</h2><p class="small muted">Wrap your Aegis kernel. Every decision is then recorded here, model spend is charged to the Aegis budget, and a watchdog can revoke misbehaving agents.</p>
-        <div class="code-block">pip install aegis-guard agentdynamics
+        <div class="code-block">pip install aegis-kernel agentdynamics
 
 import agentdynamics
 from agentdynamics.integrations import aegis as governance

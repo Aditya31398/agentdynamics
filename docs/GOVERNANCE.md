@@ -104,7 +104,7 @@ Runs already recorded in-process are not double-counted.
 ## Try it
 
 ```bash
-pip install aegis-guard
+pip install aegis-kernel
 agentdynamics serve &
 python examples/governed_agent.py 45     # normal tickets + prompt injection + runaway research + SQL escalation
 ```

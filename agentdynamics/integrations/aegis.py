@@ -43,7 +43,7 @@ def _require_aegis():
         import aegis  # noqa: F401
         return aegis
     except ImportError as ex:  # pragma: no cover
-        raise ImportError("pip install aegis-guard to use the Aegis integration") from ex
+        raise ImportError("pip install aegis-kernel to use the Aegis integration") from ex
 
 
 # ---------------------------------------------------------------- policy identity
