@@ -203,6 +203,43 @@ class AegisIntegrationTest(unittest.TestCase):
         self.assertTrue(any(d.kind == "narrowed" for d in deltas))
         self.assertTrue(any("unused grant 'db.query'" in c for c in res["changes"]))
 
+    def test_numeric_args_get_a_ceiling_not_a_list_of_seen_values(self):
+        """A synthesized policy must still allow the traffic it was built from.
+
+        `one_of` inferred from observed numbers denied every call, because the values were
+        written as strings and Aegis compares the raw value. `aegis ratify` and `aegis drift`
+        both pass on such a policy -- they compare declarations -- so only a replay catches it.
+        """
+        from agentdynamics.govern import replay, synthesize
+        base = {"name": "pay", "version": 1, "tools": {"allow": [
+            {"name": "payments.refund", "require_args": ["amount"],
+             "args": {"amount": {"max_value": 200}, "reason": {"one_of": ["damaged", "late"]}}}]}}
+        amounts = [18.0, 42.5, 76.4, 129.99, 18.0, 42.5]
+        steps = [{"kind": "tool", "name": "payments.refund", "denied": 0, "task_id": "t1",
+                  "args_json": json.dumps({"amount": a, "reason": "damaged"})} for a in amounts]
+        tasks = [{"cost": 0.01, "subagent_cost": 0, "total_tokens": 10, "wall_s": 1, "tool_calls": 1}]
+
+        doc, changes, _ = synthesize(base, tasks, steps)
+        amt = {e["name"]: e for e in doc["tools"]["allow"]}["payments.refund"]["args"]["amount"]
+        self.assertNotIn("one_of", amt, "a quantity must not become a list of the amounts seen")
+        self.assertLessEqual(amt["max_value"], 200)
+        self.assertGreaterEqual(amt["max_value"], max(amounts), "must still allow what it saw")
+        # a genuinely categorical argument keeps its enum
+        self.assertIn("one_of", {e["name"]: e for e in doc["tools"]["allow"]}["payments.refund"]["args"]["reason"])
+
+        self.assertEqual(replay(doc, steps), [], "the synthesized policy must allow its own traffic")
+
+        # and replay must actually detect the old, broken shape rather than always passing
+        broken = json.loads(json.dumps(doc))
+        broken["tools"]["allow"][0]["args"]["amount"] = {"one_of": [str(a) for a in sorted(set(amounts))]}
+        bad = replay(broken, steps)
+        self.assertTrue(bad)
+        self.assertEqual(bad[0]["rule"], "capability.arg_enum")
+
+    def test_export_reports_regressions(self):
+        res = self.api.export_policy({"project": "gov-app", "workflow": "support"})
+        self.assertEqual(res["regressions"], [], "the exported policy should allow observed traffic")
+
     def test_governance_console_api(self):
         g = self.api.governance({"project": "gov-app"})
         k = g["kpis"]

@@ -203,6 +203,17 @@ def cmd_policy(a, eng):
             print(f"  - {c}", file=sys.stderr)
     else:
         print(res["yaml"])
+    # Replaying the observed calls is the only check that catches a policy which is strictly
+    # narrower than its base, ratifies cleanly, and still refuses everything in production.
+    if res.get("regressions"):
+        print("", file=sys.stderr)
+        print(f"WARNING: this policy would deny {len(res['regressions'])} kind(s) of call that "
+              f"the observed traffic made successfully:", file=sys.stderr)
+        for r in res["regressions"][:10]:
+            print(f"  - {r['tool']}({r['arg']}={r['value']!r}) -> {r['rule']}", file=sys.stderr)
+        print("  Review before deploying; `aegis ratify` and `aegis drift` cannot see this.",
+              file=sys.stderr)
+        return 1
     return 0
 
 

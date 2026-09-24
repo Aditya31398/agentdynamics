@@ -44,9 +44,33 @@ def _looks_pathlike(values):
     return all(isinstance(v, str) and ("/" in v) for v in values)
 
 
-def _arg_constraints(name, values, base_c, n_calls, changes, tool):
+def _is_number(v):
+    # bool is an int; a flag is categorical, not a quantity.
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _numeric_constraints(name, values, c, changes, tool, headroom):
+    """A quantity gets a ceiling, never a list of the amounts we happened to see.
+
+    `one_of` on a number is wrong twice over: Aegis compares the raw value, so writing the
+    observed numbers as strings denies every call including the ones it was built from; and
+    even typed correctly it denies the next legitimate amount. `max_value` is the constraint
+    a number wants, and it cannot be widened past whatever the base policy already allowed.
+    """
+    cap = round(max(values) * headroom, 2)
+    base_cap = c.get("max_value")
+    if base_cap is not None and cap >= base_cap:
+        return c                                  # the base is already tighter; leave it alone
+    c["max_value"] = cap
+    changes.append(f"{tool}.{name}: max_value {base_cap} -> {cap} (largest observed {max(values)})")
+    return c
+
+
+def _arg_constraints(name, values, base_c, n_calls, changes, tool, headroom=1.5):
     """Tighten one argument's constraint from observed values."""
     c = dict(base_c or {})
+    if values and all(_is_number(v) for v in values):
+        return _numeric_constraints(name, values, c, changes, tool, headroom)
     strs = [v if isinstance(v, str) else json.dumps(v) for v in values]
     if not strs:
         return c
@@ -70,6 +94,46 @@ def _arg_constraints(name, values, base_c, n_calls, changes, tool):
         changes.append(f"{tool}.{name}: max_len {c.get('max_len')} -> {new_len} (longest observed {longest})")
         c["max_len"] = new_len
     return c
+
+
+def replay(policy_doc, steps):
+    """Would this candidate policy refuse calls that actually happened and were allowed?
+
+    A synthesized policy that refuses the traffic it was built from is broken, and neither
+    `aegis ratify` nor `aegis drift` can see it: both compare declarations, and a policy can be
+    strictly narrower than its base, perfectly constitutional, and still deny everything. Only
+    the recorded calls can answer this, which is why the check lives here and not in Aegis.
+
+    Returns a list of {tool, arg, value, rule} for calls the candidate would now deny, or None
+    when Aegis is not installed to evaluate the constraints.
+    """
+    try:
+        from aegis.policy import parse_policy
+    except ImportError:
+        return None
+    pol = parse_policy(copy.deepcopy(policy_doc), source="candidate")
+    denied, seen = [], set()
+    for s in steps:
+        if s.get("kind") != "tool" or s.get("denied") or s.get("name") in INTERNAL_TOOLS:
+            continue
+        rule = pol.tools.get(s["name"])
+        if rule is None:
+            continue                      # dropping an unused grant is the point, not a regression
+        try:
+            args = json.loads(s["args_json"]) if s.get("args_json") else {}
+        except ValueError:
+            continue
+        if not isinstance(args, dict):
+            continue
+        for arg, con in rule.args.items():
+            if arg not in args or args[arg] is None:
+                continue
+            bad = con.check(args[arg])
+            if bad and (s["name"], arg, bad) not in seen:
+                seen.add((s["name"], arg, bad))
+                denied.append({"tool": s["name"], "arg": arg, "value": args[arg],
+                               "rule": f"capability.arg_{bad}"})
+    return denied
 
 
 def synthesize(base_doc, tasks, steps, headroom=1.5, name=None):
@@ -113,7 +177,7 @@ def synthesize(base_doc, tasks, steps, headroom=1.5, name=None):
         args = dict(entry.get("args") or {})
         for a in arg_names:
             vals = [o[a] for o in observed if a in o and o[a] is not None]
-            args[a] = _arg_constraints(a, vals, args.get(a), len(observed), changes, tool)
+            args[a] = _arg_constraints(a, vals, args.get(a), len(observed), changes, tool, headroom)
         if args:
             entry["args"] = args
         always = sorted(a for a in arg_names if all(a in o for o in observed))

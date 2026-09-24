@@ -640,7 +640,7 @@ class Api:
 
     def export_policy(self, q):
         """Observe -> govern: a tightened policy for a workflow, derived from its governed runs."""
-        from .govern import render, synthesize
+        from .govern import render, replay, synthesize
         ts = self._governed(q)
         if q.get("policy"):
             ts = [t for t in ts if t["policy_version"] == q["policy"]]
@@ -654,8 +654,16 @@ class Api:
         doc, changes, stats = synthesize(base, [t for t in ts if not t["is_subagent"]], steps,
                                          headroom=float(q.get("headroom") or 1.5))
         scope = ", ".join(f"{k}={q[k]}" for k in ("project", "workflow", "environment", "days") if q.get(k))
-        return {"yaml": render(doc, changes, stats, f"Base: {label or 'none'}. Scope: {scope or 'all governed runs'}."),
-                "policy": doc, "changes": changes, "stats": stats, "base": label}
+        # A candidate that refuses the traffic it was built from ratifies and shows no drift, so
+        # nothing downstream would catch it. Check here, where the call history lives.
+        regressions = replay(doc, steps)
+        note = f"Base: {label or 'none'}. Scope: {scope or 'all governed runs'}."
+        if regressions:
+            note += (" WARNING: this policy would deny " + str(len(regressions)) +
+                     " kind(s) of call that were allowed in the observed traffic.")
+        return {"yaml": render(doc, changes, stats, note),
+                "policy": doc, "changes": changes, "stats": stats, "base": label,
+                "regressions": regressions or []}
 
     # ------------------------------------------------------------ enterprise endpoints
     def workflows(self, q):

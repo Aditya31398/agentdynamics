@@ -8,7 +8,18 @@ bumps the minor version.
 
 ## [Unreleased]
 
+### Added
+- `policy export` replays the observed traffic against the policy it just generated and refuses
+  to stay quiet about calls the candidate would now deny (`regressions` in the API, a warning and
+  a non-zero exit in the CLI). A synthesized policy can be strictly narrower than its base,
+  constitutional, free of drift, and still refuse everything; `aegis ratify` and `aegis drift`
+  compare declarations, so only the recorded calls can catch that.
+
 ### Fixed
+- `policy export` turned observed *numeric* arguments into a `one_of` list of those values,
+  written as strings. Aegis compares the raw value, so the generated policy denied every call
+  including the ones it was built from. Numbers now tighten `max_value` instead, which keeps the
+  next legitimate amount working; `one_of` is still inferred for genuinely categorical arguments.
 - The Governance page and `policy report` could show more grants used than granted ("6 of 5").
   `used` counted every traced tool in the task, including plain `@tool` functions no kernel
   mediates. It now counts only granted capabilities that were exercised, and tools called outside
