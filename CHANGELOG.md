@@ -8,6 +8,15 @@ bumps the minor version.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-24
+
+Governance fixes found by running a governed agent against the published packages. Two of them
+mean an enforcement control was not doing its job, so this is worth taking promptly.
+
+### Changed
+- `/healthz` returns `degraded` (not `ok`) while analysis refreshes are failing. Anything alerting
+  on the literal string `ok` will now see the difference, which is the point.
+
 ### Added
 - `policy export` replays the observed traffic against the policy it just generated and refuses
   to stay quiet about calls the candidate would now deny (`regressions` in the API, a warning and
