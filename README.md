@@ -84,6 +84,31 @@ The console's **Get started** page shows the same snippets and turns green when 
 
 ---
 
+## What it looks like
+
+The Flow Map: where work goes, what each hop costs, and what is failing. Red edges are errors.
+
+![Flow Map](docs/img/flow-map.png)
+
+The Overview: cost, Apdex and flow health against baselines learned from your own history.
+
+![Overview](docs/img/overview.png)
+
+Governance: what Aegis refused, which rule refused it, and which grants are never used.
+
+![Governance](docs/img/governance.png)
+
+Reproduce these locally from synthetic traffic, no API keys needed:
+
+```bash
+agentdynamics --data .demo-data --claude-root "" serve --port 8790 &
+LANGSMITH_ENDPOINT=http://127.0.0.1:8790/langsmith python examples/langgraph_style_app.py 70
+python examples/otel_multiagent.py 45 http://127.0.0.1:8790
+AGENTDYNAMICS_URL=http://127.0.0.1:8790 python examples/governed_agent.py 40
+```
+
+---
+
 ## What you get
 
 | | |
@@ -161,11 +186,12 @@ See [deploy/](deploy/) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 ## Development
 
 ```bash
-python -m unittest discover tests   # 28 tests: real LangSmith/Anthropic/OpenAI SDKs, Aegis kernel, OTLP protobuf, pull connectors
-python -m agentdynamics --data .demo-data --claude-root "" serve --port 8790 &
-python examples/langgraph_style_app.py 60          # LangGraph-style demo traffic
-python examples/otel_multiagent.py 60 http://127.0.0.1:8790
+pip install -e ".[test,toml]" && pip install "aegis-kernel>=0.4.0"
+python -m unittest discover tests   # real LangSmith/Anthropic/OpenAI SDKs, Aegis kernel, OTLP protobuf, pull connectors
 ```
+
+Demo traffic is under **What it looks like** above. [CLAUDE.md](CLAUDE.md) has the architecture and the
+invariants to work within; [ROADMAP.md](ROADMAP.md) is what is planned and what is deliberately not.
 
 ## License
 
