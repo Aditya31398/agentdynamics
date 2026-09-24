@@ -8,7 +8,7 @@ bumps the minor version.
 
 ## [Unreleased]
 
-## [0.4.0] - 2026-09-19
+## [0.4.0] - 2026-09-24
 
 First public release.
 
