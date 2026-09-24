@@ -108,5 +108,7 @@ deploy/               Dockerfile companion: compose, OTel Collector config, exam
 5. **UI tests are smoke-level.** `tests/test_console_ui.py` renders every page in headless Chrome and
    checks headings plus the governance table cells. It does not click, filter or navigate.
 6. **Watchdog enforcement is in-process only.** Server-side events can alert but not revoke.
-7. **Input-token accounting with cache reads** assumes providers that report `input_tokens` inclusive of
-   cache hits when `input >= cache_read` (see `collectors/spans.py`).
+7. **Cache accounting for undocumented formats is estimated.** `collectors/spans.uncached_input` applies each
+   format's documented rule (GenAI semconv, OpenInference, LangChain: inclusive of reads and writes). Formats
+   with no citable rule (older `gen_ai.usage.prompt_tokens`, Langfuse) are estimated and counted as
+   `tokens_unverified`. Pin a new format's rule only from its own docs, and cite it in `_input_convention`.

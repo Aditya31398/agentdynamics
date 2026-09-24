@@ -22,6 +22,34 @@ STRUCTURAL = {"agent", "chain", "node", "guardrail", "evaluator", "human", "span
 RATE_LIMIT_HINTS = ("429", "rate limit", "rate_limit", "ratelimit", "overloaded", "529", "too many requests", "quota")
 
 
+def uncached_input(input_tokens, cache_read, cache_write, convention):
+    """Split a reported input count into its uncached part, and say whether we know it's right.
+
+    Canonical steps keep input_tokens, cache_read and cache_write disjoint, because each is priced
+    differently. Sources disagree on whether their input count already contains the cache tokens, and
+    getting it wrong double counts them in the cost column.
+
+    inclusive   documented as containing reads and writes (GenAI semconv, OpenInference,
+                LangChain usage_metadata): subtract both.
+    exclusive   documented as not containing them: leave it.
+    None        no rule we can cite. Fall back to the old guess -- inclusive of reads unless that is
+                arithmetically impossible -- and report the call as unverified, the way a model with
+                no known price is reported as unpriced rather than guessed.
+
+    A declared-inclusive count smaller than its own cache tokens cannot be inclusive; the emitter is
+    breaking its format's contract. That falls back too, and is reported rather than absorbed.
+    Returns (uncached_input, verified).
+    """
+    if not (cache_read or cache_write):
+        return input_tokens, True              # nothing cached, nothing to disagree about
+    if convention == "exclusive":
+        return input_tokens, True
+    if convention == "inclusive" and input_tokens >= cache_read + cache_write:
+        return input_tokens - cache_read - cache_write, True
+    if cache_read and input_tokens >= cache_read:
+        return input_tokens - cache_read, False
+    return input_tokens, False
+
 def preview(v, n=600):
     if v is None:
         return ""
@@ -156,9 +184,7 @@ def build_run(trace_id, spans, source):
             model = s.get("model") or s.get("name")
             it, ot = int(s.get("input_tokens") or 0), int(s.get("output_tokens") or 0)
             cr, cw = int(s.get("cache_read") or 0), int(s.get("cache_write") or 0)
-            # OTel/LangSmith report input_tokens inclusive of cache reads for most providers; keep uncached part separate
-            if cr and it >= cr:
-                it -= cr
+            it, verified = uncached_input(it, cr, cw, s.get("input_convention"))
             cost = s.get("cost")
             if cost is None:
                 cost = pricing.cost(model, it, ot, cr, cw, 0)
@@ -168,6 +194,7 @@ def build_run(trace_id, spans, source):
                 "context_tokens": it + cr + cw, "stop_reason": s.get("stop_reason"), "ttft_ms": s.get("ttft_ms"),
                 "text": preview(s.get("output"), 600), "tool_calls": 0, "thinking_tokens": int(s.get("thinking_tokens") or 0),
                 "rate_limited": bool(err) and any(h in err.lower() for h in RATE_LIMIT_HINTS),
+                "tokens_verified": verified,
             })
             last_llm = st
         elif kind in ("tool", "retriever"):

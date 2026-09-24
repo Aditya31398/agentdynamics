@@ -130,6 +130,13 @@
   const head = (title, desc, right = "") => `<div class="page-head"><div><h1>${title}</h1>${desc ? `<p>${desc}</p>` : ""}</div><div class="row">${right}</div></div>`;
   const kpi = (label, value, hint = "", extra = "") => `<div class="kpi"><div class="label">${label}${extra}</div><div class="value">${value}</div>${hint ? `<div class="hint">${hint}</div>` : ""}</div>`;
   const card = (title, body, sub = "", cls = "") => `<div class="card ${cls}"><div class="card-head"><h2>${title}</h2><span class="sub">${sub}</span></div>${body}</div>`;
+  // What the spend figure leaves out or guesses at. Both are reported, never silently absorbed.
+  const spendCaveats = (k) => {
+    const out = [];
+    if (k.unpriced) out.push(`${num(k.unpriced)} model calls unpriced`);
+    if (k.tokens_unverified) out.push(`<span title="These sources don't document whether input tokens include cache reads and writes, so the split is estimated.">${num(k.tokens_unverified)} with estimated cache accounting</span>`);
+    return out.length ? `<br>${out.join(" · ")}` : "";
+  };
   const sourceMark = (t, long) => {
     const src = t.outcome_source || "inferred";
     const why = t.outcome_reason ? ` — ${t.outcome_reason}` : "";
@@ -181,7 +188,7 @@
       `<span class="small muted">${k.sessions} sessions</span>`) +
       `<div class="kpis">
         ${kpi("Tasks", num(k.tasks), `${k.sessions} sessions`)}
-        ${kpi("Spend", usd(k.cost), `median ${usd(k.median_cost)} / task`)}
+        ${kpi("Spend", usd(k.cost), `median ${usd(k.median_cost)} / task${spendCaveats(k)}`)}
         ${kpi("Agent Apdex", k.apdex == null ? "–" : k.apdex.toFixed(2), "satisfied + ½ tolerating", " " + pill(healthOfApdex(k.apdex)))}
         ${kpi("Completed cleanly", pct(k.success_rate), `${pct(k.rework_rate)} interrupted or corrected${evidence(k.outcomes_by_source, k.tasks)}`)}
         ${kpi("Tool error rate", pct(k.tool_error_rate, 1), `${num(k.tool_calls)} tool calls`)}
@@ -198,7 +205,7 @@
         ${kpi("Truncated outputs", num(k.truncations), `${num(k.refusals)} refusals`)}
         ${kpi("Time to first token", k.ttft_p50 == null ? "–" : ms(k.ttft_p50), "median, where reported")}
         ${kpi("Agent handoffs", num(k.handoffs), "multi-agent transfers")}
-        ${kpi("User feedback", k.feedback_avg == null ? "–" : k.feedback_avg.toFixed(2), k.unpriced ? `${num(k.unpriced)} unpriced model calls` : "avg score where collected")}
+        ${kpi("User feedback", k.feedback_avg == null ? "–" : k.feedback_avg.toFixed(2), "avg score where collected")}
       </div>
       <div class="grid g-3-2">
         ${card("Daily spend", `<div id="ch-daily"></div>`, "click a day to see its tasks")}

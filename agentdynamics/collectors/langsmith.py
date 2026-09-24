@@ -83,11 +83,15 @@ def _usage(outputs, run):
         det = um.get("input_token_details") or {}
         cr = det.get("cache_read") or 0
         cw = det.get("cache_creation") or 0
+    # langchain-core UsageMetadata.input_tokens: "Sum of all input token types" -- cache reads and
+    # cache writes are already inside it. The legacy llm_output.token_usage path carries no cache
+    # breakdown, so there is nothing to double count and no convention to claim.
+    conv = "inclusive" if um else None
     tu = (o.get("llm_output") or {}).get("token_usage") or (o.get("llm_output") or {}).get("usage") or {}
     if tu and not (it or ot):
         it = tu.get("prompt_tokens") or tu.get("input_tokens") or 0
         ot = tu.get("completion_tokens") or tu.get("output_tokens") or 0
-    return it, ot, cr, cw, stop, model
+    return it, ot, cr, cw, stop, model, conv
 
 
 KIND = {"llm": "llm", "tool": "tool", "retriever": "retriever", "embedding": "embedding", "chain": "chain", "prompt": "chain", "parser": "chain"}
@@ -108,9 +112,9 @@ def to_span(r):
     if r.get("name") in ("__interrupt__",) or "GraphInterrupt" in str(r.get("error") or ""):
         kind = "human"
     it = ot = cr = cw = 0
-    stop = model_out = None
+    stop = model_out = conv = None
     if kind in ("llm", "embedding"):
-        it, ot, cr, cw, stop, model_out = _usage(r.get("outputs"), r)
+        it, ot, cr, cw, stop, model_out, conv = _usage(r.get("outputs"), r)
     start = parse_time(r.get("start_time"))
     ttft = None
     for ev in r.get("events") or []:
@@ -136,6 +140,7 @@ def to_span(r):
         "status": "error" if err else ("ok" if r.get("end_time") else "unset"), "error": err,
         "model": md.get("ls_model_name") or inv.get("model") or inv.get("model_name") or model_out,
         "provider": md.get("ls_provider"), "input_tokens": it, "output_tokens": ot, "cache_read": cr, "cache_write": cw,
+        "input_convention": conv,
         "cost": r.get("total_cost") if kind == "llm" and r.get("total_cost") is not None else None,
         "stop_reason": stop, "ttft_ms": ttft, "input": r.get("inputs"), "output": r.get("outputs"),
         "node": node, "agent": md.get("agent_name") or md.get("lc_agent_name"),

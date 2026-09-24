@@ -11,7 +11,8 @@ import json
 import sqlite3
 import time
 
-SCHEMA_VERSION = 6   # 6: outcome_source / outcome_reason on tasks (graded outcomes)
+SCHEMA_VERSION = 7   # 6: outcome_source / outcome_reason (graded outcomes)
+                     # 7: tokens_unverified (cache accounting that rests on a guess)
 
 RUN_COLS = ["id", "source", "project", "environment", "framework", "workflow", "cwd", "title", "agent_name", "parent_id",
             "parent_task_id", "is_subagent", "thread_id", "user_id", "tags", "root_status", "complete", "version", "git_branch",
@@ -29,7 +30,7 @@ TASK_COLS = ["id", "run_id", "idx", "project", "environment", "source", "framewo
              # agent-flow metrics
              "steps_total", "llm_errors", "truncations", "refusals", "rate_limited", "ttft_ms", "out_tps", "retrievals",
              "empty_retrievals", "nodes", "max_node_visits", "loop_node", "handoffs", "pingpong", "hitl", "feedback_score",
-             "unpriced", "critical_node", "critical_share", "root_error",
+             "unpriced", "tokens_unverified", "critical_node", "critical_share", "root_error",
              # governance (Aegis)
              "governed", "policy_version", "policy_denials", "spend_denials", "budget_denials", "repeated_denials",
              "revocations", "blocked_cost"]

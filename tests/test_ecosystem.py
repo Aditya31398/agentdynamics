@@ -54,8 +54,11 @@ def build_graph(run_name="support_graph"):
         turns: int
 
     def agent(s):
+        # LangChain's contract: input_tokens is the "Sum of all input token types", so the 700 read
+        # from cache and the 300 written to it are inside the 1200; only 200 were uncached (#2).
         llm = GenericFakeChatModel(messages=iter([AIMessage(content="calling tool", usage_metadata={
-            "input_tokens": 1200, "output_tokens": 80, "total_tokens": 1280})]))
+            "input_tokens": 1200, "output_tokens": 80, "total_tokens": 1280,
+            "input_token_details": {"cache_read": 700, "cache_creation": 300}})]))
         llm.with_config(metadata={"ls_model_name": "claude-sonnet-5"}).invoke(s["question"])
         return {"turns": s["turns"] + 1}
 
@@ -122,7 +125,10 @@ class LangGraphViaLangSmithTest(EcosystemBase):
         self.assertEqual((t["workflow"], t["framework"]), ("support_graph", "langgraph"))
         self.assertEqual(t["path"], ["agent", "tools", "agent"])
         self.assertEqual(t["llm_calls"], 2)
-        self.assertEqual(t["input_tokens"], 2400)
+        # two calls: each token counted exactly once, and nothing estimated
+        self.assertEqual((t["input_tokens"], t["cache_read"], t["cache_write"]), (400, 1400, 600),
+                         f"langchain-core usage_metadata via langsmith {langsmith.__version__}")
+        self.assertEqual(t["tokens_unverified"], 0)
         self.assertEqual(sorted(x["prompt"] for x in ts), ["Where is order 0?", "Where is order 1?", "Where is order 2?"])
 
 
@@ -183,6 +189,10 @@ class OpenInferenceLangGraphTest(EcosystemBase):
         self.assertEqual(t["framework"], "langgraph")
         self.assertEqual(t["path"], ["agent", "tools", "agent"])
         self.assertEqual(t["llm_calls"], 2)
+        # the same cache breakdown, through OpenInference's own attribute mapping (#2)
+        self.assertEqual((t["input_tokens"], t["cache_read"], t["cache_write"]), (400, 1400, 600),
+                         "openinference llm.token_count.prompt_details.*")
+        self.assertEqual(t["tokens_unverified"], 0)
 
 
 if __name__ == "__main__":

@@ -18,6 +18,7 @@ These metrics were chosen because each one maps to a decision someone can act on
 - ✅ Avoidable spend: duplicate tool calls, redundant reads and retry streaks, priced at the model turn that issued them.
 - ✅ Cost by phase and by node, showing where the money goes (explore / edit / verify, or per graph node).
 - ✅ Prompt-cache hit rate, context growth per turn, peak context and compactions.
+- ✅ Cost counts each input token once. Uncached input, cache reads and cache writes are priced separately; formats that document their input count as inclusive (OpenTelemetry GenAI, OpenInference, LangChain) have both kinds of cache token taken out of it. Where a format documents no rule, the split is estimated and those calls are shown under Spend as having estimated cache accounting.
 - ✅ Parallelism: tool calls per model turn.
 
 **Flow structure: how did it move through the graph?**

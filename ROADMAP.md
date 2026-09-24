@@ -17,7 +17,7 @@ for each of these; the work is making that number defensible to someone who will
       rate and process score all inherit it. Add an explicit outcome API (`agentdynamics.outcome()`
       / a `/api/tasks/{id}/outcome` PATCH), let recorded feedback override inference, and mark
       which tasks are graded versus guessed so the console can show both.
-- [ ] [#2](https://github.com/Aditya31398/agentdynamics/issues/2) **Input-token accounting with cache reads** (weak area 7). `collectors/spans.py` assumes a
+- [x] [#2](https://github.com/Aditya31398/agentdynamics/issues/2) **Input-token accounting with cache reads** (weak area 7). `collectors/spans.py` assumes a
       provider reports `input_tokens` inclusive of cache hits when `input >= cache_read`. That
       heuristic is the only thing standing between the cost column and quiet double counting.
       Pin it per provider, and report *unknown* rather than guessing when the shape is unfamiliar

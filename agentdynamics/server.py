@@ -108,6 +108,7 @@ class Api:
             "p95_wall": round(pct([t["wall_s"] or 0 for t in ts], 0.95) or 0, 1),
             "feedback_avg": round(statistics.mean(fb), 3) if (fb := [t["feedback_score"] for t in ts if t["feedback_score"] is not None]) else None,
             "unpriced": sum(t["unpriced"] or 0 for t in ts),
+            "tokens_unverified": sum(t.get("tokens_unverified") or 0 for t in ts),
             # how much of success_rate / apdex is stated rather than guessed
             "outcomes_by_source": dict(Counter(t.get("outcome_source") or "inferred" for t in ts)),
         }

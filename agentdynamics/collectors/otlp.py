@@ -204,6 +204,24 @@ def decode_json(doc):
 
 # ---------------------------------------------------------------- semantic-convention mapping
 
+def _input_convention(a):
+    """Whether this span's input_tokens already counts its cache reads and writes, per the documented
+    contract of whichever attribute supplied it. Mirrors _g's order so it describes the same key.
+
+    gen_ai.usage.input_tokens   GenAI semconv: "SHOULD include all types of input tokens, including
+                                cached tokens."
+    llm.token_count.prompt      OpenInference: cache reads and writes are "tokens in the prompt".
+    anything else               (gen_ai.usage.prompt_tokens from older semconv / OpenLLMetry, llm.usage.*)
+                                has no documented rule we can cite: None, and the call is reported as
+                                unverified if it involves cache tokens.
+    """
+    for k, conv in (("gen_ai.usage.input_tokens", "inclusive"), ("gen_ai.usage.prompt_tokens", None),
+                    ("llm.token_count.prompt", "inclusive"), ("llm.usage.prompt_tokens", None)):
+        if a.get(k) not in (None, "", []):
+            return conv
+    return None
+
+
 def _g(a, *keys):
     for k in keys:
         v = a.get(k)
@@ -319,6 +337,7 @@ def map_span(res, scope, sp):
         "model": _g(a, "gen_ai.response.model", "gen_ai.request.model", "llm.model_name", "llm.request.model"),
         "provider": _g(a, "gen_ai.system", "gen_ai.provider.name", "llm.provider", "llm.system"),
         "input_tokens": _num(_g(a, "gen_ai.usage.input_tokens", "gen_ai.usage.prompt_tokens", "llm.token_count.prompt", "llm.usage.prompt_tokens")) or 0,
+        "input_convention": _input_convention(a),
         "output_tokens": _num(_g(a, "gen_ai.usage.output_tokens", "gen_ai.usage.completion_tokens", "llm.token_count.completion", "llm.usage.completion_tokens")) or 0,
         "cache_read": _num(_g(a, "gen_ai.usage.cache_read.input_tokens", "gen_ai.usage.cache_read_input_tokens", "llm.token_count.prompt_details.cache_read",
                              "gen_ai.usage.input_tokens.cached")) or 0,

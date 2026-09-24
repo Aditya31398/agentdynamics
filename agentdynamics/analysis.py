@@ -317,6 +317,9 @@ def flow_metrics(t, run, steps, llm, tools):
     t["framework"] = run.get("framework") or run.get("source")
     t["workflow"] = run.get("workflow") or (t["task_type"] if run.get("source") == "claude-code" else None)
     t["steps_total"] = len(llm) + len(tools)
+    # model calls whose cache accounting rests on a guess (collectors/spans.uncached_input); None is
+    # a source that is exact by construction, like the SDK, so only an explicit False counts
+    t["tokens_unverified"] = sum(1 for s in llm if s.get("tokens_verified") is False)
     # agentdynamics.outcome() records a notice; the last one in the task wins. Kept on a transient
     # key -- finalize decides precedence, and write_analysis persists only TASK_COLS.
     graded = [s for s in notices if s.get("name") == "outcome" and s.get("outcome") in OUTCOMES]

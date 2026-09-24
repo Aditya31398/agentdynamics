@@ -21,7 +21,16 @@ bumps the minor version.
   of 0.5 or more makes a task `completed` even if the run ended in an error; below 0.5 makes it
   `rework`. Success rate, failed-run rate and Apdex can shift for existing data on upgrade: on the
   demo dataset, failed runs moved from 16.0% to 13.8% and Apdex from 0.69 to 0.72.
-- `SCHEMA_VERSION` 6. Derived tables rebuild from sources on first start; nothing needs migrating.
+- `SCHEMA_VERSION` 7. Derived tables rebuild from sources on first start; nothing needs migrating.
+
+### Fixed
+- **Prompt-cache writes were charged twice** for traces from OpenTelemetry GenAI, OpenInference and
+  LangSmith (#2). All three document their input count as including cache reads *and* cache writes;
+  the collector subtracted only the reads, so every cached write was also billed as uncached input.
+  Each collector now reads its format's documented rule. Formats with no rule we can cite (the older
+  `gen_ai.usage.prompt_tokens` naming, Langfuse) keep the previous estimate but are counted as
+  `tokens_unverified` and shown under Spend, the way unpriced models already are. Costs for cached
+  traffic from the three documented formats go down on upgrade; that is the correction.
 
 ## [0.4.1] - 2026-09-24
 
