@@ -182,6 +182,63 @@ class CoreTest(unittest.TestCase):
         finally:
             eng.con.close()
 
+    def test_refresh_survives_a_missing_runs_dir(self):
+        """Removing <data>/runs used to raise FileNotFoundError out of every later refresh, while
+        /healthz went on reporting 'ok' from the last successful timestamp."""
+        eng = Engine(os.path.join(self.tmp, "data2"), self.root)
+        try:
+            eng.ingest({"id": "sdk-1", "agent": "bot", "steps": [
+                {"kind": "llm", "ts": 1, "end_ts": 2, "model": "claude-opus-5",
+                 "input_tokens": 100, "output_tokens": 10, "stop_reason": "end_turn"}]})
+            eng.refresh(force=True)
+            before = Api(eng).overview({})["kpis"]["tasks"]
+
+            shutil.rmtree(eng.runs_dir)
+            eng.refresh()                    # the background loop's call: must not raise
+            self.assertTrue(os.path.isdir(eng.runs_dir), "the runs dir should be recreated")
+            self.assertEqual(Api(eng).healthz()["status"], "ok")
+            # A directory we cannot read is not a statement that every run in it was deleted;
+            # a blinking mount must not empty the console. Deleting one file still removes it.
+            self.assertEqual(Api(eng).overview({})["kpis"]["tasks"], before)
+        finally:
+            eng.con.close()
+
+    def test_deleting_one_run_file_still_removes_it(self):
+        """The guard above must not turn into "file deletions are ignored"."""
+        eng = Engine(os.path.join(self.tmp, "data4"), None)
+        try:
+            eng.ingest({"id": "sdk-9", "agent": "bot", "steps": [
+                {"kind": "llm", "ts": 1, "end_ts": 2, "model": "claude-opus-5",
+                 "input_tokens": 100, "output_tokens": 10, "stop_reason": "end_turn"}]})
+            eng.refresh(force=True)
+            self.assertEqual(Api(eng).overview({})["kpis"]["tasks"], 1)
+            for fn in os.listdir(eng.runs_dir):
+                os.remove(os.path.join(eng.runs_dir, fn))
+            eng.refresh()
+            self.assertEqual(Api(eng).overview({})["kpis"]["tasks"], 0)
+        finally:
+            eng.con.close()
+
+    def test_healthz_reports_a_failing_refresh_loop(self):
+        """A frozen last_refresh must not read as healthy."""
+        eng = Engine(os.path.join(self.tmp, "data3"), self.root)
+        try:
+            eng.refresh(force=True)
+            api = Api(eng)
+            self.assertEqual(api.healthz()["status"], "ok")
+
+            eng.failed_refreshes, eng.last_refresh_error = 3, "OSError: disk gone"
+            h = api.healthz()
+            self.assertEqual(h["status"], "degraded")
+            self.assertEqual(h["failed_refreshes"], 3)
+            self.assertIn("disk gone", h["last_refresh_error"])
+            self.assertIn("agentdynamics_refresh_failures", api.prometheus())
+
+            eng.refresh(force=True)          # a success clears it
+            self.assertEqual(api.healthz()["status"], "ok")
+        finally:
+            eng.con.close()
+
 
 if __name__ == "__main__":
     unittest.main()

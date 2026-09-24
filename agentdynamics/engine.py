@@ -56,6 +56,10 @@ class Engine:
         self._wake = threading.Event()
         self.last_refresh = None
         self.last_duration = None
+        # A refresh that keeps throwing leaves last_refresh frozen at its last success, so
+        # health has to be judged on the failures too, not just on a timestamp existing.
+        self.last_refresh_error = None
+        self.failed_refreshes = 0
         self.stats = {"spans_ingested": 0, "refreshes": 0, "alerts_sent": 0}
         self.sources = {}
         if claude_root:
@@ -221,7 +225,14 @@ class Engine:
         found = []
         if self.claude_root and os.path.isdir(self.claude_root):
             found += [("cc", p) for p in claude_code.discover(self.claude_root)]
-        found += [("sdk", os.path.join(self.runs_dir, fn)) for fn in os.listdir(self.runs_dir) if fn.endswith(".json")]
+        try:
+            names, runs_dir_gone = os.listdir(self.runs_dir), False
+        except FileNotFoundError:
+            # The directory is ours and was created at startup. If something removed it, make it
+            # again rather than raising out of every refresh from here on.
+            os.makedirs(self.runs_dir, exist_ok=True)
+            names, runs_dir_gone = [], True
+        found += [("sdk", os.path.join(self.runs_dir, fn)) for fn in names if fn.endswith(".json")]
         changed, seen = [], set()
         for kind, p in found:
             try:
@@ -247,7 +258,13 @@ class Engine:
             if old and old[2]["id"] != run["id"]:
                 changed.append(("remove", old[2]["id"]))
             changed.append(("upsert", run))
-        removed = [self._files.pop(p)[2]["id"] for p in list(self._files) if p not in seen]
+        # A file that is gone means its run was deleted -- sources are the system of record.
+        # A whole directory that is gone means we cannot see the source at all, which is not the
+        # same statement: treating it as "everything was deleted" would drop every SDK run from
+        # the DB because a mount blinked. Keep them and let the next scan decide.
+        gone = [p for p in list(self._files) if p not in seen
+                and not (runs_dir_gone and os.path.dirname(p) == self.runs_dir)]
+        removed = [self._files.pop(p)[2]["id"] for p in gone]
         if "claude_code" in self.sources and any(k == "cc" for k, _ in found):
             self.sources["claude_code"].d.update(status="ok", last_ok=time.time(), items=sum(1 for k, _ in found if k == "cc"))
         return changed, removed
@@ -322,6 +339,7 @@ class Engine:
             self._first = False
             self.last_refresh = time.time()
             self.last_duration = round(self.last_refresh - t0, 2)
+            self.last_refresh_error, self.failed_refreshes = None, 0
             self.stats["refreshes"] += 1
             return True
 
@@ -336,7 +354,9 @@ class Engine:
                     self._wake.clear()
                 try:
                     self.refresh()
-                except Exception:
+                except Exception as ex:
+                    self.last_refresh_error = f"{type(ex).__name__}: {ex}"[:400]
+                    self.failed_refreshes += 1
                     traceback.print_exc()
         threading.Thread(target=loop, daemon=True, name="analyzer").start()
         self.start_pullers()

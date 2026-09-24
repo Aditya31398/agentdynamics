@@ -8,6 +8,18 @@ bumps the minor version.
 
 ## [Unreleased]
 
+### Fixed
+- The Governance page and `policy report` could show more grants used than granted ("6 of 5").
+  `used` counted every traced tool in the task, including plain `@tool` functions no kernel
+  mediates. It now counts only granted capabilities that were exercised, and tools called outside
+  the policy are reported separately as **ungoverned** — a tool nothing mediates is its own finding.
+- Removing `<data>/runs` while the server ran raised `FileNotFoundError` out of every subsequent
+  refresh, so ingestion stopped for good while `/healthz` kept reporting `ok` from the last
+  successful timestamp. The directory is recreated, and a directory that cannot be read is no
+  longer treated as "every run in it was deleted" (deleting an individual run file still removes
+  that run). `/healthz` reports `degraded` with `failed_refreshes` and `last_refresh_error` when
+  refreshes are failing, and `agentdynamics_refresh_failures` is exported to Prometheus.
+
 ## [0.4.0] - 2026-09-24
 
 First public release.

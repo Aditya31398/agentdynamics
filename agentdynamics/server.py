@@ -615,7 +615,13 @@ class Api:
         for label, g in sorted(by_pol.items(), key=lambda kv: -len(kv[1])):
             doc = (docs.get(label) or {}).get("doc") or {}
             granted = sorted(e["name"] for e in (doc.get("tools") or {}).get("allow", []) if e["name"] != "agent.spawn")
-            used = sorted(set().union(*[used_by_task[t["id"]] for t in g]) if g else set())
+            called = set().union(*[used_by_task[t["id"]] for t in g]) if g else set()
+            # `used` is "of the granted capabilities, which were exercised", so it only counts
+            # tools the policy actually covers. An agent also runs plain @tool functions that no
+            # kernel mediates; counting those made `used` exceed `granted` ("6 of 5"). They are
+            # reported separately, because a tool nothing governs is its own kind of finding.
+            used = sorted(called & set(granted))
+            ungoverned = sorted(called - set(granted))
             budget = doc.get("budget") or {}
             p95 = {"usd": pct([t["cost"] + (t["subagent_cost"] or 0) for t in g], 0.95),
                    "tokens": pct([t["total_tokens"] for t in g], 0.95),
@@ -627,6 +633,7 @@ class Api:
                         "denials": sum(t["policy_denials"] + t["spend_denials"] for t in g),
                         "revocations": sum(t["revocations"] for t in g),
                         "granted": granted, "used": used, "unused": sorted(set(granted) - set(used)),
+                        "ungoverned": ungoverned,
                         "budget": budget, "p95": p95, "headroom": headroom,
                         "workflows": sorted({t["workflow"] for t in g if t["workflow"]})})
         return out
@@ -687,8 +694,16 @@ class Api:
         return {"config": public_view(self.e.cfg), "data_dir": self.e.data_dir, "db": self.e.db_path}
 
     def healthz(self):
-        ok = self.e.last_refresh is not None
-        return {"status": "ok" if ok else "starting", "last_refresh": self.e.last_refresh, "refresh_seconds": self.e.last_duration,
+        # "ok" has to mean ingestion is working now, not that it worked once. A refresh that
+        # keeps throwing leaves last_refresh frozen, which used to read as healthy forever.
+        if self.e.last_refresh is None:
+            status = "starting"
+        elif self.e.failed_refreshes:
+            status = "degraded"
+        else:
+            status = "ok"
+        return {"status": status, "last_refresh": self.e.last_refresh, "refresh_seconds": self.e.last_duration,
+                "failed_refreshes": self.e.failed_refreshes, "last_refresh_error": self.e.last_refresh_error,
                 "sources": {k: v.d["status"] for k, v in self.e.sources.items()}}
 
     def prometheus(self):
@@ -727,6 +742,8 @@ class Api:
         m("agentdynamics_spans_ingested_total", "Spans/runs accepted by push and pull ingestion", "counter", [({}, self.e.stats["spans_ingested"])])
         m("agentdynamics_last_refresh_timestamp_seconds", "Last successful analysis", "gauge", [({}, self.e.last_refresh or 0)])
         m("agentdynamics_refresh_duration_seconds", "Duration of last analysis", "gauge", [({}, self.e.last_duration or 0)])
+        m("agentdynamics_refresh_failures", "Consecutive failed analysis passes (0 when healthy)", "gauge",
+          [({}, self.e.failed_refreshes)])
         return "\n".join(lines) + "\n"
 
 

@@ -855,14 +855,15 @@ governance.instrument(kernel, root, watchdog=governance.Watchdog(max_repeated_de
         ${card("By agent", `<div id="gv-agent"></div>`, "who attempted the blocked actions")}
       </div>
       <div style="margin-top:14px">${card("Policies in use", `<div class="table-wrap"><table><thead><tr><th>Policy</th><th class="num">Tasks</th><th class="num">Success</th><th class="num">Denials</th><th class="num">Revoked</th>
-        <th>Grants used</th><th>Unused grants</th><th>Budget headroom (limit ÷ p95 used)</th><th></th></tr></thead><tbody>
+        <th>Grants used</th><th>Unused grants</th><th>Ungoverned tools</th><th>Budget headroom (limit ÷ p95 used)</th><th></th></tr></thead><tbody>
         ${d.policies.map((pl, i) => `<tr><td><b>${esc(pl.name || pl.policy)}</b><div class="small muted mono">${esc(pl.policy)}</div><div class="small muted">${esc(pl.workflows.join(", "))}</div></td>
           <td class="num">${pl.tasks}</td><td class="num">${pct(pl.success_rate)}</td><td class="num">${pl.denials}</td><td class="num">${pl.revocations}</td>
           <td class="small">${pl.used.length} of ${pl.granted.length}</td>
           <td>${pl.unused.map((t) => `<span class="tag warn">${esc(t)}</span>`).join("") || `<span class="muted small">none</span>`}</td>
+          <td>${(pl.ungoverned || []).map((t) => `<span class="tag warn">${esc(t)}</span>`).join("") || `<span class="muted small">none</span>`}</td>
           <td class="small">${Object.entries(pl.headroom).filter(([, v]) => v).map(([kk, v]) => `<span class="tag ${v > 10 ? "warn" : ""}">${kk} ${v}×</span>`).join("") || "–"}</td>
           <td><button class="primary gv-export" data-i="${i}">Generate tightened policy</button></td></tr>`).join("")}</tbody></table></div>
-        <p class="small muted" style="margin:8px 0 0">Unused grants and 10×+ headroom are over-privilege: authority the agents hold but never need. Compare policy versions side by side under <a href="#/compare?dim=policy">Compare → policy</a>.</p>
+        <p class="small muted" style="margin:8px 0 0">Unused grants and 10×+ headroom are over-privilege: authority the agents hold but never need. Ungoverned tools ran outside the policy, so nothing mediated them. Compare policy versions side by side under <a href="#/compare?dim=policy">Compare → policy</a>.</p>
         <div id="gv-export"></div>`)}</div>
       <div class="grid g-2-1" style="margin-top:14px">
         ${card("Recent denials", `<div class="table-wrap"><table><thead><tr><th>When</th><th>Rule</th><th>Attempt</th><th>Agent</th><th>Task</th></tr></thead><tbody>

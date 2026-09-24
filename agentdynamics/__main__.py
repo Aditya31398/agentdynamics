@@ -184,7 +184,9 @@ def cmd_policy(a, eng):
         for p in g["policies"]:
             print()
             print(f"{p['policy']}: {p['tasks']} tasks, success {p['success_rate']:.0%}, {p['denials']} denials")
-            print(f"  granted {len(p['granted'])} tools, used {len(p['used'])}; unused: {', '.join(p['unused']) or 'none'}")
+            print(f"  used {len(p['used'])} of {len(p['granted'])} granted tools; unused: {', '.join(p['unused']) or 'none'}")
+            if p.get("ungoverned"):
+                print(f"  called but not in the policy: {', '.join(p['ungoverned'])}")
             print("  budget headroom (limit / p95 used): " + ", ".join(f"{k2} {v}x" for k2, v in p["headroom"].items() if v))
         for r in g["by_rule"][:8]:
             print(f"  {r['n']:>5}  {r['rule']}")

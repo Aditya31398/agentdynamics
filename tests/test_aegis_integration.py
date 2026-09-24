@@ -212,6 +212,13 @@ class AegisIntegrationTest(unittest.TestCase):
         self.assertGreaterEqual(k["budget_stops"], 1)
         pol = g["policies"][0]
         self.assertEqual(set(pol["unused"]), {"db.query", "http.get"})
+        # `used` counts granted capabilities that were exercised, so "N of M" can never read
+        # "6 of 5". Plain @tool functions the kernel never saw are reported separately.
+        self.assertLessEqual(len(pol["used"]), len(pol["granted"]))
+        self.assertTrue(set(pol["used"]) <= set(pol["granted"]))
+        self.assertNotIn("draft", " ".join(pol["used"]))
+        self.assertEqual(sorted(set(pol["granted"]) - set(pol["used"])), sorted(pol["unused"]))
+        self.assertIsInstance(pol["ungoverned"], list)
         self.assertEqual(g["by_rule"][0]["rule"], "capability.arg_prefix")
         cmp_ = self.api.compare({"dim": "policy", "a": pol["policy"], "b": pol["policy"], "project": "gov-app"})
         self.assertEqual(cmp_["a"]["tasks"], cmp_["b"]["tasks"])
