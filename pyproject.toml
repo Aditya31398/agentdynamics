@@ -33,4 +33,4 @@ build-backend = "setuptools.build_meta"
 include = ["agentdynamics*"]
 
 [tool.setuptools.package-data]
-agentdynamics = ["web/*", "bootstrap/*.py"]
+agentdynamics = ["web/*", "web/pages/*", "bootstrap/*.py"]

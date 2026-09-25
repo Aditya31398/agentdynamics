@@ -12,7 +12,8 @@ APM for AI agents. Telemetry from many sources is normalized into one run/step m
   Aegis audit logs.
 - `agentdynamics/analysis.py`: tasks, metrics, flow metrics, governance metrics, scores, baselines, health rules.
 - `agentdynamics/engine.py`: ingestion pipeline and incremental refresh.
-- `agentdynamics/server.py`: HTTP API, receivers and auth. `agentdynamics/web/`: the console (vanilla JS).
+- `agentdynamics/server.py`: HTTP handler, receivers and auth; the read endpoints live in `agentdynamics/api/`, one
+  module per area of the console. `agentdynamics/web/`: the console (vanilla JS), `app.js` plus `pages/<area>.js`.
 - `agentdynamics/autotrace.py`: the in-process SDK (`init`, `trace`, `span`, `tool`, `llm_call`).
 - `agentdynamics/integrations/aegis.py` + `govern.py`: the Aegis bridge (decisions, spend gating, watchdog,
   policy export).
@@ -80,6 +81,9 @@ AGENTDYNAMICS_URL=http://127.0.0.1:8790 python examples/governed_agent.py 45   #
   `tests/test_incremental.py` compares every column against a full rebuild and diffs the settle phase's writes.
 - **SQLite plans depend on statistics a fresh install doesn't have.** Name the index (`INDEXED BY`) for any
   lookup the engine does per trace or per refresh, and cover it in `test_span_lookups_use_their_indexes`.
+- **Console pages live in `web/pages/<area>.js`** and use `app.js`'s helpers through `window.AD`. A helper used by
+  pages in two areas belongs in `app.js`. Add new page scripts to `index.html`; `.github/check_installed.py`
+  (the `package` CI job) fails if the installed wheel is missing any script `index.html` loads.
 - Optional-dependency checks: `importlib.util.find_spec("a.b")` raises when `a` is missing. Use the `has()`
   helper in `test_ecosystem.py`.
 - Prices come from `pricing.py` (list prices) plus `<data>/pricing.json`. Unknown models are reported as
@@ -97,8 +101,9 @@ agentdynamics/
   flows.py, slo.py    workflow process mining, SLOs
   engine.py           sources, spans_raw assembly, incremental refresh, alerts, pullers
   store.py            SQLite (WAL); durable vs derived tables
-  server.py           API + receivers (/v1/traces, /langsmith/*, /api/ingest*) + auth roles
-  web/                index.html, app.js (all pages), charts.js, style.css
+  server.py           HTTP handler: receivers (/v1/traces, /langsmith/*, /api/ingest*), auth roles, routing
+  api/                the read API as mixins, one per console area: base, monitor, diagnose, assess, governance, ops
+  web/                index.html, app.js (helpers, router, boot), pages/<area>.js (each area's pages), charts.js, style.css
 tests/                test_core, test_integrations, test_autotrace, test_aegis_integration, test_ecosystem, test_live_anthropic,
                       test_console_ui, test_outcomes, test_token_accounting, test_policy_coverage, test_incremental
 bench/                bench.py: ingest / rebuild / incremental timings and the CI scaling gate
@@ -117,11 +122,10 @@ deploy/               Dockerfile companion: compose, OTel Collector config, exam
 3. **Coding-task typing is still keyword rules.** Traced apps use the workflow name; every task records
    which (`task_type_source`) and the matched word. Follow-ups inherit the previous task's type, so a
    "continue" after a slash command is typed "slash command".
-4. **`server.py` and `web/app.js` are large single files.** Split by feature before adding much more.
-5. **UI tests are smoke-level.** `tests/test_console_ui.py` renders every page in headless Chrome and
+4. **UI tests are smoke-level.** `tests/test_console_ui.py` renders every page in headless Chrome and
    checks headings plus the governance table cells. It does not click, filter or navigate.
-6. **Watchdog enforcement is in-process only.** Server-side events can alert but not revoke.
-7. **Cache accounting for undocumented formats is estimated.** `collectors/spans.uncached_input` applies each
+5. **Watchdog enforcement is in-process only.** Server-side events can alert but not revoke.
+6. **Cache accounting for undocumented formats is estimated.** `collectors/spans.uncached_input` applies each
    format's documented rule (GenAI semconv, OpenInference, LangChain: inclusive of reads and writes). Formats
    with no citable rule (older `gen_ai.usage.prompt_tokens`, Langfuse) are estimated and counted as
    `tokens_unverified`. Pin a new format's rule only from its own docs, and cite it in `_input_convention`.

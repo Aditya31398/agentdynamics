@@ -8,6 +8,15 @@ bumps the minor version.
 
 ## [Unreleased]
 
+### Changed
+- **`server.py` and `web/app.js` are split by area of the console** (#9). The read endpoints live in
+  `agentdynamics/api/` as one mixin per area (monitor, diagnose, assess, governance, ops); `server.Api` composes
+  them, so `from agentdynamics.server import Api` is unchanged. The console's pages live in `web/pages/<area>.js`
+  and use `app.js`'s helpers through `window.AD`; the router now starts on `DOMContentLoaded`, after every page
+  script has registered. No behaviour change: moved mechanically, checked member-for-member against the old
+  class, and every page and its main interactions exercised in a browser with no errors. A new `package` CI job
+  installs the built wheel and fails if any script `index.html` loads is missing from it.
+
 ## [0.6.0] - 2026-09-25
 
 Incremental refresh (#5), and three bugs its exactness test found. The one users can see: an earlier task in

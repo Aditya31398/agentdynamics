@@ -49,6 +49,22 @@ jobs:
       - name: Test
         run: python -m unittest discover tests -v
 
+  package:
+    # Build the wheel and check the *installed* package has every file the console loads. Tests run from
+    # the source tree and can't see a file the wheel leaves out.
+    name: package (installed wheel)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install build && python -m build --wheel
+      - name: Every file index.html loads is in the wheel
+        run: |
+          python -m venv /tmp/v && /tmp/v/bin/pip install --quiet dist/*.whl
+          cd /tmp && /tmp/v/bin/python "$GITHUB_WORKSPACE/.github/check_installed.py"
+
   scaling:
     # Cost must grow linearly with the store. Measured as time(4k tasks) / time(1k) in one process,
     # so runner speed cancels out; an O(n^2) path shows up as ~16x (bench/bench.py explains the gate).

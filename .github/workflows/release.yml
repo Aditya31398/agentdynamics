@@ -37,9 +37,7 @@ jobs:
         run: |
           python -m venv /tmp/v && /tmp/v/bin/pip install --quiet dist/*.whl
           cd /tmp
-          /tmp/v/bin/python -c "import agentdynamics, os; assert 'site-packages' in agentdynamics.__file__; \
-            d=os.path.dirname(agentdynamics.__file__); \
-            assert all(os.path.exists(os.path.join(d, p)) for p in ('web/app.js','web/index.html','bootstrap/sitecustomize.py'))"
+          /tmp/v/bin/python "$GITHUB_WORKSPACE/.github/check_installed.py"   # every file index.html loads
           /tmp/v/bin/agentdynamics --version
           /tmp/v/bin/agentdynamics --data /tmp/ad --claude-root "" serve --port 8799 &
           for i in $(seq 1 30); do curl -sf http://127.0.0.1:8799/healthz && break; sleep 1; done

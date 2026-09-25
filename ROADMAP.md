@@ -55,7 +55,7 @@ for each of these; the work is making that number defensible to someone who will
       sees the same probing across runs can alert but cannot stop anything. Out-of-process
       revocation needs a channel back to the kernel — the honest version of this is an Aegis-side
       feature, not something AgentDynamics can bolt on.
-- [ ] [#9](https://github.com/Aditya31398/agentdynamics/issues/9) **Split `server.py` and `web/app.js`** (weak area 4). Both are large single files. This
+- [x] [#9](https://github.com/Aditya31398/agentdynamics/issues/9) **Split `server.py` and `web/app.js`** (weak area 4). Both are large single files. This
       unblocks the two items above it more than it stands on its own.
 - [ ] **Teams and projects.** API-key roles (ingest / read / admin) are the whole authorization
       model. Multi-tenant use needs project scoping on keys at minimum.
