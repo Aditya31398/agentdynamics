@@ -8,6 +8,16 @@ bumps the minor version.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-25
+
+Incremental refresh (#5), and three bugs its exactness test found. The one users can see: an earlier task in
+a conversation could stay marked `rework` because of a follow-up message that had since been deleted.
+
+**Upgrading.** No schema change and nothing to migrate. The first start recomputes every task, as each
+process's first refresh always does, so baselines move to the new stepped sample then; baseline figures and
+the scores measured against them can shift slightly. Tasks in conversations whose follow-up was deleted,
+edited or moved lose a `rework` outcome they should not have had.
+
 ### Changed
 - **An incremental refresh re-scores and rewrites only the tasks whose inputs changed** (#5), instead of
   every task in the store. Absorbing 1% more traffic took 13.5 s at 100,000 tasks and now takes 4.2 s,
