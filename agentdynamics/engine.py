@@ -64,6 +64,11 @@ class Engine:
         # traffic happened to dirty something. force=True would also work, but it throws away every
         # cache and re-parses every source to re-settle outcomes that only need re-finalizing.
         self._regrade = False
+        # Scores carried between refreshes, so a refresh re-scores and rewrites only the tasks whose
+        # inputs changed instead of the whole store (analysis.ScoreCache). The clock is injectable
+        # because outcomes depend on it: a recent task is "in progress", an old one is not.
+        self._cache = analysis.ScoreCache()
+        self._clock = time.time
         self.stats = {"spans_ingested": 0, "refreshes": 0, "alerts_sent": 0}
         self.sources = {}
         if claude_root:
@@ -319,6 +324,7 @@ class Engine:
                 self._span_since = 0
                 self._runs.clear()
                 self._tasks.clear()
+                self._cache = analysis.ScoreCache()
             changed, removed = self._scan_files()
             dirty = {}
             for op, x in changed:
@@ -341,6 +347,10 @@ class Engine:
             if not dirty and not removed and not force and not self._first and not self._regrade:
                 return False
             self._regrade = False
+            full = force or self._first
+            # every task id that may no longer exist: those of removed runs, and the previous tasks of
+            # runs being re-analysed (a PATCH can re-segment a run into fewer tasks)
+            gone = {t["id"] for rid in list(removed) + list(dirty) for t in self._tasks.get(rid, [])}
             for rid in removed:
                 self._runs.pop(rid, None)
                 self._tasks.pop(rid, None)
@@ -351,12 +361,21 @@ class Engine:
                 self._runs[rid] = run
                 self._tasks[rid] = analysis.run_tasks(run)
             runs = list(self._runs.values())
-            tasks, baselines, events = analysis.finalize(runs, self._tasks, self.rules(),
-                                                         grades=store.get_grades(self.con))
+            tasks, baselines, events = analysis.finalize(runs, self._tasks, self.rules(), now=self._clock(),
+                                                         grades=store.get_grades(self.con),
+                                                         cache=self._cache, dirty=dirty.keys())
             insights = analysis.process_insights(tasks)
             meta = {"refreshed": time.time(), "runs": len(runs), "tasks": len(tasks), "insights": insights}
             store.write_runs(self.con, list(dirty.values()), removed, self.redactor)
-            store.write_analysis(self.con, tasks, baselines, events, meta, self.redactor)
+            if full:
+                # the first refresh of a process must replace whatever the last process left behind
+                store.write_analysis(self.con, tasks, baselines, events, meta, self.redactor)
+            else:
+                changed = self._cache.changed
+                events = [e for e in events if e["task_id"] in changed]
+                store.write_analysis_delta(self.con, [t for t in tasks if t["id"] in changed],
+                                           gone - changed, events, baselines, meta, self.redactor)
+            self.stats["tasks_rescored"] = len(self._cache.changed)
             self._dispatch_alerts(events)
             self._first = False
             self.last_refresh = time.time()

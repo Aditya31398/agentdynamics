@@ -8,6 +8,32 @@ bumps the minor version.
 
 ## [Unreleased]
 
+### Changed
+- **An incremental refresh re-scores and rewrites only the tasks whose inputs changed** (#5), instead of
+  every task in the store. Absorbing 1% more traffic took 13.5 s at 100,000 tasks and now takes 4.2 s,
+  re-scoring exactly the 1,000 new tasks. Scoring and writing are now proportional to new traffic, but a light
+  pass still runs over every task each refresh (outcomes, conversation threads, grades, baselines,
+  insights), about 30 µs a task, so a refresh still grows with the store: absorbing 100 tasks takes 0.33 s
+  at 10,000 and 2.9 s at 100,000. An incrementally maintained store equals a full rebuild of the
+  same sources, every column of every row: `tests/test_incremental.py` checks that over randomized histories
+  of ingests, updates, deletions, grades, threads, subagents and time passing.
+- **Baselines are computed from a type's earliest tasks, in 5% steps.** A baseline that moved with every
+  arrival would make every refresh re-score its whole type. It now uses the type's earliest M tasks (by start
+  time), where M is exact below about 40 tasks and otherwise advances only when the type has grown 5%: so it
+  leaves out at most the newest 5% of a type's history, never oscillates, and depends on the data alone, so a
+  full rebuild agrees. Baseline figures, and scores measured against them, can move slightly on upgrade.
+
+### Fixed
+- **A conversation's earlier task could keep a follow-up that no longer existed.** Linking traced tasks in a
+  thread set each task's `next_prompt` and `rework` from its successor but never cleared them, and the engine
+  keeps unchanged tasks between refreshes: when the follow-up was deleted, edited or moved to another thread,
+  the earlier task kept it, and could stay marked `rework`, until a full rebuild. Found by the incremental
+  property test, and present before #5.
+- Tasks in a thread that started at the same instant were ordered by whichever order the engine happened
+  to hold runs in, which differed between a long-running process and a fresh rebuild. Ties now break by id.
+- Process insights depended on that same order: floating-point sums rounded differently and example lists
+  were cut to different first entries. They are now computed in a fixed order.
+
 ## [0.5.0] - 2026-09-25
 
 Phase 2 of the roadmap: making the numbers worth trusting. Three fixes matter to anyone on 0.4.x

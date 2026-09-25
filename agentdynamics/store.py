@@ -61,6 +61,7 @@ CREATE INDEX IF NOT EXISTS steps_run ON steps(run_id);
 CREATE INDEX IF NOT EXISTS steps_node ON steps(node);
 CREATE INDEX IF NOT EXISTS tasks_run ON tasks(run_id);
 CREATE INDEX IF NOT EXISTS tasks_started ON tasks(started);
+CREATE INDEX IF NOT EXISTS events_task ON events(task_id);
 
 CREATE TABLE IF NOT EXISTS spans_raw (source, trace_id, span_id, fmt, doc, updated REAL, PRIMARY KEY(source, span_id)) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS spans_trace ON spans_raw(source, trace_id);
@@ -145,30 +146,55 @@ def update_step_analysis(con, runs):
         con.executemany("UPDATE steps SET task_id=?, flags=?, attributed_cost=? WHERE run_id=? AND seq=?", rows_)
 
 
+def _task_row(t, red):
+    row = [t.get(c) for c in TASK_COLS] + [json.dumps(t.get(c) if t.get(c) is not None else ([] if c == "path" else {}))
+                                           for c in TASK_JSON]
+    if red:
+        for f in ("prompt", "final_text", "next_prompt", "root_error"):
+            i = TASK_COLS.index(f)
+            row[i] = red.text(row[i])
+    return row
+
+
+def _event_row(e, red):
+    row = [e.get(c) for c in EVENT_COLS]
+    if red and red.rx is not None:  # messages can quote user text (e.g. the correcting follow-up)
+        i = EVENT_COLS.index("message")
+        row[i] = red.rx.sub("[REDACTED]", row[i] or "")
+    return row
+
+
+def _write_small(con, baselines, meta):
+    for t in ("baselines", "meta"):
+        con.execute(f"DELETE FROM {t}")
+    _ins(con, "baselines", ["task_type", "data"], [[k, json.dumps(v)] for k, v in baselines.items()])
+    _ins(con, "meta", ["k", "v"], [[k, json.dumps(v)] for k, v in meta.items()])
+
+
 def write_analysis(con, tasks, baselines, events, meta, red=None):
+    """Replace every derived analysis row: after a full rebuild."""
     with con:
-        for t in ("tasks", "events", "baselines", "meta"):
+        for t in ("tasks", "events"):
             con.execute(f"DELETE FROM {t}")
-        trows = []
-        for t in tasks:
-            row = [t.get(c) for c in TASK_COLS] + [json.dumps(t.get(c) if t.get(c) is not None else ([] if c == "path" else {}))
-                                                   for c in TASK_JSON]
-            if red:
-                for f in ("prompt", "final_text", "next_prompt", "root_error"):
-                    i = TASK_COLS.index(f)
-                    row[i] = red.text(row[i])
-            trows.append(row)
-        _ins(con, "tasks", TASK_COLS + TASK_JSON, trows)
-        erows = []
-        for e in events:
-            row = [e.get(c) for c in EVENT_COLS]
-            if red and red.rx is not None:  # messages can quote user text (e.g. the correcting follow-up)
-                i = EVENT_COLS.index("message")
-                row[i] = red.rx.sub("[REDACTED]", row[i] or "")
-            erows.append(row)
-        _ins(con, "events", EVENT_COLS, erows)
-        _ins(con, "baselines", ["task_type", "data"], [[k, json.dumps(v)] for k, v in baselines.items()])
-        _ins(con, "meta", ["k", "v"], [[k, json.dumps(v)] for k, v in meta.items()])
+        _ins(con, "tasks", TASK_COLS + TASK_JSON, [_task_row(t, red) for t in tasks])
+        _ins(con, "events", EVENT_COLS, [_event_row(e, red) for e in events])
+        _write_small(con, baselines, meta)
+
+
+def write_analysis_delta(con, changed, removed_ids, events, baselines, meta, red=None):
+    """Write only what an incremental refresh changed: the rows of `changed` tasks and their events,
+    the removal of `removed_ids`, and the small baselines/meta tables. `events` must be exactly the
+    events of the changed tasks. Rewriting every row cost 2.1 s of a 5.6 s refresh at 20k tasks."""
+    ids = [t["id"] for t in changed] + list(removed_ids)
+    with con:
+        for i in range(0, len(ids), 500):
+            chunk = ids[i:i + 500]
+            marks = ",".join("?" * len(chunk))
+            con.execute(f"DELETE FROM tasks WHERE id IN ({marks})", chunk)
+            con.execute(f"DELETE FROM events INDEXED BY events_task WHERE task_id IN ({marks})", chunk)
+        _ins(con, "tasks", TASK_COLS + TASK_JSON, [_task_row(t, red) for t in changed])
+        _ins(con, "events", EVENT_COLS, [_event_row(e, red) for e in events])
+        _write_small(con, baselines, meta)
 
 
 # ---------------------------------------------------------------- durable span store

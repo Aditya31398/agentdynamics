@@ -37,7 +37,7 @@ for each of these; the work is making that number defensible to someone who will
 
 ## Phase 3 — hold up under real volume
 
-- [ ] [#5](https://github.com/Aditya31398/agentdynamics/issues/5) **Incremental finalize** (weak area 1, the big one). Each refresh rewrites the whole `tasks`
+- [x] [#5](https://github.com/Aditya31398/agentdynamics/issues/5) **Incremental finalize** (weak area 1, the big one). Each refresh rewrites the whole `tasks`
       table and `finalize()` runs over every run in memory. That is fine to roughly 100k tasks and
       then it is not. Recompute only dirty runs and the baselines they touch.
 - [ ] [#7](https://github.com/Aditya31398/agentdynamics/issues/7) **A store backend behind `store.py`.** SQLite is right for a laptop and wrong for a fleet.

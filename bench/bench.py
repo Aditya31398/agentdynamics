@@ -36,11 +36,15 @@ sys.path.insert(0, ROOT)
 
 from agentdynamics.engine import Engine  # noqa: E402
 
+FIXED_BATCH = 100
 # check: size -> 4x size. Linear is 4.0; the limit leaves room for noise and still fails quadratic (~16).
-# incremental_refresh is linear today (weak area 1, issue #5); when #5 lands it should be ~1, and this
-# limit should come down to hold it there.
+# fixed_batch_refresh absorbs the same 100 tasks at both sizes, so its growth is cost against store size.
+# Since #5 only new tasks are scored and written; what still grows is a light pass over every task (settle,
+# change checks, insights, ~30 us each). At 1k-4k the fixed overhead hides it (growth ~1x); at 10k-100k it
+# shows (~9x for 10x). Either way it is linear, and the limit fails anything quadratic. Whether scoring is
+# limited to new traffic is asserted exactly, as a count, in tests/test_incremental.py.
 CHECK_SIZES = (1000, 4000)
-GROWTH_LIMIT = {"full_refresh": 6.0, "incremental_refresh": 6.0}
+GROWTH_LIMIT = {"full_refresh": 6.0, "fixed_batch_refresh": 6.0}
 WORKFLOWS = ["support", "billing", "research", "triage", "refunds"]
 MODELS = ["claude-sonnet-5", "claude-haiku-4-5", "claude-opus-5"]
 TOOLS = ["kb.search", "orders.lookup", "payments.status", "email.send", "fs.read"]
@@ -156,9 +160,19 @@ def bench_one(source, n):
 
         extra = max(1, n // 100)
         ingest(eng, source, n, extra, rng, t0)
+        time.sleep(2.1)          # so the fixed batch below is measured on its own (see the window above)
         start = time.perf_counter()
         eng.refresh()
         inc_s = time.perf_counter() - start
+        rescored = eng.stats.get("tasks_rescored")
+
+        # The same fixed amount of new traffic at every size. "+1%" grows with the store, so it can't show
+        # whether cost depends on the store or on the traffic; a fixed batch can, and the gate uses it.
+        ingest(eng, source, n + extra, FIXED_BATCH, rng, t0)
+        start = time.perf_counter()
+        eng.refresh()
+        fixed_s = time.perf_counter() - start
+        fixed_rescored = eng.stats.get("tasks_rescored")
 
         eng.con.close()
         db = os.path.join(tmp, "data", "agentdynamics.db")
@@ -166,7 +180,8 @@ def bench_one(source, n):
         return {"source": source, "size": n, "tasks": tasks,
                 "ingest": round(ingest_s, 3), "ingest_per_s": round(n / ingest_s) if ingest_s else None,
                 "full_refresh": round(full_s, 3), "full_file_scan": round(full_scan_s, 3),
-                "incremental_refresh": round(inc_s, 3),
+                "incremental_refresh": round(inc_s, 3), "incremental_rescored": rescored,
+                "fixed_batch_refresh": round(fixed_s, 3), "fixed_batch_rescored": fixed_rescored,
                 "incremental_added": extra, "db_mb": round(size / 1e6, 1)}
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -186,7 +201,7 @@ def main():
     print(f"python {platform.python_version()} on {platform.system()} {platform.machine()}; "
           f"calibration {cal * 1000:.0f} ms (a fixed CPU workload, for comparing machines by eye)")
     print(f"{'source':<6} {'tasks':>8} {'ingest s':>9} {'runs/s':>8} {'full s':>8} {'of which files':>15} "
-          f"{'incr s':>8} {'db MB':>7}")
+          f"{'+1% s':>8} {'rescored':>9} {f'+{FIXED_BATCH} s':>8} {'rescored':>9} {'db MB':>7}")
     results = []
     for n in sizes:
         for src in a.sources.split(","):
@@ -194,6 +209,7 @@ def main():
             results.append(r)
             print(f"{src:<6} {r['tasks']:>8} {r['ingest']:>9.2f} {r['ingest_per_s']:>8} "
                   f"{r['full_refresh']:>8.2f} {r['full_file_scan']:>15.2f} {r['incremental_refresh']:>8.3f} "
+                  f"{r['incremental_rescored']:>9} {r['fixed_batch_refresh']:>8.3f} {r['fixed_batch_rescored']:>9} "
                   f"{r['db_mb']:>7.1f}", flush=True)
     if a.json:
         with open(a.json, "w", encoding="utf-8") as f:

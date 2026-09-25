@@ -21,23 +21,26 @@ Three numbers per size:
 ## Results
 
 Python 3.12, Windows 11, one laptop CPU. Each request: a prompt, 2–3 model calls and 3–5 tool calls.
+"+1%" absorbs 1% more traffic; "+100" absorbs a fixed 100 tasks, so it shows cost against store size.
 
-| path | tasks | ingest | full refresh | incremental (+1%) | on disk |
-|---|---:|---:|---:|---:|---:|
-| span (OTLP) | 1,000 | 0.4 s | 0.6 s | 0.10 s | 7 MB |
-| span (OTLP) | 10,000 | 4.2 s | 5.5 s | 1.1 s | 72 MB |
-| span (OTLP) | 100,000 | 39 s | 60 s | **13.5 s** | 715 MB |
-| SDK | 1,000 | 1.2 s | 10 s (9.5 s opening files) | 0.31 s | 3 MB |
-| SDK | 10,000 | 12 s | 98 s (94 s opening files) | 3.0 s | 27 MB |
+| path | tasks | ingest | full refresh | +1% (re-scored) | +100 (re-scored) | on disk |
+|---|---:|---:|---:|---:|---:|---:|
+| span (OTLP) | 1,000 | 0.5 s | 0.6 s | 0.02 s (10) | 0.23 s (1,110) | 8 MB |
+| span (OTLP) | 10,000 | 4.6 s | 6.1 s | 0.40 s (100) | 0.33 s (100) | 72 MB |
+| span (OTLP) | 100,000 | 41 s | 66 s | **4.2 s** (1,000) | **2.9 s** (100) | 716 MB |
+| SDK | 1,000 | 1.2 s | 10 s (10.0 s opening files) | 0.18 s (10) | 1.3 s (1,110) | 3 MB |
+| SDK | 10,000 | 12 s | 101 s (95 s opening files) | 2.0 s (100) | 1.9 s (100) | 28 MB |
+
+At 1,000 tasks, 100 new ones are a 10% jump, past the baseline's 5% step, so the whole type is
+re-scored once; that is the design, and why that row re-scores 1,110.
 
 What these say:
 
-- **Everything grows linearly now.** Roughly 10–12× the time for 10× the data, in every column.
-- **The incremental refresh is the problem.** At 100k tasks, absorbing 1,000 new ones takes 13.5 s,
-  almost all of it re-finalizing and rewriting the other 99,000. The console runs that far behind, and
-  the analyzer is never idle. Extrapolated, 1M tasks is about 2 minutes per update. This is
-  [weak area 1](../CLAUDE.md) with a number on it, and what [#5](https://github.com/Aditya31398/agentdynamics/issues/5)
-  (incremental finalize) is for.
+- **Everything grows linearly.** Roughly 10× the time for 10× the data in the rebuild columns.
+- **Only new traffic is scored and written.** The re-scored counts are exactly the new tasks at 10k and
+  100k. What still grows with the store is a light pass over every task on each refresh — outcomes,
+  conversation threads, grades, baselines, insights — at about 30 µs a task: 2.9 s to absorb 100 tasks
+  at 100,000. Making that pass incremental too needs streaming quantiles and incremental aggregates.
 - **On this machine the SDK path is dominated by the OS, not the engine.** Opening each run file cost
   about 9 ms, most likely real-time antivirus scanning newly written files. The CI runner confirms it
   (Python 3.12, Linux, GitHub's `ubuntu-latest`), with the same code:
@@ -49,6 +52,30 @@ What these say:
 
   File opens were about 100× cheaper on Linux, and there the two ingest paths cost about the same. The
   benchmark reports file-scan time separately so the OS isn't mistaken for the engine.
+
+## Incremental refresh (#5)
+
+Before #5, every refresh re-scored every task and rewrote the whole `tasks` table, so absorbing new
+traffic cost as much as the store was large:
+
+| span path, +1% | before | after | re-scored after |
+|---|---:|---:|---:|
+| 10,000 tasks | 1.1 s | 0.40 s | 100 |
+| 20,000 tasks | 5.65 s | 0.66 s | 200 |
+| 100,000 tasks | 13.5 s | 4.2 s | 1,000 |
+
+Two things made that possible. A task is re-scored only when something it depends on changed — its
+own run, a field the cross-task pass writes (outcome, grade, thread successor, subagent cost), or the
+two baseline figures scoring reads — and only changed rows are written. And baselines no longer move
+with every arrival: each type's is computed from its earliest M tasks, where M advances in 5% steps.
+The first version rounded baselines to three significant figures instead; at 100,000 tasks one type's
+median crossed a rounding boundary and 21,000 tasks were re-scored for 1,000 new ones. Rounding can
+also oscillate on a boundary. The stepped sample can't, and costs about 20 re-scores per new task
+over time.
+
+`tests/test_incremental.py` holds it to exactness: an incrementally maintained store must equal a full
+rebuild, every column of every row, over randomized histories. That test also found a bug that predated
+#5 — a conversation's earlier task kept a follow-up that had since been deleted — see the CHANGELOG.
 
 ## The quadratic this found
 
@@ -78,10 +105,11 @@ in one process on one runner, where machine speed cancels out.
 | | growth, 1k → 4k | limit |
 |---|---:|---:|
 | linear | 4× | |
-| today, span path, full refresh | 4.0× | 6× |
-| today, span path, incremental | 4.9× | 6× |
+| span path, full refresh | 3.9× | 6× |
+| span path, +100 tasks | 0.7× | 6× |
 | the quadratic above | 14.9× | 6× — fails |
 
 The gate catches cost that grows faster than the data, not a constant-factor slowdown. That trade is
-deliberate: a flat 20% slower is annoying, and quadratic is an outage. When #5 makes the incremental
-refresh independent of store size, its limit should come down to hold it there.
+deliberate: a flat 20% slower is annoying, and quadratic is an outage. The +100 figure is flat at these
+sizes because fixed overhead hides the per-task pass; it is linear at scale (see above). Whether scoring
+is limited to new traffic isn't left to timing at all: `tests/test_incremental.py` asserts the count.

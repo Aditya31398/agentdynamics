@@ -74,6 +74,10 @@ AGENTDYNAMICS_URL=http://127.0.0.1:8790 python examples/governed_agent.py 45   #
 - UI tests run `agentdynamics serve` as a subprocess. On a thread inside the test process the page
   raced Chrome's DOM dump and was captured mid-boot, intermittently. Fixture timestamps must be
   recent: the console defaults to the last 30 days, and an empty window looks like a failed load.
+- **Incremental refresh must equal a full rebuild.** `finalize` skips a task when its `SETTLED_FIELDS` and
+  baseline are unchanged, so any field the settle phase writes must be listed there, and must be *assigned*
+  on every pass, never only set when a condition holds (a stale `next_prompt` survived exactly that way).
+  `tests/test_incremental.py` compares every column against a full rebuild and diffs the settle phase's writes.
 - **SQLite plans depend on statistics a fresh install doesn't have.** Name the index (`INDEXED BY`) for any
   lookup the engine does per trace or per refresh, and cover it in `test_span_lookups_use_their_indexes`.
 - Optional-dependency checks: `importlib.util.find_spec("a.b")` raises when `a` is missing. Use the `has()`
@@ -95,16 +99,19 @@ agentdynamics/
   store.py            SQLite (WAL); durable vs derived tables
   server.py           API + receivers (/v1/traces, /langsmith/*, /api/ingest*) + auth roles
   web/                index.html, app.js (all pages), charts.js, style.css
-tests/                test_core, test_integrations, test_autotrace, test_aegis_integration, test_ecosystem, test_live_anthropic, test_console_ui
+tests/                test_core, test_integrations, test_autotrace, test_aegis_integration, test_ecosystem, test_live_anthropic,
+                      test_console_ui, test_outcomes, test_token_accounting, test_policy_coverage, test_incremental
+bench/                bench.py: ingest / rebuild / incremental timings and the CI scaling gate
 examples/             langgraph_style_app, otel_multiagent, governed_agent, demo_agent
 deploy/               Dockerfile companion: compose, OTel Collector config, example TOML
 ```
 
 ## Known weak areas, ranked
 
-1. **Scale.** Each refresh rewrites the whole `tasks` table and `finalize()` runs over every run in memory, so an
-   incremental refresh costs O(store), not O(new traffic): 13.5 s to absorb 1% more at 100k tasks (measured,
-   [docs/BENCHMARKS.md](docs/BENCHMARKS.md)). The fix is incremental finalize (#5), then a store backend (#7).
+1. **Scale.** An incremental refresh scores and writes only changed tasks (#5), but a light pass still runs over
+   every task each refresh (outcomes, threads, grades, baselines, insights), about 30 µs a task: 4.2 s to absorb
+   1% more at 100k tasks, 2.9 s for a fixed 100 ([docs/BENCHMARKS.md](docs/BENCHMARKS.md)). Next is a store backend (#7); making that
+   pass incremental needs streaming quantiles and incremental aggregates.
 2. **Most outcomes are still inferred.** They *can* be graded now (`agentdynamics.outcome`, `/api/outcomes`)
    and every task says which (`outcome_source`), but nothing grades them automatically.
 3. **Coding-task typing is still keyword rules.** Traced apps use the workflow name; every task records

@@ -9,6 +9,7 @@ AppDynamics -> AgentDynamics mapping implemented here:
   Code-level hotspots   -> waste findings (redundant reads, loops, error streaks)
 """
 import math
+import operator
 import re
 import statistics
 import time
@@ -623,8 +624,69 @@ def _apply_grades(tasks, grades):
             t["outcome_source"], t["outcome_reason"] = "inferred", None
 
 
-def finalize(runs, tasks_by_run, rules=None, now=None, grades=None):
-    """Cross-run analysis: outcomes, subagent roll-up, baselines, scores, events."""
+# Everything finalize writes onto a task *before* scoring, for tasks whose run did not change. If one of
+# these moves, the task's row must be rewritten and re-scored; if none did and its baseline didn't either,
+# the previous score and events still hold. A field added to the settle phase below must be added here,
+# or incremental refreshes will serve it stale -- test_incremental.py compares every column against a
+# full rebuild to catch exactly that.
+SETTLED_FIELDS = ("outcome", "outcome_source", "outcome_reason", "next_prompt", "rework", "root_error",
+                  "task_type", "task_type_source", "task_type_match", "workflow",
+                  "subagent_cost", "subagents", "parent_task_id")
+
+
+_settled = operator.itemgetter(*SETTLED_FIELDS)     # built in C: this runs for every task on every refresh
+
+
+def _settled_values(t):
+    try:
+        return _settled(t)
+    except KeyError:          # a field some sources never set (Claude Code tasks carry no root_error)
+        return tuple(t.get(f) for f in SETTLED_FIELDS)
+
+
+class ScoreCache:
+    """What finalize needs to skip unchanged tasks on the next refresh.
+
+    sig[task_id]     the settled fields plus the two baseline numbers scoring reads
+    events[task_id]  the health events that signature produced
+    changed          task ids scored this time (their rows must be written)
+    """
+
+    def __init__(self):
+        self.sig, self.events, self.changed = {}, {}, set()
+
+
+BASELINE_EXACT_UP_TO = 20      # below this many tasks, a type's baseline uses all of them
+BASELINE_GROWTH = 1.05          # above it, only when the count has grown 5% since the last step
+
+
+def baseline_sample_size(n):
+    """How many of a type's n tasks its baseline is computed from.
+
+    Every task is scored against its type's baseline, so a baseline that moved with each arrival would
+    make every refresh re-score the whole type -- no cheaper than rebuilding. Instead the baseline is
+    computed from the type's *earliest* M tasks (by start, then id), and M only advances in 5% steps: a
+    type re-scores once per 5% of growth, about 20 re-scores per new task however large the store, and
+    never oscillates. It depends on the data alone, so a full rebuild computes the same baseline. It
+    leaves out at most the newest 5% of a type's history, which is noise for a "what is normal" figure.
+    """
+    if n <= BASELINE_EXACT_UP_TO:
+        return n
+    m = BASELINE_EXACT_UP_TO
+    while True:
+        nxt = max(m + 1, int(m * BASELINE_GROWTH))
+        if nxt > n:
+            return m
+        m = nxt
+
+
+def finalize(runs, tasks_by_run, rules=None, now=None, grades=None, cache=None, dirty=()):
+    """Cross-run analysis: outcomes, subagent roll-up, baselines, scores, events.
+
+    With a `cache` (a ScoreCache kept between calls), tasks from runs not in `dirty` whose settled
+    fields and baseline are unchanged keep their previous score and events instead of being re-scored;
+    `cache.changed` then lists the task ids that were. The result is the same as without a cache.
+    """
     rules = rules or DEFAULT_RULES
     now = now or time.time()
     all_tasks = [t for r in runs for t in tasks_by_run[r["id"]]]
@@ -637,11 +699,19 @@ def finalize(runs, tasks_by_run, rules=None, now=None, grades=None):
         if run["source"] == "claude-code" or not run.get("workflow"):
             _outcomes_claude(ts, now)
         else:
+            # Derived afresh every pass, never carried over. The engine keeps an unchanged run's task
+            # objects between refreshes, and linking below only *sets* these on tasks that have a
+            # successor: a task whose follow-up was deleted, edited or moved to another thread kept the
+            # old values -- and so its "rework" outcome -- until a full rebuild. test_incremental found it.
+            for t in ts:
+                t["next_prompt"], t["rework"] = None, 0
             if run.get("thread_id"):
                 threads[(run["source"], run["thread_id"])].extend(ts)
     # traced conversations: the next trace in the same thread plays the role of "your next message"
     for group in threads.values():
-        group.sort(key=lambda x: x["started"] or 0)
+        # ties on start time break by id, not by whatever order the runs happen to be held in -- which
+        # differs between a long-running engine and a fresh rebuild
+        group.sort(key=lambda x: (x["started"] or 0, x["id"]))
         for a, b in zip(group, group[1:]):
             a["next_prompt"] = b["prompt"][:300]
             a["rework"] = 1 if CORRECTION.search(b["prompt"][:200]) else 0
@@ -694,10 +764,12 @@ def finalize(runs, tasks_by_run, rules=None, now=None, grades=None):
     for k, g in groups.items():
         if len(g) < 3 and k != "__all__":
             continue
+        n = len(g)
+        g = sorted(g, key=lambda t: (t["started"] or 0, t["id"]))[:baseline_sample_size(n)]
         costs = [t["cost"] + t["subagent_cost"] for t in g]
         durs = [t["duration_s"] for t in g]
         baselines[k] = {
-            "n": len(g),
+            "n": n, "sample": len(g),
             "cost_p50": pct(costs, 0.5), "cost_p90": pct(costs, 0.9),
             "duration_p50": pct(durs, 0.5), "duration_p90": pct(durs, 0.9),
             "tokens_p50": pct([t["total_tokens"] for t in g], 0.5),
@@ -706,13 +778,31 @@ def finalize(runs, tasks_by_run, rules=None, now=None, grades=None):
         }
 
     events = []
+    dirty = set(dirty)
+    if cache is not None:
+        cache.changed = set()
+        live = {t["id"] for t in all_tasks}
+        for tid in [k for k in cache.sig if k not in live]:     # tasks that no longer exist
+            cache.sig.pop(tid, None)
+            cache.events.pop(tid, None)
     for t in all_tasks:
+        if cache is not None:
+            b = baselines.get(t["task_type"]) or baselines.get("__all__") or {}
+            sig = (_settled_values(t), b.get("cost_p50"), b.get("duration_p50"))
+            if t["run_id"] not in dirty and cache.sig.get(t["id"]) == sig:
+                events.extend(cache.events[t["id"]])            # nothing it depends on moved
+                continue
         t["failed"] = 1 if t.get("outcome") == "failed" else 0
         if t["llm_calls"] == 0 and t["tool_calls"] == 0:
             t.update({"scores": {}, "score": None, "apdex": None, "cost_vs_baseline": None, "duration_vs_baseline": None})
-            continue
-        score_task(t, baselines)
-        events.extend(evaluate_rules(t, rules))
+            ev = []
+        else:
+            score_task(t, baselines)
+            ev = evaluate_rules(t, rules)
+        events.extend(ev)
+        if cache is not None:
+            cache.sig[t["id"]], cache.events[t["id"]] = sig, ev
+            cache.changed.add(t["id"])
     return all_tasks, baselines, events
 
 
@@ -725,7 +815,11 @@ def analyze(runs, rules=None, now=None):
 
 def process_insights(tasks):
     """Aggregate findings meant to help a human assess how the agent works."""
-    main = [t for t in tasks if not t["is_subagent"] and t["llm_calls"] > 0]
+    # One canonical order. The engine holds tasks in whatever order runs arrived, which differs between
+    # a long-running process and a fresh rebuild; float sums round differently in a different order,
+    # and example lists are cut to their first few. Sorting makes the result depend on the data alone.
+    main = sorted((t for t in tasks if not t["is_subagent"] and t["llm_calls"] > 0),
+                  key=lambda t: (t["started"] or 0, t["id"]))
     if not main:
         return []
     out = []
