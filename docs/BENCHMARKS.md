@@ -39,9 +39,16 @@ What these say:
   [weak area 1](../CLAUDE.md) with a number on it, and what [#5](https://github.com/Aditya31398/agentdynamics/issues/5)
   (incremental finalize) is for.
 - **On this machine the SDK path is dominated by the OS, not the engine.** Opening each run file cost
-  about 9 ms, most likely real-time antivirus scanning newly written files; the analysis itself costs
-  about the same per task as the span path. On Linux, file opens are far cheaper, so expect SDK numbers
-  much closer to the span path's. The benchmark reports file-scan time separately for this reason.
+  about 9 ms, most likely real-time antivirus scanning newly written files. The CI runner confirms it
+  (Python 3.12, Linux, GitHub's `ubuntu-latest`), with the same code:
+
+  | 1,000 tasks | SDK full refresh | of which opening files | span full refresh | incremental (SDK / span) |
+  |---|---:|---:|---:|---:|
+  | Windows laptop, antivirus on | 10.05 s | 9.5 s | 0.60 s | 0.31 s / 0.10 s |
+  | Linux CI runner | 0.37 s | 0.09 s | 0.31 s | 0.07 s / 0.06 s |
+
+  File opens were about 100× cheaper on Linux, and there the two ingest paths cost about the same. The
+  benchmark reports file-scan time separately so the OS isn't mistaken for the engine.
 
 ## The quadratic this found
 
