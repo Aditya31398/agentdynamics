@@ -4,15 +4,17 @@ Given the policy runs were governed by (the *base*) and the runs themselves, `sy
 policy that can only be tighter than the base:
 
   tools    only tools that were actually called (and allowed); unused grants are dropped
-  args     observed path/URL prefixes narrow a base prefix; small categorical sets become `one_of`;
-           `max_len` shrinks to 2x the longest observed value; base regexes are kept as they are
+  args     observed path/URL prefixes narrow a base prefix; numbers get a `max_value` ceiling; small
+           categorical sets become `one_of`; `max_len` shrinks to 2x the longest observed value; base
+           regexes are kept as they are
   budget   p99 of real per-task usage x headroom, never above the base
   spawn    depth / fan-out actually used, never above the base; no spawning if none was observed
   data     unchanged (egress sinks are kept even for dropped tools; removing one reads as widening)
 
 Without a base it drafts a standalone policy from observation alone (review it before use).
 Every change is reported so the diff can be reviewed like any other PR. Verify the result with
-`aegis ratify` and `aegis drift --baseline <base> --candidate <generated>`.
+`aegis ratify` and `aegis drift --baseline <base> --candidate <generated>`, which check the declaration,
+and `coverage`, which checks it against the calls that actually ran.
 """
 from __future__ import annotations
 
@@ -20,7 +22,7 @@ import copy
 import json
 import math
 import os
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 from .analysis import pct
 
@@ -96,44 +98,83 @@ def _arg_constraints(name, values, base_c, n_calls, changes, tool, headroom=1.5)
     return c
 
 
-def replay(policy_doc, steps):
-    """Would this candidate policy refuse calls that actually happened and were allowed?
+def coverage(policy_doc, steps):
+    """How much of the traffic that actually ran would this candidate policy refuse?
 
-    A synthesized policy that refuses the traffic it was built from is broken, and neither
-    `aegis ratify` nor `aegis drift` can see it: both compare declarations, and a policy can be
-    strictly narrower than its base, perfectly constitutional, and still deny everything. Only
-    the recorded calls can answer this, which is why the check lives here and not in Aegis.
+    A tightening can be strictly narrower than its base, constitutional and free of drift, and still
+    refuse half of production. `aegis ratify` and `aegis drift` compare declarations, so they cannot
+    see that; only the recorded calls can, which is why this lives here and not in Aegis.
 
-    Returns a list of {tool, arg, value, rule} for calls the candidate would now deny, or None
-    when Aegis is not installed to evaluate the constraints.
+    Each call is judged by Aegis's own CapabilityGuard -- the same code that enforces which tools and
+    arguments a policy allows -- so on that question the report cannot disagree with enforcement.
+    Budgets are a different question: they are cumulative per run, not per call, and are reported as
+    headroom (limit / p95 used) on the Governance page instead. Only calls that went through a kernel
+    count: a plain @tool function the policy never applies to is not "denied" by leaving it out. And
+    when a call's
+    arguments were not recorded (content capture off), only its tool grant can be judged; those are
+    counted separately rather than failed for "missing" arguments nobody wrote down.
+
+    Returns None when Aegis is not installed, else:
+      {"calls", "denied", "denied_fraction", "args_unrecorded",
+       "by_tool": [{"tool", "calls", "denied", "denied_fraction", "rules": {rule: n}}],   worst first
+       "examples": [{"tool", "rule", "arg", "value", "reason"}]}                        one per kind
     """
     try:
+        from aegis import Grant
+        from aegis.guards.base import Call
+        from aegis.guards.capability import CapabilityGuard
         from aegis.policy import parse_policy
     except ImportError:
         return None
     pol = parse_policy(copy.deepcopy(policy_doc), source="candidate")
-    denied, seen = [], set()
+    grant, guard = Grant.root(pol), CapabilityGuard()
+    tools, examples, seen = {}, [], set()
+    calls = denied = unrecorded = 0
     for s in steps:
-        if s.get("kind") != "tool" or s.get("denied") or s.get("name") in INTERNAL_TOOLS:
+        if (s.get("kind") != "tool" or s.get("denied") or not s.get("governed")
+                or s.get("name") in INTERNAL_TOOLS):
             continue
-        rule = pol.tools.get(s["name"])
-        if rule is None:
-            continue                      # dropping an unused grant is the point, not a regression
+        name = s["name"]
+        row = tools.setdefault(name, {"tool": name, "calls": 0, "denied": 0, "rules": Counter()})
+        calls += 1
+        row["calls"] += 1
+        raw = s.get("args_json")
         try:
-            args = json.loads(s["args_json"]) if s.get("args_json") else {}
+            args = json.loads(raw) if raw else None
         except ValueError:
-            continue
+            args = None
         if not isinstance(args, dict):
-            continue
-        for arg, con in rule.args.items():
-            if arg not in args or args[arg] is None:
+            unrecorded += 1
+            if pol.rule_for(name) is not None:
+                continue                                   # the grant holds; arguments unknowable
+            verdict_rule, arg, value, reason = "capability.not_granted", None, None, f"tool '{name}' is not in the policy"
+        else:
+            v = guard.check(grant, Call(name, args))
+            if v.allowed:
                 continue
-            bad = con.check(args[arg])
-            if bad and (s["name"], arg, bad) not in seen:
-                seen.add((s["name"], arg, bad))
-                denied.append({"tool": s["name"], "arg": arg, "value": args[arg],
-                               "rule": f"capability.arg_{bad}"})
-    return denied
+            verdict_rule, arg, reason = v.rule, v.details.get("arg"), v.reason
+            value = args.get(arg) if arg else None
+        denied += 1
+        row["denied"] += 1
+        row["rules"][verdict_rule] += 1
+        if (name, verdict_rule, arg) not in seen:
+            seen.add((name, verdict_rule, arg))
+            examples.append({"tool": name, "rule": verdict_rule, "arg": arg, "value": value, "reason": reason})
+    by_tool = []
+    for row in tools.values():
+        row["denied_fraction"] = round(row["denied"] / row["calls"], 4)
+        row["rules"] = dict(row["rules"])
+        by_tool.append(row)
+    by_tool.sort(key=lambda r: (-r["denied"], r["tool"]))
+    return {"calls": calls, "denied": denied, "denied_fraction": round(denied / calls, 4) if calls else 0.0,
+            "args_unrecorded": unrecorded, "by_tool": by_tool, "examples": examples}
+
+
+def replay(policy_doc, steps):
+    """The calls this candidate would now refuse, one example per kind -- or [] if none, or None
+    without Aegis. The yes/no view of `coverage`, kept for the `regressions` API field."""
+    cov = coverage(policy_doc, steps)
+    return None if cov is None else cov["examples"]
 
 
 def synthesize(base_doc, tasks, steps, headroom=1.5, name=None):

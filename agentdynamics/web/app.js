@@ -130,6 +130,21 @@
   const head = (title, desc, right = "") => `<div class="page-head"><div><h1>${title}</h1>${desc ? `<p>${desc}</p>` : ""}</div><div class="row">${right}</div></div>`;
   const kpi = (label, value, hint = "", extra = "") => `<div class="kpi"><div class="label">${label}${extra}</div><div class="value">${value}</div>${hint ? `<div class="hint">${hint}</div>` : ""}</div>`;
   const card = (title, body, sub = "", cls = "") => `<div class="card ${cls}"><div class="card-head"><h2>${title}</h2><span class="sub">${sub}</span></div>${body}</div>`;
+  // How much of the traffic that actually ran a candidate policy would refuse. ratify and drift
+  // compare declarations and cannot answer this; only the recorded calls can.
+  const coverageBlock = (cov) => {
+    if (!cov) return `<p class="small muted">Install <code>aegis-kernel</code> alongside the server to check this policy against recorded traffic.</p>`;
+    if (!cov.calls) return `<p class="small muted">No governed calls in scope to check this policy against.</p>`;
+    const head = cov.denied
+      ? `<span class="tag bad">would refuse ${num(cov.denied)} of ${num(cov.calls)} calls that were allowed (${pct(cov.denied_fraction)})</span>`
+      : `<span class="tag ok">refuses none of the ${num(cov.calls)} calls that were allowed</span>`;
+    const rows = cov.by_tool.filter((t) => t.denied);
+    const table = rows.length ? `<div class="table-wrap"><table><thead><tr><th>Tool</th><th class="num">Refused</th><th class="num">Share</th><th>Rule</th></tr></thead><tbody>
+      ${rows.map((t) => `<tr><td class="mono">${esc(t.tool)}</td><td class="num">${num(t.denied)} of ${num(t.calls)}</td><td class="num">${pct(t.denied_fraction)}</td>
+        <td class="small">${Object.entries(t.rules).map(([k, n]) => `${esc(k)} ×${n}`).join(", ")}</td></tr>`).join("")}</tbody></table></div>` : "";
+    const note = cov.args_unrecorded ? `<p class="small muted">${num(cov.args_unrecorded)} call(s) had no recorded arguments (content capture off); only their tool grant was checked.</p>` : "";
+    return `<h3 style="margin:10px 0 6px">Against recorded traffic</h3><div style="margin-bottom:8px">${head}</div>${table}${note}`;
+  };
   // What the spend figure leaves out or guesses at. Both are reported, never silently absorbed.
   const spendCaveats = (k) => {
     const out = [];
@@ -907,6 +922,7 @@ governance.instrument(kernel, root, watchdog=governance.Watchdog(max_repeated_de
         <div class="row"><button id="gv-copy">Copy</button><button class="primary" id="gv-dl">Download YAML</button></div></div>
         <p class="small muted">From ${r.stats.tasks} tasks and ${r.stats.tool_calls} allowed calls. ${r.changes.length} change(s). The result can only be tighter than <code>${esc(r.base || "none")}</code>. Verify with <code>aegis ratify</code> and <code>aegis drift --baseline &lt;base&gt; --candidate &lt;this&gt;</code>.</p>
         <ul class="small" style="margin:6px 0 10px;padding-left:18px">${r.changes.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>
+        ${coverageBlock(r.coverage)}
         <div class="code-block" style="max-height:360px;overflow:auto">${esc(r.yaml)}</div></div>`;
       $("#gv-copy").onclick = async () => { try { await navigator.clipboard.writeText(r.yaml); toast("Copied"); } catch { toast("Select and copy"); } };
       $("#gv-dl").onclick = () => { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([r.yaml], { type: "text/yaml" })); a.download = `${r.policy.name}.yaml`; a.click(); };

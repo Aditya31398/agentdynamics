@@ -22,7 +22,7 @@ for each of these; the work is making that number defensible to someone who will
       heuristic is the only thing standing between the cost column and quiet double counting.
       Pin it per provider, and report *unknown* rather than guessing when the shape is unfamiliar
       — the same rule `pricing.py` already follows for unpriced models.
-- [ ] [#3](https://github.com/Aditya31398/agentdynamics/issues/3) **Policy coverage report.** `govern.replay` (0.4.1) answers "would this candidate deny
+- [x] [#3](https://github.com/Aditya31398/agentdynamics/issues/3) **Policy coverage report.** `govern.replay` (0.4.1) answers "would this candidate deny
       anything it has seen?". Extend it to report *how much* traffic each tool and argument
       constraint would deny, so a tightening can be judged before deploying rather than only
       rejected when it is obviously broken. This is the check neither `aegis ratify` nor

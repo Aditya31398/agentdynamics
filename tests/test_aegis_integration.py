@@ -262,7 +262,7 @@ class AegisIntegrationTest(unittest.TestCase):
             {"name": "payments.refund", "require_args": ["amount"],
              "args": {"amount": {"max_value": 200}, "reason": {"one_of": ["damaged", "late"]}}}]}}
         amounts = [18.0, 42.5, 76.4, 129.99, 18.0, 42.5]
-        steps = [{"kind": "tool", "name": "payments.refund", "denied": 0, "task_id": "t1",
+        steps = [{"kind": "tool", "name": "payments.refund", "denied": 0, "task_id": "t1", "governed": 1,
                   "args_json": json.dumps({"amount": a, "reason": "damaged"})} for a in amounts]
         tasks = [{"cost": 0.01, "subagent_cost": 0, "total_tokens": 10, "wall_s": 1, "tool_calls": 1}]
 

@@ -11,8 +11,9 @@ import json
 import sqlite3
 import time
 
-SCHEMA_VERSION = 7   # 6: outcome_source / outcome_reason (graded outcomes)
+SCHEMA_VERSION = 8   # 6: outcome_source / outcome_reason (graded outcomes)
                      # 7: tokens_unverified (cache accounting that rests on a guess)
+                     # 8: steps.governed (did this call go through an Aegis kernel)
 
 RUN_COLS = ["id", "source", "project", "environment", "framework", "workflow", "cwd", "title", "agent_name", "parent_id",
             "parent_task_id", "is_subagent", "thread_id", "user_id", "tags", "root_status", "complete", "version", "git_branch",
@@ -40,7 +41,7 @@ STEP_COLS = ["run_id", "seq", "task_id", "kind", "name", "model", "phase", "targ
              "context_tokens", "thinking_tokens", "is_error", "output_chars", "text", "input_preview", "error",
              "subagent_id", "stop_reason", "tool_calls", "effort",
              "span_id", "parent_span_id", "depth", "node", "agent", "span_kind", "ttft_ms", "docs", "hitl", "rate_limited",
-             "denied", "rule", "guard", "grant_depth", "args_json"]
+             "denied", "rule", "guard", "grant_depth", "args_json", "governed"]
 EVENT_COLS = ["id", "ts", "rule_id", "rule", "severity", "task_id", "run_id", "project", "task_type", "message", "value"]
 
 DERIVED = ["runs", "tasks", "steps", "events", "baselines", "meta"]

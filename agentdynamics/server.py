@@ -643,7 +643,7 @@ class Api:
 
     def export_policy(self, q):
         """Observe -> govern: a tightened policy for a workflow, derived from its governed runs."""
-        from .govern import render, replay, synthesize
+        from .govern import coverage, render, synthesize
         ts = self._governed(q)
         if q.get("policy"):
             ts = [t for t in ts if t["policy_version"] == q["policy"]]
@@ -653,20 +653,38 @@ class Api:
         base = (self._policy_docs().get(label) or {}).get("doc") if label else None
         if q.get("base_doc"):
             base = q["base_doc"]
-        steps = self._steps_for([t["id"] for t in ts], "task_id, kind, name, denied, rule, agent, grant_depth, args_json")
+        steps = self._steps_for([t["id"] for t in ts], self.GOV_STEP_COLS)
         doc, changes, stats = synthesize(base, [t for t in ts if not t["is_subagent"]], steps,
                                          headroom=float(q.get("headroom") or 1.5))
         scope = ", ".join(f"{k}={q[k]}" for k in ("project", "workflow", "environment", "days") if q.get(k))
         # A candidate that refuses the traffic it was built from ratifies and shows no drift, so
         # nothing downstream would catch it. Check here, where the call history lives.
-        regressions = replay(doc, steps)
+        cov = coverage(doc, steps)
+        regressions = cov["examples"] if cov else []
         note = f"Base: {label or 'none'}. Scope: {scope or 'all governed runs'}."
-        if regressions:
-            note += (" WARNING: this policy would deny " + str(len(regressions)) +
-                     " kind(s) of call that were allowed in the observed traffic.")
+        if cov and cov["denied"]:
+            note += (f" WARNING: this policy would deny {cov['denied']} of {cov['calls']} observed calls "
+                     f"({cov['denied_fraction']:.1%}) that were allowed.")
         return {"yaml": render(doc, changes, stats, note),
                 "policy": doc, "changes": changes, "stats": stats, "base": label,
-                "regressions": regressions or []}
+                "regressions": regressions, "coverage": cov}
+
+    GOV_STEP_COLS = "task_id, kind, name, denied, rule, agent, grant_depth, args_json, governed"
+
+    def check_policy(self, q):
+        """Judge any candidate policy -- hand-edited or generated -- against the recorded traffic in
+        scope: how much of what actually ran would it refuse, per tool and per rule."""
+        from .govern import coverage
+        doc = q.get("candidate_doc")
+        if not isinstance(doc, dict):
+            return {"error": "candidate_doc (a policy document) is required"}
+        ts = self._governed(q)
+        if q.get("policy"):
+            ts = [t for t in ts if t["policy_version"] == q["policy"]]
+        cov = coverage(doc, self._steps_for([t["id"] for t in ts], self.GOV_STEP_COLS))
+        if cov is None:
+            return {"error": "checking a policy needs Aegis: pip install aegis-kernel"}
+        return {"coverage": cov, "tasks": len(ts)}
 
     # ------------------------------------------------------------ enterprise endpoints
     def workflows(self, q):
@@ -957,6 +975,15 @@ class Handler(BaseHTTPRequestHandler):
                 recs = [unwrap(r) for r in recs]
                 n = e.ingest_records([(detect(r), r) for r in recs if detect(r)])
                 return self._send(200, {"ok": True, "accepted": n, "received": len(recs)})
+            if p == "/api/policy/check":
+                # reads recorded traffic, writes nothing: a CI job with a read key can gate a policy change
+                if not self._require("read"):
+                    return
+                body = json.loads(self._body() or b"{}")
+                q = {k: str(v) for k, v in body.items() if k in ("workflow", "project", "environment", "days", "policy") and v}
+                q["candidate_doc"] = body.get("candidate")
+                res = self.api.check_policy(q)
+                return self._send(400 if res.get("error") else 200, res)
             # ---- outcome grades: state what happened instead of leaving it to inference.
             # Needs `ingest`, like feedback: whoever writes telemetry may say how a task ended.
             if p == "/api/outcomes" or (p.startswith("/api/tasks/") and p.endswith("/outcome")):

@@ -85,13 +85,45 @@ tighten the base policy:
 | | |
 |---|---|
 | tools | only tools actually called and allowed; unused grants are removed; never adds a tool the base lacks |
-| arguments | observed path/URL prefixes narrow a base prefix; small categorical sets become `one_of`; `max_len` = 2× longest observed; base regexes are kept |
+| arguments | observed path/URL prefixes narrow a base prefix; numbers get a `max_value` ceiling (largest observed × headroom); small categorical sets become `one_of`; `max_len` = 2× longest observed; base regexes are kept |
 | budget | p99 of real per-task usage × headroom (default 1.5), capped at the base |
 | spawn | depth / fan-out actually used; no spawning if none was observed |
 | data | unchanged (removing an egress sink reads as widening to Aegis drift, even for a removed tool) |
 
 Every change is listed at the top of the YAML for review. Runs record the policy name, version and digest,
 so **Compare → policy** shows whether a tighter policy changed success rate, cost or rework.
+
+### Checking a policy change against real traffic
+
+`aegis ratify` and `aegis drift` compare declarations. Neither ever sees a call, so a policy can be strictly
+tighter than its base, constitutional and free of drift, and still refuse a third of production. Only the
+recorded traffic can tell you that, so AgentDynamics checks it:
+
+```bash
+# any candidate, hand-edited or generated: how much of what actually ran would it refuse?
+agentdynamics policy check --candidate policy.yaml --workflow support_agent
+#   would deny 7 of 20 calls that were allowed (35.0%)
+#     kb.search            4 of 4     100.0%  capability.missing_arg x4
+#     payments.refund      2 of 5      40.0%  capability.arg_max_value x2
+#     email.send           1 of 1     100.0%  capability.not_granted x1
+#   FAIL: 35.0% exceeds --max-denied-fraction 0.0%
+```
+
+Each recorded call is judged by Aegis's own `CapabilityGuard`, the code that enforces the policy, so the
+report agrees with enforcement on which tools and arguments are allowed. Budgets are cumulative per run, not
+per call, and appear as headroom in the policy table instead. Only calls that went through a kernel are
+counted: a plain `@tool` function the policy never applies to is not refused by leaving it out. Where
+arguments weren't recorded (content capture off), only the tool grant is checked, and the report says how
+many calls that was.
+
+The command exits non-zero when the refused share exceeds `--max-denied-fraction` (default `0`: any refusal
+fails), so it can gate a policy change in CI. `policy export` runs the same check on what it generates, and
+so does the **Generate tightened policy** panel. A CI job without the data directory can use the API with a
+`read` key:
+
+```bash
+curl -X POST $AGENTDYNAMICS_URL/api/policy/check -H "Authorization: Bearer $READ_KEY"      -d '{"workflow": "support_agent", "candidate": <policy document as JSON>}'
+```
 
 ## Without the in-process integration
 

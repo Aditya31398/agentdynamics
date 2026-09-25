@@ -16,14 +16,26 @@ bumps the minor version.
   graded versus guessed, and `kpis.outcomes_by_source` carries the counts. Grades are durable: they
   survive schema upgrades, and a grade that arrives before its task applies when the task does.
 
+- **Policy coverage** (#3): how much of the traffic that actually ran would a policy refuse, per tool and per
+  rule. `agentdynamics policy check --candidate policy.yaml` judges any candidate against recorded traffic,
+  `POST /api/policy/check` does the same with a `read` key, and `--max-denied-fraction` (default 0) turns it
+  into a CI gate. `policy export` and the Generate tightened policy panel report it for what they generate,
+  and the export API gains a `coverage` field.
+
 ### Changed
 - **Recorded feedback now settles the outcome** rather than being one signal among several. A score
   of 0.5 or more makes a task `completed` even if the run ended in an error; below 0.5 makes it
   `rework`. Success rate, failed-run rate and Apdex can shift for existing data on upgrade: on the
   demo dataset, failed runs moved from 16.0% to 13.8% and Apdex from 0.69 to 0.72.
-- `SCHEMA_VERSION` 7. Derived tables rebuild from sources on first start; nothing needs migrating.
+- `SCHEMA_VERSION` 8 (steps now record whether a call went through an Aegis kernel). Derived tables
+  rebuild from sources on first start; nothing needs migrating.
 
 ### Fixed
+- **The 0.4.1 policy-export check missed most refusals.** It re-checked argument constraints only, so a
+  generated policy that dropped a tool still in use, or required an argument calls never sent, passed as
+  safe. On the coverage test's candidate it flagged 2 of the 7 calls a real kernel refuses. Calls are now
+  judged by Aegis's own `CapabilityGuard`, and a test replays them through a real kernel and requires the
+  same verdict for every call.
 - **Prompt-cache writes were charged twice** for traces from OpenTelemetry GenAI, OpenInference and
   LangSmith (#2). All three document their input count as including cache reads *and* cache writes;
   the collector subtracted only the reads, so every cached write was also billed as uncached input.

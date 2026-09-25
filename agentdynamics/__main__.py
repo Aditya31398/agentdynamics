@@ -191,6 +191,22 @@ def cmd_policy(a, eng):
         for r in g["by_rule"][:8]:
             print(f"  {r['n']:>5}  {r['rule']}")
         return 0
+    if a.action == "check":
+        if not a.candidate:
+            print("policy check needs --candidate <policy.yaml>", file=sys.stderr)
+            return 2
+        try:
+            from aegis import dump_policy, load_policy
+        except ImportError:
+            print("policy check needs aegis-kernel: pip install aegis-kernel", file=sys.stderr)
+            return 2
+        q["candidate_doc"] = dump_policy(load_policy(a.candidate))
+        res = api.check_policy(q)
+        if res.get("error"):
+            print(res["error"], file=sys.stderr)
+            return 1
+        print(f"{a.candidate} against {res['tasks']} governed task(s) in scope:")
+        return _report_coverage(res["coverage"], a.max_denied_fraction, sys.stdout)
     res = api.export_policy(q)
     if res.get("error"):
         print(res["error"], file=sys.stderr)
@@ -203,16 +219,41 @@ def cmd_policy(a, eng):
             print(f"  - {c}", file=sys.stderr)
     else:
         print(res["yaml"])
-    # Replaying the observed calls is the only check that catches a policy which is strictly
-    # narrower than its base, ratifies cleanly, and still refuses everything in production.
-    if res.get("regressions"):
-        print("", file=sys.stderr)
-        print(f"WARNING: this policy would deny {len(res['regressions'])} kind(s) of call that "
-              f"the observed traffic made successfully:", file=sys.stderr)
-        for r in res["regressions"][:10]:
-            print(f"  - {r['tool']}({r['arg']}={r['value']!r}) -> {r['rule']}", file=sys.stderr)
-        print("  Review before deploying; `aegis ratify` and `aegis drift` cannot see this.",
-              file=sys.stderr)
+    if res.get("coverage") is None:
+        return 0
+    print("", file=sys.stderr)
+    print("Against the traffic it was generated from:", file=sys.stderr)
+    return _report_coverage(res["coverage"], a.max_denied_fraction, sys.stderr)
+
+
+def _report_coverage(cov, max_fraction, out):
+    """Print how much observed traffic a candidate would refuse; non-zero exit past the threshold.
+
+    This is the one check that catches a policy which is strictly narrower than its base, ratifies
+    cleanly and shows no drift, and still refuses production traffic -- `aegis ratify` and
+    `aegis drift` compare declarations and never see a single call.
+    """
+    w = lambda *x: print(*x, file=out)  # noqa: E731
+    if not cov["calls"]:
+        w("  no governed calls in scope to check against")
+        return 0
+    w(f"  would deny {cov['denied']} of {cov['calls']} calls that were allowed ({cov['denied_fraction']:.1%})")
+    rows = [r for r in cov["by_tool"] if r["denied"]]
+    if rows:
+        width = max(len(r["tool"]) for r in rows)
+        for r in rows:
+            why = ", ".join(f"{k} x{n}" for k, n in sorted(r["rules"].items(), key=lambda kv: -kv[1]))
+            w(f"    {r['tool']:<{width}}  {r['denied']:>5} of {r['calls']:<5} {r['denied_fraction']:>6.1%}  {why}")
+        for ex in cov["examples"][:5]:
+            if ex.get("arg"):
+                w(f"      e.g. {ex['tool']}({ex['arg']}={ex['value']!r}) -> {ex['rule']}")
+            else:            # a missing argument or a dropped tool: Aegis's own reason says which
+                w(f"      e.g. {ex['tool']} -> {ex['rule']}: {ex.get('reason') or ''}")
+    if cov["args_unrecorded"]:
+        w(f"  {cov['args_unrecorded']} call(s) had no recorded arguments (content capture off); "
+          f"only their tool grant was checked")
+    if cov["denied_fraction"] > max_fraction:
+        w(f"  FAIL: {cov['denied_fraction']:.1%} exceeds --max-denied-fraction {max_fraction:.1%}")
         return 1
     return 0
 
@@ -257,7 +298,9 @@ def main(argv=None):
     k.add_argument("--role", choices=["ingest", "read", "admin"], default="ingest")
     k.add_argument("--name", default=None)
     po = sub.add_parser("policy", help="Aegis policy from observed behaviour (observe -> govern)")
-    po.add_argument("action", choices=["export", "report"])
+    po.add_argument("action", choices=["export", "report", "check"],
+                    help="export: generate a tightened policy; report: governance summary; "
+                         "check: judge --candidate against recorded traffic")
     po.add_argument("--workflow")
     po.add_argument("--project")
     po.add_argument("--environment")
@@ -266,6 +309,10 @@ def main(argv=None):
     po.add_argument("--base", help="Aegis policy file to tighten (needs aegis-kernel installed)")
     po.add_argument("--headroom", type=float, default=1.5)
     po.add_argument("--out", help="write the YAML here (default: stdout)")
+    po.add_argument("--candidate", help="policy file to judge (check)")
+    po.add_argument("--max-denied-fraction", type=float, default=0.0,
+                    help="fail if the policy would refuse more than this share of observed, allowed calls "
+                         "(export, check; default 0: any refusal fails)")
     sub.add_parser("ingest", help="scan sources once and rebuild the database")
     rp = sub.add_parser("report", help="print a text summary")
     rp.add_argument("--project")
