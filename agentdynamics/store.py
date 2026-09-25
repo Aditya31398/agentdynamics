@@ -194,14 +194,20 @@ def get_span_docs(con, source, span_ids):
     return out
 
 
+# spans_raw is WITHOUT ROWID with PRIMARY KEY (source, span_id). With no ANALYZE statistics -- which
+# is every fresh install -- SQLite's planner answers "source=? AND trace_id=?" by walking the primary
+# key on source alone, visiting every span of that source for each trace: a full refresh was O(n^2),
+# ~6 s at 1k traces and minutes at 10k. And "updated > ?" scanned the whole table on every incremental
+# refresh. Naming the index makes the plan independent of statistics; both indexes are created on every
+# connect, so INDEXED BY cannot fail. bench/bench.py measures the difference.
 def trace_spans(con, source, trace_id):
     return [(r["fmt"], json.loads(r["doc"])) for r in con.execute(
-        "SELECT fmt, doc FROM spans_raw WHERE source=? AND trace_id=?", (source, trace_id))]
+        "SELECT fmt, doc FROM spans_raw INDEXED BY spans_trace WHERE source=? AND trace_id=?", (source, trace_id))]
 
 
 def traces_updated_since(con, since):
     return [(r["source"], r["trace_id"]) for r in con.execute(
-        "SELECT DISTINCT source, trace_id FROM spans_raw WHERE updated > ?", (since,))]
+        "SELECT DISTINCT source, trace_id FROM spans_raw INDEXED BY spans_updated WHERE updated > ?", (since,))]
 
 
 def all_traces(con):

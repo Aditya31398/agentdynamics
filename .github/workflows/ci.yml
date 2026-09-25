@@ -49,6 +49,20 @@ jobs:
       - name: Test
         run: python -m unittest discover tests -v
 
+  scaling:
+    # Cost must grow linearly with the store. Measured as time(4k tasks) / time(1k) in one process,
+    # so runner speed cancels out; an O(n^2) path shows up as ~16x (bench/bench.py explains the gate).
+    name: scaling (bench --check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install -e .
+      - name: Refresh cost grows linearly with the number of tasks
+        run: python -u bench/bench.py --check
+
   live:
     name: live Anthropic API smoke test
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'

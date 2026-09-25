@@ -45,7 +45,7 @@ for each of these; the work is making that number defensible to someone who will
       tables drop and rebuild) while a Postgres or ClickHouse backend holds the same model.
 - [ ] **Downsampling and rollups.** Retention currently purges. Keep daily aggregates past the
       raw-span horizon so a quarter-old cost trend survives without the spans behind it.
-- [ ] [#6](https://github.com/Aditya31398/agentdynamics/issues/6) **A benchmark with a number in it.** "Fine to about 100k tasks" is an estimate, not a
+- [x] [#6](https://github.com/Aditya31398/agentdynamics/issues/6) **A benchmark with a number in it.** "Fine to about 100k tasks" is an estimate, not a
       measurement. Generate a corpus, publish ingest and refresh timings per size, and make the
       nightly job fail when a change regresses them.
 

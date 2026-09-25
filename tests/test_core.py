@@ -204,6 +204,35 @@ class CoreTest(unittest.TestCase):
         finally:
             eng.con.close()
 
+    def test_span_lookups_use_their_indexes(self):
+        """With no ANALYZE statistics (every fresh install) SQLite answered the per-trace lookup by
+        walking the primary key on `source` alone -- every span of the source, once per trace. A full
+        refresh was O(n^2): 6 s at 1k traces, 81 s at 4k. And "updated > ?" scanned the whole table on
+        every incremental refresh. This captures the SQL the store really runs and checks each plan is
+        an index search, so the regression is caught here, not only by bench/bench.py --check."""
+        from agentdynamics import store
+        con = store.connect(os.path.join(self.tmp, "plans.db"))
+        try:
+            seen = []
+            con.set_trace_callback(seen.append)
+            store.trace_spans(con, "otlp", "t1")
+            store.traces_updated_since(con, 0)
+            con.set_trace_callback(None)
+            checked = 0
+            for sql in seen:
+                where = sql.split("WHERE", 1)[-1]
+                index = ("spans_trace" if "trace_id =" in where or "trace_id=" in where
+                         else "spans_updated" if "updated >" in where else None)
+                if index is None or "spans_raw" not in sql:
+                    continue
+                # the trace callback inlines parameters, so this is the statement exactly as it ran
+                plan = " ".join(r[3] for r in con.execute("EXPLAIN QUERY PLAN " + sql))
+                self.assertTrue(plan.startswith(f"SEARCH spans_raw USING INDEX {index}"), f"{sql!r} -> {plan}")
+                checked += 1
+            self.assertEqual(checked, 2, seen)
+        finally:
+            con.close()
+
     def test_refresh_survives_a_missing_runs_dir(self):
         """Removing <data>/runs used to raise FileNotFoundError out of every later refresh, while
         /healthz went on reporting 'ok' from the last successful timestamp."""

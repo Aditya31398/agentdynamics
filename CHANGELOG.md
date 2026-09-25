@@ -16,6 +16,10 @@ bumps the minor version.
   graded versus guessed, and `kpis.outcomes_by_source` carries the counts. Grades are durable: they
   survive schema upgrades, and a grade that arrives before its task applies when the task does.
 
+- **`bench/bench.py`** (#6): ingest, full-rebuild and incremental-refresh times at any size, for the SDK
+  and span paths. A `scaling` CI job fails when cost grows faster than linearly with the store, measured as
+  time at 4k tasks over time at 1k in one process, so runner speed cancels out. Numbers in
+  [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 - **Every task says how its type was decided** (`task_type_source`: `workflow`, `prompt kind`, `follow-up`,
   `keywords` or `unmatched`, plus `task_type_match`, the word that matched). A traced app's workflow name is a
   fact; a coding session's type is a keyword guess, and the Task Types page now says which, with the words.
@@ -35,6 +39,12 @@ bumps the minor version.
   migrating.
 
 ### Fixed
+- **A full refresh was O(n²) for every span source** (OTLP, LangSmith, Langfuse, log ingestion). With no
+  `ANALYZE` statistics, which is every fresh install, SQLite answered "the spans of this trace" by walking
+  the primary key on `source` alone, visiting every span once per trace. A full rebuild took 6.8 s at 1,000
+  traces and didn't finish in 10 minutes at 10,000; it now takes 0.6 s and 5.5 s. Each incremental refresh
+  also scanned the whole span table to find what had changed. Both queries now name their index, so the
+  plan no longer depends on statistics. Found by the new benchmark (#6).
 - **The 0.4.1 policy-export check missed most refusals.** It re-checked argument constraints only, so a
   generated policy that dropped a tool still in use, or required an argument calls never sent, passed as
   safe. On the coverage test's candidate it flagged 2 of the 7 calls a real kernel refuses. Calls are now

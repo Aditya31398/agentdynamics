@@ -23,7 +23,8 @@ APM for AI agents. Telemetry from many sources is normalized into one run/step m
 pip install -e ".[test,toml]"
 pip install "aegis-kernel>=0.4.0"           # for the governance tests
 python -m unittest discover tests -v        # 4 skip without the optional ecosystem/live libs; UI tests need Chrome/Edge
-ruff check agentdynamics tests examples --select F,E9
+ruff check agentdynamics tests examples bench --select F,E9
+python bench/bench.py --check               # the CI scaling gate: cost must grow linearly (~1 min)
 
 # latest-ecosystem run (what the `ecosystem` CI job does):
 pip install -U langgraph langchain-core langsmith opentelemetry-sdk opentelemetry-exporter-otlp-proto-http \
@@ -73,6 +74,8 @@ AGENTDYNAMICS_URL=http://127.0.0.1:8790 python examples/governed_agent.py 45   #
 - UI tests run `agentdynamics serve` as a subprocess. On a thread inside the test process the page
   raced Chrome's DOM dump and was captured mid-boot, intermittently. Fixture timestamps must be
   recent: the console defaults to the last 30 days, and an empty window looks like a failed load.
+- **SQLite plans depend on statistics a fresh install doesn't have.** Name the index (`INDEXED BY`) for any
+  lookup the engine does per trace or per refresh, and cover it in `test_span_lookups_use_their_indexes`.
 - Optional-dependency checks: `importlib.util.find_spec("a.b")` raises when `a` is missing. Use the `has()`
   helper in `test_ecosystem.py`.
 - Prices come from `pricing.py` (list prices) plus `<data>/pricing.json`. Unknown models are reported as
@@ -99,8 +102,9 @@ deploy/               Dockerfile companion: compose, OTel Collector config, exam
 
 ## Known weak areas, ranked
 
-1. **Scale.** Each refresh rewrites the whole `tasks` table and `finalize()` runs over every run in memory. Fine
-   to about 100k tasks. The fix is incremental finalize plus a Postgres/ClickHouse backend behind `store.py`.
+1. **Scale.** Each refresh rewrites the whole `tasks` table and `finalize()` runs over every run in memory, so an
+   incremental refresh costs O(store), not O(new traffic): 13.5 s to absorb 1% more at 100k tasks (measured,
+   [docs/BENCHMARKS.md](docs/BENCHMARKS.md)). The fix is incremental finalize (#5), then a store backend (#7).
 2. **Most outcomes are still inferred.** They *can* be graded now (`agentdynamics.outcome`, `/api/outcomes`)
    and every task says which (`outcome_source`), but nothing grades them automatically.
 3. **Coding-task typing is still keyword rules.** Traced apps use the workflow name; every task records
