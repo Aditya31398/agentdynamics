@@ -125,7 +125,10 @@ def ingest(eng, source, first, n, rng, t0):
             eng.ingest_otlp(otlp_batch(i, min(step, first + n - i), rng, t0), "application/json")
 
 
-def bench_one(source, n):
+def bench_one(source, n, reps=1):
+    """reps > 1 times the rebuild and the fixed batch that many times and keeps the fastest. The CI gate
+    uses it: one timing of a 0.2 s refresh on a shared runner spread by 15%+, and a ratio of two such
+    timings failed a 6x limit on growth that measures 4.2x best-of-five."""
     tmp = tempfile.mkdtemp(prefix=f"adbench-{source}-")
     rng = random.Random(42)
     t0 = time.time() - 20 * 86400          # inside the default 30-day window, spread over ~20 days at 10k
@@ -152,10 +155,15 @@ def bench_one(source, n):
             finally:
                 scan["s"] += time.perf_counter() - t
         eng._scan_files = timed_scan
-        start = time.perf_counter()
-        eng.refresh(force=True)
-        full_s = time.perf_counter() - start
-        full_scan_s = scan["s"]
+        best = None
+        for _ in range(reps):
+            scan["s"] = 0.0
+            start = time.perf_counter()
+            eng.refresh(force=True)
+            total = time.perf_counter() - start
+            if best is None or total - scan["s"] < best[0] - best[1]:   # judge the engine, not the OS
+                best = (total, scan["s"])
+        full_s, full_scan_s = best
         tasks = eng.con.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
 
         extra = max(1, n // 100)
@@ -168,10 +176,15 @@ def bench_one(source, n):
 
         # The same fixed amount of new traffic at every size. "+1%" grows with the store, so it can't show
         # whether cost depends on the store or on the traffic; a fixed batch can, and the gate uses it.
-        ingest(eng, source, n + extra, FIXED_BATCH, rng, t0)
-        start = time.perf_counter()
-        eng.refresh()
-        fixed_s = time.perf_counter() - start
+        fixed_s, first = None, n + extra
+        for _ in range(reps):
+            ingest(eng, source, first, FIXED_BATCH, rng, t0)
+            first += FIXED_BATCH
+            time.sleep(2.1)      # each batch outside the next one's reassembly window
+            start = time.perf_counter()
+            eng.refresh()
+            dt = time.perf_counter() - start
+            fixed_s = dt if fixed_s is None else min(fixed_s, dt)
         fixed_rescored = eng.stats.get("tasks_rescored")
 
         eng.con.close()
@@ -205,7 +218,7 @@ def main():
     results = []
     for n in sizes:
         for src in a.sources.split(","):
-            r = bench_one(src, n)
+            r = bench_one(src, n, reps=3 if a.check else 1)
             results.append(r)
             print(f"{src:<6} {r['tasks']:>8} {r['ingest']:>9.2f} {r['ingest_per_s']:>8} "
                   f"{r['full_refresh']:>8.2f} {r['full_file_scan']:>15.2f} {r['incremental_refresh']:>8.3f} "
