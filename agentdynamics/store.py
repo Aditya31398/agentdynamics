@@ -11,9 +11,10 @@ import json
 import sqlite3
 import time
 
-SCHEMA_VERSION = 8   # 6: outcome_source / outcome_reason (graded outcomes)
+SCHEMA_VERSION = 9   # 6: outcome_source / outcome_reason (graded outcomes)
                      # 7: tokens_unverified (cache accounting that rests on a guess)
                      # 8: steps.governed (did this call go through an Aegis kernel)
+                     # 9: task_type_source / task_type_match (how a task type was decided)
 
 RUN_COLS = ["id", "source", "project", "environment", "framework", "workflow", "cwd", "title", "agent_name", "parent_id",
             "parent_task_id", "is_subagent", "thread_id", "user_id", "tags", "root_status", "complete", "version", "git_branch",
@@ -28,6 +29,8 @@ TASK_COLS = ["id", "run_id", "idx", "project", "environment", "source", "framewo
              "outcome", "cost_vs_baseline", "duration_vs_baseline", "score", "apdex",
              # how the outcome was decided: graded (stated), feedback (a recorded score), or inferred
              "outcome_source", "outcome_reason",
+             # how the task type was decided: workflow, prompt kind, follow-up, keywords, unmatched
+             "task_type_source", "task_type_match",
              # agent-flow metrics
              "steps_total", "llm_errors", "truncations", "refusals", "rate_limited", "ttft_ms", "out_tps", "retrievals",
              "empty_retrievals", "nodes", "max_node_visits", "loop_node", "handoffs", "pingpong", "hitl", "feedback_score",

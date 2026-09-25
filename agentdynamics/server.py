@@ -197,6 +197,10 @@ class Api:
         for ty, g in by.items():
             k = self.kpis(g)
             costs = [t["cost"] + (t["subagent_cost"] or 0) for t in g]
+            # how these tasks got this label: a workflow name is a fact, a keyword match is a guess
+            srcs = Counter(t.get("task_type_source") or "unmatched" for t in g)
+            k.update({"typed_by": dict(srcs),
+                      "top_matches": [m for m, _ in Counter(t["task_type_match"] for t in g if t.get("task_type_match")).most_common(3)]})
             k.update({"type": ty, "health": self.health(k["apdex"]), "baseline": base.get(ty) or base.get("__all__"),
                       "p90_cost": round(pct(costs, 0.9), 4), "p90_duration": round(pct([t["duration_s"] for t in g], 0.9), 1),
                       "daily": [{"day": d["day"], "tasks": d["tasks"], "cost": d["cost"]} for d in self.daily(g)]})

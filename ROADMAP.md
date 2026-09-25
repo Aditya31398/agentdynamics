@@ -27,7 +27,7 @@ for each of these; the work is making that number defensible to someone who will
       constraint would deny, so a tightening can be judged before deploying rather than only
       rejected when it is obviously broken. This is the check neither `aegis ratify` nor
       `aegis drift` can perform, because only this side has the call history.
-- [ ] **Task typing beyond keywords** (weak area 3). Coding-task classification is keyword rules;
+- [x] **Task typing beyond keywords** (weak area 3). Coding-task classification is keyword rules;
       traced apps already bypass it via the entry-point name. Prefer explicit workflow names, fall
       back to keywords, and say which one produced the label.
 - [x] [#4](https://github.com/Aditya31398/agentdynamics/issues/4) **UI tests** (weak area 5). Pages are checked by hand. A headless pass that loads each page

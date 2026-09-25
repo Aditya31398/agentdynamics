@@ -103,7 +103,9 @@ deploy/               Dockerfile companion: compose, OTel Collector config, exam
    to about 100k tasks. The fix is incremental finalize plus a Postgres/ClickHouse backend behind `store.py`.
 2. **Most outcomes are still inferred.** They *can* be graded now (`agentdynamics.outcome`, `/api/outcomes`)
    and every task says which (`outcome_source`), but nothing grades them automatically.
-3. **Coding-task typing is keyword rules.** Traced apps use the entry-point name instead.
+3. **Coding-task typing is still keyword rules.** Traced apps use the workflow name; every task records
+   which (`task_type_source`) and the matched word. Follow-ups inherit the previous task's type, so a
+   "continue" after a slash command is typed "slash command".
 4. **`server.py` and `web/app.js` are large single files.** Split by feature before adding much more.
 5. **UI tests are smoke-level.** `tests/test_console_ui.py` renders every page in headless Chrome and
    checks headings plus the governance table cells. It does not click, filter or navigate.

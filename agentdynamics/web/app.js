@@ -130,6 +130,17 @@
   const head = (title, desc, right = "") => `<div class="page-head"><div><h1>${title}</h1>${desc ? `<p>${desc}</p>` : ""}</div><div class="row">${right}</div></div>`;
   const kpi = (label, value, hint = "", extra = "") => `<div class="kpi"><div class="label">${label}${extra}</div><div class="value">${value}</div>${hint ? `<div class="hint">${hint}</div>` : ""}</div>`;
   const card = (title, body, sub = "", cls = "") => `<div class="card ${cls}"><div class="card-head"><h2>${title}</h2><span class="sub">${sub}</span></div>${body}</div>`;
+  // How a task type was decided. A workflow name is a fact; a keyword match is a guess, so show the words.
+  const typedBy = (t) => {
+    const by = t.typed_by || {};
+    const n = Object.values(by).reduce((a, b) => a + b, 0) || 1;
+    const label = { workflow: "workflow name", "prompt kind": "prompt kind", "follow-up": "follow-up", keywords: "keywords", unmatched: "no keyword matched" };
+    const parts = Object.entries(by).sort((a, b) => b[1] - a[1]).map(([k, v]) => {
+      const words = k === "keywords" && t.top_matches && t.top_matches.length ? ` (${t.top_matches.map(esc).join(", ")})` : "";
+      return `${label[k] || esc(k)}${words}${v < n ? ` ${pct(v / n)}` : ""}`;
+    });
+    return parts.length ? `typed by ${parts.join(" · ")}` : "";
+  };
   // How much of the traffic that actually ran a candidate policy would refuse. ratify and drift
   // compare declarations and cannot answer this; only the recorded calls can.
   const coverageBlock = (cov) => {
@@ -352,13 +363,13 @@
       card("All task types", `<div class="table-wrap"><table><thead><tr><th>Health</th><th>Type</th><th class="num">Tasks</th><th class="num">Spend</th><th class="num">Baseline cost (p50 / p90)</th>
       <th class="num">Baseline time (p50)</th><th class="num">Apdex</th><th class="num">Clean completion</th><th class="num">Tool errors</th><th class="num">Verified</th><th class="num">Avg score</th><th class="num">Events</th><th>Trend</th></tr></thead><tbody>
       ${d.types.map((t) => `<tr class="click" data-href="#/tasks?type=${encodeURIComponent(t.type)}">
-        <td>${pill(t.health)}</td><td><b>${esc(t.type)}</b></td><td class="num">${t.tasks}</td><td class="num">${usd(t.cost)}</td>
+        <td>${pill(t.health)}</td><td><b>${esc(t.type)}</b><div class="small muted">${typedBy(t)}</div></td><td class="num">${t.tasks}</td><td class="num">${usd(t.cost)}</td>
         <td class="num">${t.baseline ? usd(t.baseline.cost_p50) + " / " + usd(t.baseline.cost_p90) : "–"}</td>
         <td class="num">${t.baseline ? dur(t.baseline.duration_p50) : "–"}</td>
         <td class="num">${t.apdex == null ? "–" : t.apdex.toFixed(2)}</td><td class="num">${pct(t.success_rate)}</td><td class="num">${pct(t.tool_error_rate, 1)}</td>
         <td class="num">${pct(t.verification_rate)}</td><td class="num" style="color:${scoreColor(t.avg_score)};font-weight:600">${t.avg_score == null ? "–" : Math.round(t.avg_score)}</td>
         <td class="num">${t.events}</td><td>${C.sparkline(t.daily.map((x) => x.cost))}</td></tr>`).join("")}</tbody></table></div>`) +
-      `<p class="small muted">Types are assigned by intent keywords in the request (fix/bug → bugfix, create/build → feature, and so on). Baselines need at least 3 tasks; smaller groups fall back to the global baseline.</p>`;
+      `<p class="small muted">A traced app's type is its workflow name, which is a fact. Coding sessions have none, so their type is guessed from intent keywords in the request (fix/bug → bugfix, create/build → feature, and so on); each type says which it was. Baselines need at least 3 tasks; smaller groups fall back to the global baseline.</p>`;
     bindRows(host);
   };
 

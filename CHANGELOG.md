@@ -16,6 +16,9 @@ bumps the minor version.
   graded versus guessed, and `kpis.outcomes_by_source` carries the counts. Grades are durable: they
   survive schema upgrades, and a grade that arrives before its task applies when the task does.
 
+- **Every task says how its type was decided** (`task_type_source`: `workflow`, `prompt kind`, `follow-up`,
+  `keywords` or `unmatched`, plus `task_type_match`, the word that matched). A traced app's workflow name is a
+  fact; a coding session's type is a keyword guess, and the Task Types page now says which, with the words.
 - **Policy coverage** (#3): how much of the traffic that actually ran would a policy refuse, per tool and per
   rule. `agentdynamics policy check --candidate policy.yaml` judges any candidate against recorded traffic,
   `POST /api/policy/check` does the same with a `read` key, and `--max-denied-fraction` (default 0) turns it
@@ -27,8 +30,9 @@ bumps the minor version.
   of 0.5 or more makes a task `completed` even if the run ended in an error; below 0.5 makes it
   `rework`. Success rate, failed-run rate and Apdex can shift for existing data on upgrade: on the
   demo dataset, failed runs moved from 16.0% to 13.8% and Apdex from 0.69 to 0.72.
-- `SCHEMA_VERSION` 8 (steps now record whether a call went through an Aegis kernel). Derived tables
-  rebuild from sources on first start; nothing needs migrating.
+- `SCHEMA_VERSION` 9 (steps record whether a call went through an Aegis kernel; tasks record how their
+  outcome and type were decided). Derived tables rebuild from sources on first start; nothing needs
+  migrating.
 
 ### Fixed
 - **The 0.4.1 policy-export check missed most refusals.** It re-checked argument constraints only, so a

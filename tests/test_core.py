@@ -152,6 +152,24 @@ class CoreTest(unittest.TestCase):
         self.assertEqual(c("human", "continue"), "follow-up")
         self.assertEqual(c("scheduled", "anything"), "scheduled job")
 
+    def test_task_types_say_how_they_were_decided(self):
+        """A workflow name is a fact; a keyword match is a guess. The label has to say which."""
+        d = analysis.classify_task_detail
+        self.assertEqual(d("human", "Fix the failing login test"), ("bugfix", "keywords", "fix"))
+        self.assertEqual(d("human", "continue"), ("follow-up", "follow-up", None))
+        self.assertEqual(d("command", "/review"), ("slash command", "prompt kind", None))
+        self.assertEqual(d("human", "Hello there"), ("other", "unmatched", None))
+        # the transcript fixture: typed by keyword, with the matched word kept
+        t = next(x for x in self.tasks if x["prompt"].startswith("Fix the failing login test"))
+        self.assertEqual((t["task_type_source"], t["task_type_match"]), ("keywords", "fix"))
+        # a traced run: its workflow name wins over any keyword in the prompt
+        run = generic.normalize({"id": "typed", "workflow": "refund_triage", "steps": [
+            {"kind": "prompt", "ts": 1, "text": "Fix my broken refund"},
+            {"kind": "llm", "ts": 1, "end_ts": 2, "model": "claude-opus-5", "input_tokens": 10, "output_tokens": 5}]})
+        t = analysis.run_tasks(run)[0]
+        self.assertEqual((t["task_type"], t["task_type_source"], t["task_type_match"]),
+                         ("refund_triage", "workflow", None))
+
     def test_generic_normalize(self):
         run = generic.normalize({"id": "r1", "agent": "bot", "steps": [
             {"kind": "prompt", "ts": 1, "text": "hi"},
@@ -179,6 +197,10 @@ class CoreTest(unittest.TestCase):
             self.assertEqual(api.compare({"dim": "project", "a": "E--proj", "b": "bot"})["b"]["tasks"], 1)
             rows = api.analytics({"group": "outcome", "metrics": "tasks,cost"})["rows"]
             self.assertEqual(sum(r["tasks"] for r in rows), 3)
+            # Task Types says how each label was decided, and shows the words when it was a guess
+            by_type = {t["type"]: t for t in api.types({})["types"]}
+            self.assertEqual(set(by_type["bugfix"]["typed_by"]), {"keywords"})   # all guessed, none stated
+            self.assertIn("fix", by_type["bugfix"]["top_matches"])
         finally:
             eng.con.close()
 

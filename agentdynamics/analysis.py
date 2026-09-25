@@ -40,23 +40,34 @@ CORRECTION = re.compile(
 
 
 def classify_task(prompt_kind, text):
+    return classify_task_detail(prompt_kind, text)[0]
+
+
+def classify_task_detail(prompt_kind, text):
+    """(task_type, how it was decided, what matched).
+
+    how: "prompt kind" when the prompt says what it is (a slash command, a scheduled job, a subagent's
+    brief); "follow-up" for a short "continue"/"yes" that carries on the previous task; "keywords" when an
+    intent rule matched, with the matched text; "unmatched" when nothing did. Keyword typing is a guess
+    about what someone meant, so it says so -- the same way outcome_source separates graded from inferred.
+    """
     if prompt_kind == "scheduled":
-        return "scheduled job"
+        return "scheduled job", "prompt kind", None
     if prompt_kind == "delegated":
-        return "subagent"
+        return "subagent", "prompt kind", None
     t = (text or "").strip()
     low = t.lower()
     if prompt_kind == "command":
-        return "slash command"
+        return "slash command", "prompt kind", None
     if len(t) < 60 and FOLLOWUP.search(t):
-        return "follow-up"
+        return "follow-up", "follow-up", None
     # The earliest intent keyword wins: "Create X, then test it" is a build, not a testing task.
     best = None
     for rank, (name, pat) in enumerate(TYPE_RULES):
         m = re.search(pat, low[:600])
         if m and (best is None or (m.start(), rank) < best[0]):
-            best = ((m.start(), rank), name)
-    return best[1] if best else "other"
+            best = ((m.start(), rank), name, m.group(0).strip())
+    return (best[1], "keywords", best[2][:40]) if best else ("other", "unmatched", None)
 
 
 # ---------------------------------------------------------------- helpers
@@ -146,9 +157,10 @@ def task_metrics(run, idx, seg):
     in_side = t["input_tokens"] + t["cache_read"] + t["cache_write"]
     t["cache_hit"] = round(t["cache_read"] / in_side, 3) if in_side else None
     t["tool_error_rate"] = round(t["tool_errors"] / len(tools), 3) if tools else 0
-    t["task_type"] = classify_task(t["prompt_kind"], t["prompt"])
+    t["task_type"], t["task_type_source"], t["task_type_match"] = classify_task_detail(t["prompt_kind"], t["prompt"])
     if run.get("workflow") and run.get("source") != "claude-code":
-        t["task_type"] = run["workflow"]  # traced apps: the entry point names the business transaction
+        # traced apps: the entry point names the business transaction, which beats any guess
+        t["task_type"], t["task_type_source"], t["task_type_match"] = run["workflow"], "workflow", None
 
     # --- phase attribution: split each LLM call's cost across the tool calls it issued
     phase_calls = Counter(s["phase"] for s in tools)
@@ -548,6 +560,7 @@ def _outcomes_claude(ts, now):
         # "continue" / "yes" carries on the previous request, so it belongs to that task type
         if t["task_type"] == "follow-up" and i > 0 and ts[i - 1]["task_type"] not in ("follow-up",):
             t["task_type"] = ts[i - 1]["task_type"]
+            t["task_type_source"], t["task_type_match"] = "follow-up", None   # inherited, not re-guessed
             if t["source"] == "claude-code":
                 t["workflow"] = t["task_type"]
         nxt = next((x for x in ts[i + 1:] if x["prompt_kind"] in ("human", "command")), None)

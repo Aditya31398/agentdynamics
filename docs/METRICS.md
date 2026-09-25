@@ -13,6 +13,8 @@ These metrics were chosen because each one maps to a decision someone can act on
 - ✅ First-time-right rate, Agent Apdex and user feedback score (from LangSmith/Langfuse feedback and scores).
 - ✅ Verification rate for coding agents: after the last code edit, did the agent run tests, a build or the app?
 
+- ✅ Task types say how they were decided: a traced app's workflow name, the prompt's kind (slash command, scheduled job, subagent), inherited by a follow-up, or guessed from intent keywords — in which case the matched words are shown.
+
 **Efficiency: did it do the job economically?**
 - ✅ Cost, tokens and steps per task, compared with the baseline for that task type (the multiplier of normal cost).
 - ✅ Avoidable spend: duplicate tool calls, redundant reads and retry streaks, priced at the model turn that issued them.
