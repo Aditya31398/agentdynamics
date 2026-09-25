@@ -5,7 +5,7 @@
 
 See agentdynamics.autotrace for @trace / @tool / span.
 """
-__version__ = "0.4.1"
+__version__ = "0.5.0"
 
 from .autotrace import flush, init, llm_call, outcome, record_llm, span, tool, trace  # noqa: E402,F401
 

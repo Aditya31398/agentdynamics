@@ -8,6 +8,20 @@ bumps the minor version.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-25
+
+Phase 2 of the roadmap: making the numbers worth trusting. Three fixes matter to anyone on 0.4.x
+today -- cache writes were charged twice, every span source had a quadratic rebuild, and the policy-export
+check missed most refusals -- so this is worth taking promptly.
+
+**Upgrading.** The first start rebuilds the derived tables from your sources (schema 9); nothing needs
+migrating. Span sources rebuild at about 1,600 tasks a second (100,000 in a minute on a laptop; see
+docs/BENCHMARKS.md). SDK run files depend on the machine: on Linux they are as fast, but on Windows with
+real-time antivirus each file open was measured at 9 ms, so 10,000 runs took about a minute and a half. After the rebuild, expect three
+numbers to move, all of them corrections: cost goes **down** for cached traffic from OpenTelemetry GenAI,
+OpenInference and LangSmith; success rate, failed-run rate and Apdex can shift because recorded feedback now
+settles an outcome; and tasks with feedback show it as their outcome's source.
+
 ### Added
 - **Graded outcomes** (#1). An outcome can now be stated instead of inferred: `agentdynamics.outcome()`
   (and `trace(...).outcome()`) inside a run, `POST /api/tasks/{id}/outcome` after the fact, or
@@ -15,7 +29,6 @@ bumps the minor version.
   `feedback` or `inferred`) and `outcome_reason`, the Overview says how much of the success rate is
   graded versus guessed, and `kpis.outcomes_by_source` carries the counts. Grades are durable: they
   survive schema upgrades, and a grade that arrives before its task applies when the task does.
-
 - **`bench/bench.py`** (#6): ingest, full-rebuild and incremental-refresh times at any size, for the SDK
   and span paths. A `scaling` CI job fails when cost grows faster than linearly with the store, measured as
   time at 4k tasks over time at 1k in one process, so runner speed cancels out. Numbers in
