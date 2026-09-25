@@ -5,9 +5,14 @@ Releases are cut by pushing a tag. Nothing is published from a laptop.
 ```bash
 # 1. bump __version__ in agentdynamics/__init__.py and `version` in pyproject.toml
 # 2. move CHANGELOG "Unreleased" under the new version
-# 3. merge to main with CI green
-git tag v0.4.0 && git push origin v0.4.0
+# 3. merge to main with CI green -- for *this* commit:
+gh run list --commit "$(git rev-parse HEAD)" --workflow CI     # not `gh run list --limit 1`
+git tag v0.5.0 && git push origin v0.5.0
 ```
+
+Check the CI run for the commit you are tagging. Straight after a push, `gh run list --limit 1` still
+returns the *previous* run, because the new one hasn't registered yet; 0.5.0 was tagged on that basis
+while its own commit's scaling job had failed. (Only the timing gate had, so nothing broken shipped.)
 
 `.github/workflows/release.yml` then:
 
