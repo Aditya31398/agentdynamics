@@ -12,13 +12,13 @@ Pipeline:
 """
 import json
 import os
+import sys
 import threading
 import time
 import traceback
-import urllib.request
 from collections import defaultdict
 
-from . import analysis, config as cfgmod, pricing, store
+from . import alerts as alertmod, analysis, config as cfgmod, pricing, slo as slomod, store
 from .collectors import aegis_audit, claude_code, generic, inbox, langfuse, langsmith, otlp, spans as spanmod
 from .privacy import Redactor
 
@@ -109,7 +109,11 @@ class Engine:
         # because outcomes depend on it: a recent task is "in progress", an old one is not.
         self._cache = analysis.ScoreCache()
         self._clock = time.time
-        self.stats = {"spans_ingested": 0, "refreshes": 0, "alerts_sent": 0}
+        self.stats = {"spans_ingested": 0, "refreshes": 0, "alerts_sent": 0, "alerts_dropped": 0, "alerts_retried": 0}
+        self.alert_log = {}        # destination id -> recent delivery results, for /api/alerts and the console
+        self._alert_wake = threading.Event()
+        self._alert_problems = set()
+        self._alerts_pruned = 0.0
         self.sources = {}
         if claude_root:
             self.sources["claude_code"] = SourceStatus("claude_code", "file", claude_root)
@@ -541,7 +545,8 @@ class Engine:
             runs = list(self._runs.values())
             tasks, baselines, events = analysis.finalize(runs, self._tasks, self.rules(), now=self._clock(),
                                                          grades=store.get_grades(self.con),
-                                                         cache=self._cache, dirty=dirty.keys())
+                                                         cache=self._cache, dirty=dirty.keys(),
+                                                         redact=self.redactor.text)
             insights = analysis.process_insights(tasks)
             meta = {"refreshed": time.time(), "runs": len(runs), "tasks": len(tasks), "insights": insights}
             store.write_runs(self.con, list(dirty.values()), removed, self.redactor)
@@ -554,7 +559,7 @@ class Engine:
                 store.write_analysis_delta(self.con, [t for t in tasks if t["id"] in changed],
                                            gone - changed, events, baselines, meta, self.redactor)
             self.stats["tasks_rescored"] = len(self._cache.changed)
-            self._dispatch_alerts(events)
+            self._queue_event_alerts(events)
             self._first = False
             self.last_refresh = time.time()
             self.last_duration = round(self.last_refresh - t0, 2)
@@ -578,38 +583,123 @@ class Engine:
                     self.failed_refreshes += 1
                     traceback.print_exc()
         threading.Thread(target=loop, daemon=True, name="analyzer").start()
+        threading.Thread(target=self._alert_loop, daemon=True, name="alerts").start()
         self.start_pullers()
 
-    # ------------------------------------------------------------------ alerting
-    SEV = {"info": 1, "warning": 2, "critical": 3}
+    # ------------------------------------------------------------------ alerting (alerts.py)
+    ALERT_TICK_S = 30
 
-    def _dispatch_alerts(self, events):
-        hooks = self.cfg["alerts"].get("webhooks") or []
-        sent = {r[0] for r in self.con.execute("SELECT event_id FROM alerts_sent")}
+    def alert_destinations(self):
+        dests, problems = alertmod.destinations(self.cfg["alerts"])
+        for p in problems:
+            if p not in self._alert_problems:        # say it once, not every tick
+                self._alert_problems.add(p)
+                print(f"[agentdynamics] alert destination ignored: {p}", file=sys.stderr)
+        return dests
+
+    def _queue(self, alerts, now):
+        """Render alerts for every destination that routes them, and queue the bodies."""
+        items = []
+        console_url = self.cfg["alerts"].get("console_url") or ""
+        for d in self.alert_destinations():
+            mine = [a for a in alerts if alertmod.routes(d, a)]
+            items += [(d["id"], b) for b in alertmod.render(d, mine, console_url)]
+        if items:
+            store.outbox_add(self.con, items, now)
+            self._alert_wake.set()
+        return len(items)
+
+    def _queue_event_alerts(self, events):
+        """Health-rule events this refresh produced that were never alerted before (called under the lock)."""
+        now = self._clock()
+        ids = [e["id"] for e in events]
+        sent = set()
+        for i in range(0, len(ids), 500):
+            chunk = ids[i:i + 500]
+            sent |= {r[0] for r in self.con.execute(
+                f"SELECT event_id FROM alerts_sent WHERE event_id IN ({','.join('?' * len(chunk))})", chunk)}
         new = [e for e in events if e["id"] not in sent]
-        if not new:
-            return
         with self.con:
-            self.con.executemany("INSERT OR IGNORE INTO alerts_sent (event_id, ts) VALUES (?, ?)", [(e["id"], time.time()) for e in new])
-        if self._first or not hooks:  # never flood a channel with history on first start
-            return
-        recent = [e for e in new if (e.get("ts") or 0) > time.time() - 3600]
-        for h in hooks:
-            lvl = self.SEV.get(h.get("min_severity", "warning"), 2)
-            batch = [e for e in recent if self.SEV.get(e["severity"], 1) >= lvl]
-            if batch:
-                threading.Thread(target=self._post_hook, args=(h, batch), daemon=True).start()
+            self.con.executemany("INSERT OR IGNORE INTO alerts_sent (event_id, ts) VALUES (?, ?)",
+                                 [(e["id"], now) for e in new])
+            if now - self._alerts_pruned > 3600:
+                # only events from the last hour are ever sent, so a week of ids is plenty to dedupe against
+                self.con.execute("DELETE FROM alerts_sent WHERE ts < ?", (now - 7 * 86400,))
+                self._alerts_pruned = now
+        if self._first or not new:            # never flood a channel with history on first start
+            return 0
+        recent = [e for e in new if (e.get("ts") or 0) > now - 3600]
+        return self._queue([alertmod.from_event(e) for e in recent], now)
 
-    def _post_hook(self, hook, events):
-        if hook.get("format", "json") == "slack":
-            lines = [f"*{e['severity'].upper()}* · {e['rule']} · {e['project']} / {e['task_type']}\n{e['message']}" for e in events[:10]]
-            body = {"text": "AgentDynamics alerts\n" + "\n\n".join(lines)}
-        else:
-            body = {"source": "agentdynamics", "events": events}
-        try:
-            req = urllib.request.Request(hook["url"], data=json.dumps(body, default=str).encode(), method="POST",
-                                         headers={"Content-Type": "application/json"})
-            urllib.request.urlopen(req, timeout=10).read()
-            self.stats["alerts_sent"] += len(events)
-        except Exception as ex:
-            print(f"[agentdynamics] alert webhook failed: {ex}")
+    def check_slos(self):
+        """Compare the SLO alerts that should be firing with those that are, and queue triggers and
+        resolves. Runs on the alert tick, not only on refresh: a burn stops as time passes with no traffic."""
+        with self.lock:
+            dests = self.alert_destinations()
+            if not any("slos" in d["kinds"] for d in dests):
+                return []
+            now = self._clock()
+            live = [t for ts in self._tasks.values() for t in ts
+                    if not t.get("is_subagent") and (t.get("llm_calls") or t.get("tool_calls"))]
+            state = store.alert_state(self.con)
+            firing = slomod.alert_conditions(live, slomod.load(self.data_dir), now,
+                                             int(self.cfg["alerts"].get("slo_min_tasks", 10)), firing=set(state))
+            started = {k: v for k, v in firing.items() if k not in state}
+            stopped = [k for k in state if k not in firing]
+            store.set_alert_state(self.con, started, stopped, now)
+            out = ([alertmod.from_slo(k, c, "trigger", now) for k, c in started.items()]
+                   + [alertmod.from_slo(k, state[k], "resolve", now) for k in stopped])
+            self._queue(out, now)
+            return out
+
+    def deliver_alerts(self):
+        """Send what is due from the outbox. Per destination, strictly in order: a message waiting to be
+        retried holds back the ones queued after it, so a resolve never overtakes its trigger."""
+        dests = {d["id"]: d for d in self.alert_destinations()}
+        with self.lock:
+            pending = store.outbox_pending(self.con)
+        now, held, sent = self._clock(), set(), 0
+        for row in pending:
+            d = dests.get(row["dest"])
+            if d is None:                      # the destination was removed from the config
+                with self.lock:
+                    store.outbox_done(self.con, row["id"])
+                continue
+            if row["dest"] in held:
+                continue
+            if row["next_try"] > now:
+                held.add(row["dest"])
+                continue
+            ok, retryable, detail = alertmod.send(d, json.loads(row["body"]))
+            log = self.alert_log.setdefault(d["id"], {"sent": 0, "dropped": 0, "last_ok": None,
+                                                      "last_error": None, "last_error_at": None})
+            with self.lock:
+                if ok:
+                    store.outbox_done(self.con, row["id"])
+                    log["sent"] += 1
+                    log["last_ok"] = now
+                    self.stats["alerts_sent"] += 1
+                    sent += 1
+                    continue
+                log["last_error"], log["last_error_at"] = detail, now
+                if retryable and row["created"] > now - alertmod.GIVE_UP_S:
+                    store.outbox_retry(self.con, row["id"], row["attempts"] + 1,
+                                       now + alertmod.backoff(row["attempts"]), detail)
+                    self.stats["alerts_retried"] += 1
+                    held.add(row["dest"])
+                else:
+                    store.outbox_done(self.con, row["id"])
+                    log["dropped"] += 1
+                    self.stats["alerts_dropped"] += 1
+                    print(f"[agentdynamics] alert to {d['id']} dropped: {detail}", file=sys.stderr)
+        return sent
+
+    def _alert_loop(self):
+        while True:
+            self._alert_wake.wait(self.ALERT_TICK_S)
+            self._alert_wake.clear()
+            try:
+                self.check_slos()
+                self.deliver_alerts()
+            except Exception:
+                traceback.print_exc()

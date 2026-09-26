@@ -142,6 +142,51 @@ def cmd_doctor(a):
     return 0 if ok else 1
 
 
+def cmd_alerts(a, data):
+    from . import alerts as alertmod, config as cfgmod, store
+    cfg = cfgmod.load(data)
+    dests, problems = alertmod.destinations(cfg["alerts"])
+    for p in problems:
+        print(f"ignored: {p}")
+    if not dests:
+        print("No alert destinations configured: add [[alerts.webhooks]] to agentdynamics.toml "
+              "(see `python -c \"import agentdynamics.alerts; help(agentdynamics.alerts)\"`).")
+        return 1
+    if a.action == "status":
+        con = store.connect(os.path.join(data, "agentdynamics.db"))
+        depth = store.outbox_depth(con)
+        oldest = {r["dest"]: dict(r) for r in con.execute(
+            "SELECT dest, created, attempts, last_error FROM alert_outbox WHERE id IN "
+            "(SELECT MIN(id) FROM alert_outbox GROUP BY dest)")}
+        for d in dests:
+            print(f"{d['id']:<28} {d['format']:<10} {'+'.join(d['kinds']):<12} min {d['min_severity']:<8} "
+                  f"queued {depth.get(d['id'], 0)}")
+            o = oldest.get(d["id"])
+            if o and o["attempts"]:
+                print(f"    retrying since {time.strftime('%Y-%m-%d %H:%M', time.localtime(o['created']))} "
+                      f"({o['attempts']} attempts): {o['last_error']}")
+        firing = store.alert_state(con)
+        print(f"\nSLO alerts firing: {len(firing) or 'none'}")
+        for k, v in sorted(firing.items(), key=lambda kv: kv[1]["since"]):
+            print(f"    {k}  since {time.strftime('%Y-%m-%d %H:%M', time.localtime(v['since']))}  {v.get('severity')}")
+        return 0
+    failed = 0
+    chosen = [d for d in dests if not a.to or d["id"] == a.to]
+    if not chosen:
+        print(f"no destination named {a.to!r}; names: {', '.join(d['id'] for d in dests)}")
+        return 2
+    for d in chosen:
+        alert = alertmod.test_alert()
+        bodies = alertmod.render(d, [alert], cfg["alerts"].get("console_url") or "")
+        if d["format"] == "pagerduty":      # resolve it straight away, so a test leaves no open incident
+            bodies += alertmod.render(d, [dict(alert, action="resolve")])
+        results = [alertmod.send(d, b) for b in bodies]
+        ok = all(r[0] for r in results)
+        failed += not ok
+        print(f"{d['id']:<28} {'ok' if ok else 'FAILED'}  {'; '.join(r[2] for r in results)}")
+    return 1 if failed else 0
+
+
 def cmd_keys(a, data):
     from .config import keys_path, load_keys, save_keys
     keys = load_keys(data)
@@ -324,6 +369,10 @@ def main(argv=None):
     po.add_argument("--max-denied-fraction", type=float, default=0.0,
                     help="fail if the policy would refuse more than this share of observed, allowed calls "
                          "(export, check; default 0: any refusal fails)")
+    al = sub.add_parser("alerts", help="alert destinations: what is queued and firing, or send a test alert")
+    al.add_argument("action", choices=["status", "test"],
+                    help="status: destinations, queue and firing SLO alerts; test: send a test alert to each")
+    al.add_argument("--to", metavar="NAME", help="test only this destination (its name, as status shows it)")
     sub.add_parser("ingest", help="scan sources once and rebuild the database")
     rp = sub.add_parser("report", help="print a text summary")
     rp.add_argument("--project")
@@ -346,6 +395,8 @@ def main(argv=None):
     os.makedirs(a.data, exist_ok=True)
     if cmd == "keys":
         return cmd_keys(a, a.data)
+    if cmd == "alerts":
+        return cmd_alerts(a, a.data)
 
     from .engine import Engine
     eng = Engine(a.data, a.claude_root or None)

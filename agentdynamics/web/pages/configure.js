@@ -67,8 +67,17 @@
 
   // ------------------------------------------------------------------ integrations
   PAGES.integrations = async (host, _a, _p, alive) => {
-    const d = await api("sources");
+    const [d, al] = await Promise.all([api("sources"), api("alerts")]);
     if (!alive()) return;
+    const destRows = al.destinations.map((x) => `<tr><td><b>${esc(x.id)}</b></td><td><span class="tag">${esc(x.format)}</span></td>
+      <td class="small">${x.kinds.map(esc).join(", ")} · ≥ ${esc(x.min_severity)}${x.projects ? ` · ${x.projects.map(esc).join(", ")}` : ""}${x.rules ? ` · ${x.rules.map(esc).join(", ")}` : ""}</td>
+      <td>${pill(x.last_error && (!x.last_ok || x.last_error_at > x.last_ok) ? "critical" : x.queued ? "warning" : "ok", x.last_error && (!x.last_ok || x.last_error_at > x.last_ok) ? "failing" : x.queued ? "queued" : "ok")}</td>
+      <td class="num">${num(x.sent)}</td><td class="num">${num(x.queued)}</td><td class="num">${num(x.dropped)}</td>
+      <td class="small ${x.last_error ? "" : "muted"}" style="${x.last_error ? "color:var(--critical-text)" : ""}">${esc(x.last_error ? `${x.last_error} (${ago(x.last_error_at)})` : x.last_ok ? `last sent ${ago(x.last_ok)}` : "nothing sent yet")}</td></tr>`).join("");
+    const alertsCard = card("Alert destinations", (al.destinations.length ? `<div class="table-wrap"><table><thead><tr><th>Destination</th><th>Format</th><th>Sends</th><th>Status</th><th class="num">Sent</th><th class="num">Queued</th><th class="num">Dropped</th><th>Last result</th></tr></thead><tbody>${destRows}</tbody></table></div>`
+      : `<p class="small muted" style="margin:0">No alert destinations. Add <code>[[alerts.webhooks]]</code> to agentdynamics.toml (Slack, PagerDuty or JSON), then run <code>agentdynamics alerts test</code>.</p>`) +
+      al.problems.map((p) => `<p class="small" style="color:var(--critical-text);margin:6px 0 0">Ignored: ${esc(p)}</p>`).join("") +
+      (al.firing.length ? `<p class="small" style="margin:8px 0 0">SLO alerts firing: ${al.firing.map((f) => `<span class="tag">${esc(f.slo)} · ${esc(f.alert)} · since ${ago(f.since)}</span>`).join(" ")}</p>` : ""));
     const o = location.origin;
     const snip = (title, body, note = "") => `<details class="card" style="margin-bottom:10px"><summary><b>${title}</b> ${note ? `<span class="muted small">— ${note}</span>` : ""}</summary><div class="code-block" style="margin-top:10px">${esc(body)}</div></details>`;
     host.innerHTML = head("Integrations", "Where telemetry comes from and how to connect more. Every path lands in the same durable span store, so a LangGraph graph traced through LangSmith, an OpenAI Agents SDK app traced with OpenTelemetry, and Claude Code sessions are all analyzed the same way.") +
@@ -76,7 +85,7 @@
         ${d.sources.map((s) => `<tr><td><b>${esc(s.name)}</b></td><td><span class="tag">${esc(s.type)}</span></td><td>${pill(s.status === "ok" ? "ok" : s.status === "error" ? "critical" : "unknown", s.status)}</td>
           <td class="num">${num(s.items)}</td><td class="num">${s.traces == null ? "–" : num(s.traces)}</td><td class="small muted">${s.last_data ? ago(s.last_data) : s.last_ok ? ago(s.last_ok) : "never"}</td>
           <td class="small ${s.last_error ? "" : "muted"}" style="${s.last_error ? "color:var(--critical-text)" : ""}">${esc(s.last_error || s.detail)}</td></tr>`).join("")}</tbody></table></div>
-        <p class="small muted" style="margin:8px 0 0">Auth ${d.auth ? "<b>on</b>: push clients need an <i>ingest</i> key" : "<b>off</b> (local mode): set keys in agentdynamics.toml before exposing this server"} · ${num(d.stats.spans_ingested)} spans ingested since start · ${d.stats.refreshes} analysis cycles.</p>`) +
+        <p class="small muted" style="margin:8px 0 0">Auth ${d.auth ? "<b>on</b>: push clients need an <i>ingest</i> key" : "<b>off</b> (local mode): set keys in agentdynamics.toml before exposing this server"} · ${num(d.stats.spans_ingested)} spans ingested since start · ${d.stats.refreshes} analysis cycles.</p>`) + alertsCard +
       `<h2 style="margin:20px 0 10px">Connect a source</h2>
       <div class="grid g2"><div>
       ${snip("LangChain / LangGraph (zero code)", `# Existing LangSmith tracing is redirected to AgentDynamics. No code changes.

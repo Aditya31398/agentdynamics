@@ -50,10 +50,15 @@ def metric(tasks, m):
     return None
 
 
+def scoped(tasks, slo):
+    """The tasks an SLO covers: those matching every non-empty field of its scope."""
+    sc = {k: v for k, v in (slo.get("scope") or {}).items() if v}
+    return [t for t in tasks if all((t.get(k) or "") == v for k, v in sc.items())]
+
+
 def evaluate(all_tasks, slo, now=None):
     now = now or time.time()
-    sc = slo.get("scope") or {}
-    ts = [t for t in all_tasks if all((t.get(k) or "") == v for k, v in sc.items() if v)]
+    ts = scoped(all_tasks, slo)
     win = [t for t in ts if (t["started"] or 0) >= now - slo["window_days"] * 86400]
     val = metric(win, slo["metric"])
     # No tasks in the window means no value, and so no verdict. The old one-liner guarded only its
@@ -87,3 +92,94 @@ def evaluate(all_tasks, slo, now=None):
         status = "at risk"
     res["status"] = status
     return res
+
+
+# ---------------------------------------------------------------- burn-rate alerts
+# Multi-window, multi-burn-rate alerts (Google SRE Workbook, "Alerting on SLOs"). A policy holds when the
+# error budget is being spent fast enough to use `budget` of it within `long_h` hours, and a short window
+# (1/12 of the long one) shows it is still happening, so the alert clears soon after the burn stops. As in
+# the workbook, the fast and slow policies are one alert (a page) and the third is another (a ticket): a
+# hard failure satisfies all three, and should page once. Thresholds scale with the SLO's window; for a
+# 30-day SLO they are the workbook's 14.4, 6 and 1. None is below 1: a burn under 1 leaves budget at the
+# end of the window, which is the objective being met.
+BURN_POLICIES = [
+    {"id": "fast", "alert": "page", "budget": 0.02, "long_h": 1, "short_h": 5 / 60, "severity": "critical"},
+    {"id": "slow", "alert": "page", "budget": 0.05, "long_h": 6, "short_h": 0.5, "severity": "critical"},
+    {"id": "ticket", "alert": "ticket", "budget": 0.10, "long_h": 72, "short_h": 6, "severity": "warning"},
+]
+
+
+def burn_threshold(slo, policy):
+    return max(1.0, policy["budget"] * slo["window_days"] * 24 / policy["long_h"])
+
+
+def _finished(t):
+    # an outcome is known when the task ends, so that is when it counts against the budget
+    return t.get("ended") or t.get("started") or 0
+
+
+def burn_rate(tasks, slo, since, until):
+    """(burn, n) over tasks that finished in [since, until): 1.0 spends the error budget exactly over the
+    SLO's window. burn is None with no tasks, or for an objective with no budget (a target of 1)."""
+    win = [t for t in tasks if since <= _finished(t) < until]
+    v = metric(win, slo["metric"])
+    allowed = 1 - slo["target"]
+    if v is None or allowed <= 0:
+        return None, len(win)
+    return (1 - v) / allowed, len(win)
+
+
+def alert_conditions(tasks, slos, now, min_tasks=10, firing=()):
+    """The SLO alerts that should be firing now, {key: details}.
+
+    Keys are "slo/<id>/<alert>". Ratio objectives (success rate, Apdex) raise a "page" and a "ticket" alert
+    on burn rate, per BURN_POLICIES; the others raise "breach" when the objective is missed over its window. `min_tasks` is the fewest tasks a long window needs before its
+    burn counts: at low volume one failure is a large fraction. `firing` holds the keys firing now: an
+    agent can go quiet for longer than a short window, and an empty short window is no evidence the burn
+    stopped, so it keeps an alert firing but never starts one.
+    """
+    out = {}
+    horizon = now - max(p["long_h"] for p in BURN_POLICIES) * 3600
+    for s in slos:
+        ts = scoped(tasks, s)
+        base = {"slo": s["id"], "name": s.get("name") or s["id"], "metric": s["metric"], "op": s["op"],
+                "target": s["target"], "window_days": s["window_days"], "scope": s.get("scope") or {}}
+        if s["metric"] not in RATIO:
+            r = evaluate(ts, s, now)
+            if r["status"] == "breached" and r["n"] >= min_tasks:
+                out[f"slo/{s['id']}/breach"] = dict(base, alert="breach", policy="breach", severity="warning",
+                                                   value=r["value"], tasks=r["n"])
+            continue
+        recent = [t for t in ts if _finished(t) >= horizon]
+        for p in BURN_POLICIES:
+            if p["long_h"] > s["window_days"] * 24:
+                continue
+            key, thr = f"slo/{s['id']}/{p['alert']}", burn_threshold(s, p)
+            if key in out:                    # an earlier, faster policy already raised this alert
+                continue
+            long_b, n = burn_rate(recent, s, now - p["long_h"] * 3600, now + 1)
+            if long_b is None or n < min_tasks or long_b < thr:
+                continue
+            short_b, _ = burn_rate(recent, s, now - p["short_h"] * 3600, now + 1)
+            if short_b is None and key not in firing:
+                continue
+            if short_b is not None and short_b < thr:
+                continue
+            out[key] = dict(base, alert=p["alert"], policy=p["id"], severity=p["severity"], burn_rate=round(long_b, 2),
+                            short_burn_rate=None if short_b is None else round(short_b, 2),
+                            threshold=round(thr, 2), tasks=n, budget=p["budget"], long_h=p["long_h"],
+                            short_h=p["short_h"])
+    return out
+
+
+def burn_rates(tasks, slo, now):
+    """{window label: burn} over each policy's long window, for /metrics. Ratio objectives only."""
+    if slo["metric"] not in RATIO:
+        return {}
+    ts = scoped(tasks, slo)
+    out = {}
+    for p in BURN_POLICIES:
+        b, _ = burn_rate(ts, slo, now - p["long_h"] * 3600, now + 1)
+        if b is not None:
+            out[f"{p['long_h']}h"] = round(b, 4)
+    return out

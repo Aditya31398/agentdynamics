@@ -112,4 +112,18 @@ class AssessMixin:
                     return sc["project"] in self.projects
                 return not sc or any(all((t.get(k) or "") == v for k, v in sc.items()) for t in ts)
             slos = [s for s in slos if covers(s)]
-        return {"slos": [slo.evaluate(ts, s) for s in slos]}
+        from ..store import alert_state
+        firing = alert_state(self.con)
+        now, out = time.time(), []
+        for s in slos:
+            r = slo.evaluate(ts, s)
+            r["burn"] = slo.burn_rates(ts, s, now)
+            r["burn_thresholds"] = {f"{p['long_h']}h": round(slo.burn_threshold(s, p), 2) for p in slo.BURN_POLICIES
+                                    if s["metric"] in slo.RATIO and p["long_h"] <= s["window_days"] * 24}
+            # an alert is judged on every project's tasks; a scoped key sees one only on its own project's SLO
+            mine = self.projects is None or (s.get("scope") or {}).get("project") in self.projects
+            r["alerts"] = [{"alert": v.get("alert"), "severity": v.get("severity"), "since": v["since"],
+                            "burn_rate": v.get("burn_rate"), "policy": v.get("policy")}
+                           for k, v in firing.items() if mine and v.get("slo") == s["id"]]
+            out.append(r)
+        return {"slos": out}

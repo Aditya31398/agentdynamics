@@ -141,7 +141,7 @@ class ScopedKeysTest(unittest.TestCase):
         self.assertEqual(st, 404)        # the same answer as for an id that doesn't exist
 
     def test_install_wide_endpoints_need_an_unscoped_key(self):
-        for p in ("/metrics", "/api/sources", "/api/config"):
+        for p in ("/metrics", "/api/sources", "/api/config", "/api/alerts"):
             with self.subTest(p):
                 self.assertEqual(self.call(p, "k-alpha")[0], 403)
                 self.assertEqual(self.call(p, "k-admin")[0], 200)

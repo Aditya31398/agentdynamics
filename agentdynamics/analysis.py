@@ -15,6 +15,8 @@ import statistics
 import time
 from collections import Counter, defaultdict
 
+from .privacy import TASK_TEXT_FIELDS
+
 
 # ---------------------------------------------------------------- task typing
 
@@ -522,7 +524,10 @@ OPS = {">": lambda a, b: a > b, ">=": lambda a, b: a >= b, "<": lambda a, b: a <
        "==": lambda a, b: a == b}
 
 
-def evaluate_rules(t, rules):
+def evaluate_rules(t, rules, redact=None):
+    """Health-rule events for one task. `redact` (privacy.Redactor.text) is applied to the task's text
+    fields before a message can quote them: a message is stored and sent to alert destinations, and must
+    not carry what redaction or `store_content = false` keeps out of the task row."""
     events = []
     for r in rules:
         if not r.get("enabled", True):
@@ -536,7 +541,11 @@ def evaluate_rules(t, rules):
         if OPS[r["op"]](v, r["value"]):
             ctx = dict(t)
             ctx["v"] = v
-            ctx["next_prompt"] = (t.get("next_prompt") or "")[:80]
+            if redact is not None:
+                for f in TASK_TEXT_FIELDS:
+                    if isinstance(ctx.get(f), str):
+                        ctx[f] = redact(ctx[f])
+            ctx["next_prompt"] = (ctx.get("next_prompt") or "")[:80]
             try:
                 msg = r["message"].format(**ctx)
             except (KeyError, ValueError, IndexError):
@@ -680,7 +689,7 @@ def baseline_sample_size(n):
         m = nxt
 
 
-def finalize(runs, tasks_by_run, rules=None, now=None, grades=None, cache=None, dirty=()):
+def finalize(runs, tasks_by_run, rules=None, now=None, grades=None, cache=None, dirty=(), redact=None):
     """Cross-run analysis: outcomes, subagent roll-up, baselines, scores, events.
 
     With a `cache` (a ScoreCache kept between calls), tasks from runs not in `dirty` whose settled
@@ -805,7 +814,7 @@ def finalize(runs, tasks_by_run, rules=None, now=None, grades=None, cache=None, 
             ev = []
         else:
             score_task(t, baselines)
-            ev = evaluate_rules(t, rules)
+            ev = evaluate_rules(t, rules, redact)
         events.extend(ev)
         if cache is not None:
             cache.sig[t["id"]], cache.events[t["id"]] = sig, ev

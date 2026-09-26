@@ -91,12 +91,16 @@
     const d = await api("slos");
     if (!alive()) return;
     const fmtM = (m, v) => v == null ? "–" : ["success_rate", "tool_error_rate"].includes(m) ? pct(v, 1) : m === "apdex" ? v.toFixed(2) : m === "median_cost" ? usd(v) : m === "p95_seconds" ? dur(v) : v;
-    host.innerHTML = head("Service Level Objectives", "Objectives over a rolling window, evaluated against the global project and environment filters. Ratio objectives (success rate, Apdex) get an error budget and a 24-hour burn rate. A burn rate above 1 means the budget will run out before the window ends.",
+    const ALERT = { page: ["critical", "paging"], ticket: ["warning", "ticket open"], breach: ["warning", "breach alert"] };
+    const firing = (s) => (s.alerts || []).map((a) => { const [k, t] = ALERT[a.alert] || ["warning", a.alert]; return `<span title="alerting since ${esc(new Date(a.since * 1000).toLocaleString())}">${pill(k, t)}</span>`; }).join(" ");
+    const burns = (s) => Object.entries(s.burn || {}).map(([w, b]) => { const thr = (s.burn_thresholds || {})[w]; return `<span title="${thr ? `alerts at ${thr}×` : ""}">${w} <b style="color:${thr && b >= thr ? "var(--critical-text)" : "inherit"}">${b}×</b></span>`; }).join(" · ");
+    host.innerHTML = head("Service Level Objectives", "Objectives over a rolling window, evaluated against the global project and environment filters. Ratio objectives (success rate, Apdex) get an error budget and burn rates. A burn rate above 1 means the budget will run out before the window ends; alert destinations with <code>kinds = [\"slos\"]</code> are paged when a burn is fast enough to matter (Integrations).",
       `<button id="slo-edit">Edit objectives</button>`) +
-      `<div class="grid g3">${d.slos.map((s, i) => `<div class="card"><div class="between"><b>${esc(s.name)}</b>${pill(s.status === "ok" ? "ok" : s.status === "breached" ? "critical" : s.status === "at risk" ? "warning" : "unknown", s.status)}</div>
+      `<div class="grid g3">${d.slos.map((s, i) => `<div class="card"><div class="between"><b>${esc(s.name)}</b><span>${firing(s)} ${pill(s.status === "ok" ? "ok" : s.status === "breached" ? "critical" : s.status === "at risk" ? "warning" : "unknown", s.status)}</span></div>
         <div class="row" style="align-items:baseline;margin:6px 0"><span class="big-score" style="font-size:30px">${fmtM(s.metric, s.value)}</span><span class="muted small">target ${s.op} ${fmtM(s.metric, s.target)} · ${s.window_days}d · ${s.n} tasks</span></div>
         ${s.budget_remaining != null ? `<div class="small muted">Error budget remaining</div><div class="score-row" style="grid-template-columns:1fr 50px;margin:2px 0 6px"><div class="track"><div class="fill" style="width:${Math.max(0, Math.min(100, s.budget_remaining * 100))}%;background:${s.budget_remaining > 0.5 ? "var(--good)" : s.budget_remaining > 0 ? "var(--warning)" : "var(--critical)"}"></div></div><span class="num small">${pct(s.budget_remaining)}</span></div>
-          <div class="small">Burn rate (24h): <b style="color:${(s.burn_rate_24h || 0) > 1 ? "var(--critical-text)" : "inherit"}">${s.burn_rate_24h == null ? "–" : s.burn_rate_24h + "×"}</b></div>` : ""}
+          <div class="small">Burn rate (24h): <b style="color:${(s.burn_rate_24h || 0) > 1 ? "var(--critical-text)" : "inherit"}">${s.burn_rate_24h == null ? "–" : s.burn_rate_24h + "×"}</b></div>
+          ${burns(s) ? `<div class="small muted">Alert windows: ${burns(s)}</div>` : ""}` : ""}
         <div class="small muted" style="margin-top:4px">Days meeting target: ${s.days_met || "–"} ${Object.entries(s.scope || {}).filter(([, v]) => v).map(([k, v]) => `<span class="tag">${k}: ${esc(v)}</span>`).join("")}</div>
         <div id="slo-${i}" style="margin-top:8px"></div></div>`).join("")}</div>
       <div id="slo-editor"></div>`;

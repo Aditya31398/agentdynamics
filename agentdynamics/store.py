@@ -1,8 +1,9 @@
 """SQLite storage (WAL mode).
 
 Two kinds of tables:
-  * durable  - spans_raw (pushed/pulled telemetry), source_state, alerts_sent, grades. These are a system of
-               record. grades holds outcomes stated after the fact, so it must survive a schema change.
+  * durable  - spans_raw (pushed/pulled telemetry), source_state, alerts_sent, grades, alert_outbox,
+               alert_state. These are a system of record. grades holds outcomes stated after the fact, so it
+               must survive a schema change; the alert tables hold what was promised to a pager.
   * derived  - runs, steps, tasks, events, baselines, meta. Rebuildable from sources; dropped on schema change.
 
 The storage layer is intentionally thin so it can be swapped for Postgres/ClickHouse at larger scale.
@@ -10,6 +11,8 @@ The storage layer is intentionally thin so it can be swapped for Postgres/ClickH
 import json
 import sqlite3
 import time
+
+from .privacy import TASK_TEXT_FIELDS
 
 SCHEMA_VERSION = 9   # 6: outcome_source / outcome_reason (graded outcomes)
                      # 7: tokens_unverified (cache accounting that rests on a guess)
@@ -69,6 +72,9 @@ CREATE INDEX IF NOT EXISTS spans_updated ON spans_raw(updated);
 CREATE TABLE IF NOT EXISTS source_state (name PRIMARY KEY, data);
 CREATE TABLE IF NOT EXISTS alerts_sent (event_id PRIMARY KEY, ts REAL);
 CREATE TABLE IF NOT EXISTS grades (task_id PRIMARY KEY, outcome, reason, graded_by, ts REAL);
+CREATE TABLE IF NOT EXISTS alert_outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, dest, body, created REAL,
+                                         attempts INTEGER DEFAULT 0, next_try REAL, last_error);
+CREATE TABLE IF NOT EXISTS alert_state (key PRIMARY KEY, since REAL, data);
 """
 
 
@@ -169,7 +175,7 @@ def _task_row(t, red):
     row = [t.get(c) for c in TASK_COLS] + [json.dumps(t.get(c) if t.get(c) is not None else ([] if c == "path" else {}))
                                            for c in TASK_JSON]
     if red:
-        for f in ("prompt", "final_text", "next_prompt", "root_error"):
+        for f in TASK_TEXT_FIELDS:
             i = TASK_COLS.index(f)
             row[i] = red.text(row[i])
     return row
@@ -310,3 +316,43 @@ def rows(con, q, args=()):
                     pass
         out.append(d)
     return out
+
+
+# ---------------------------------------------------------------- alert delivery (durable)
+
+def outbox_add(con, items, now):
+    """Queue (dest_id, body) pairs for delivery, in order."""
+    with con:
+        con.executemany("INSERT INTO alert_outbox (dest, body, created, next_try) VALUES (?, ?, ?, ?)",
+                        [(d, json.dumps(b, default=str), now, now) for d, b in items])
+
+
+def outbox_pending(con, limit=500):
+    return [dict(r) for r in con.execute("SELECT * FROM alert_outbox ORDER BY id LIMIT ?", (limit,))]
+
+
+def outbox_done(con, row_id):
+    with con:
+        con.execute("DELETE FROM alert_outbox WHERE id = ?", (row_id,))
+
+
+def outbox_retry(con, row_id, attempts, next_try, error):
+    with con:
+        con.execute("UPDATE alert_outbox SET attempts = ?, next_try = ?, last_error = ? WHERE id = ?",
+                    (attempts, next_try, error, row_id))
+
+
+def outbox_depth(con):
+    return {r[0]: r[1] for r in con.execute("SELECT dest, COUNT(*) FROM alert_outbox GROUP BY dest")}
+
+
+def alert_state(con):
+    return {r["key"]: dict(json.loads(r["data"]), since=r["since"]) for r in con.execute("SELECT * FROM alert_state")}
+
+
+def set_alert_state(con, firing, resolved, now):
+    """Record SLO alerts that started (`firing`: {key: details}) and stopped (`resolved`: keys)."""
+    with con:
+        con.executemany("INSERT OR IGNORE INTO alert_state (key, since, data) VALUES (?, ?, ?)",
+                        [(k, now, json.dumps(v, default=str)) for k, v in firing.items()])
+        con.executemany("DELETE FROM alert_state WHERE key = ?", [(k,) for k in resolved])

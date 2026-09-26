@@ -61,8 +61,9 @@ for each of these; the work is making that number defensible to someone who will
       (`keys create --project`): a scoped key reads only its projects on every endpoint and can't
       write into or over another project's data. Baselines are still install-wide; per-project
       baselines and per-project admin are the next steps if teams need them.
-- [ ] **Alert routing.** Webhooks exist; PagerDuty/Slack/Opsgenie shapes and SLO burn-rate alerts
-      are what turns health rules into something someone is actually paged for.
+- [x] **Alert routing.** Slack, PagerDuty and JSON destinations, routed by project, rule and
+      severity; SLO burn-rate pages and tickets that resolve; durable, ordered delivery with retries.
+      Opsgenie was left out: it shuts down in April 2027. Microsoft Teams is the obvious next format.
 
 ## Not planned
 

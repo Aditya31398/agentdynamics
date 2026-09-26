@@ -123,7 +123,7 @@ AGENTDYNAMICS_URL=http://127.0.0.1:8790 python examples/governed_agent.py 40
 | **Workflows** | The real execution graph mined from your traces: path variants and their success rates, loops, the critical node, handoffs |
 | **Task snapshots** | Span-tree waterfall for each request: context growth, cost against the baseline, what went wrong, what the user said next |
 | **Baselines & Apdex** | "Normal" cost and latency per workflow, learned automatically, plus an agent Apdex score |
-| **Health rules & alerts** | 28 rules (runaway cost, policy denials, boundary probing, revocations, retry loops, node loops, truncation, rate limits, ping-pong handoffs, unverified code changes, …) sent to Slack or webhooks |
+| **Health rules & alerts** | 28 rules (runaway cost, policy denials, boundary probing, revocations, retry loops, node loops, truncation, rate limits, ping-pong handoffs, unverified code changes, …) sent to Slack, PagerDuty or webhooks, routed by project, rule and severity |
 | **Tools & Models** | Error rate and p95 per tool; per model TTFT, tokens/s, truncation rate, cache hit rate and spend |
 | **SLOs** | Success rate, Apdex, latency and cost objectives with error budgets and burn rates |
 | **Governance** | Aegis policy enforcement per task: denials by rule, budget stops, kill-switch revocations, unused grants, policy export, and what a policy change would refuse |
@@ -187,7 +187,9 @@ docker compose -f deploy/docker-compose.yml up -d   # AgentDynamics + OpenTeleme
 - **Security:** role-based API keys, optionally scoped to projects. A scoped key reads only its projects' tasks,
   runs, steps and events, on every endpoint, and can't write into or over another project's traces.
 - **Privacy:** redaction of emails, API keys and card numbers, or `store_content = false` to keep metadata only.
-- **Operations:** retention, Prometheus `/metrics`, `/healthz`, Slack and webhook alerts, and a status page for every source.
+- **Operations:** retention, Prometheus `/metrics`, `/healthz`, a status page for every source, and alerts to Slack,
+  PagerDuty or any webhook: health-rule events and SLO burn-rate pages, delivered in order with retries
+  (`agentdynamics alerts test` checks a destination end to end).
 
 See [deploy/](deploy/) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 

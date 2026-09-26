@@ -23,10 +23,22 @@ Example agentdynamics.toml:
     [retention]
     days = 90                       # spans/runs older than this are purged
 
+    [alerts]
+    console_url = "https://agentdynamics.internal"   # alerts link back to the task or SLO
+    slo_min_tasks = 10              # fewest tasks in a window before an SLO burn rate can alert
+
     [[alerts.webhooks]]
     url = "https://hooks.slack.com/services/..."
     min_severity = "warning"
-    format = "slack"                # slack | json
+    format = "slack"                # slack | pagerduty | json (see agentdynamics/alerts.py)
+    kinds = ["events", "slos"]      # health-rule events (default) and SLO burn-rate alerts
+    projects = ["checkout"]         # optional routing: only these projects / health rules
+    [[alerts.webhooks]]
+    name = "pager"
+    format = "pagerduty"
+    routing_key_env = "PD_ROUTING_KEY"
+    min_severity = "critical"
+    kinds = ["slos"]
 
     [[sources]]
     type = "claude_code"            # built-in, on by default
@@ -60,7 +72,7 @@ DEFAULTS = {
     "auth": {"enabled": False, "keys": []},
     "privacy": {"store_content": True, "redact": ["email", "api_key", "credit_card", "bearer", "aws_key"], "extra_patterns": []},
     "retention": {"days": 0},
-    "alerts": {"webhooks": []},
+    "alerts": {"webhooks": [], "console_url": "", "slo_min_tasks": 10},
     "analysis": {"interval": 15, "idle_cap_seconds": 300},
     "sources": [],
 }
@@ -135,5 +147,7 @@ def public_view(cfg):
     v = copy.deepcopy(cfg)
     v["auth"]["keys"] = [{"name": k.get("name"), "role": k.get("role"), "key": (k.get("key") or "")[:6] + "…"} for k in v["auth"]["keys"]]
     for w in v["alerts"]["webhooks"]:
-        w["url"] = (w.get("url") or "")[:28] + "…"
+        w["url"] = (w.get("url") or "")[:28] + "…"     # a Slack webhook URL is itself the secret
+        if w.get("routing_key"):
+            w["routing_key"] = "…"
     return v

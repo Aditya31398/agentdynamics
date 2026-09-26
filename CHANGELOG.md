@@ -9,6 +9,17 @@ bumps the minor version.
 ## [Unreleased]
 
 ### Added
+- **Alert routing.** Destinations can be Slack, PagerDuty (Events API v2) or JSON webhooks, each filtered by
+  project, rule, severity and kind (`kinds = ["events", "slos"]`). **SLO burn-rate alerts** page when an
+  objective's error budget is burning fast (multi-window, multi-burn-rate, as in the Google SRE Workbook:
+  a page at 2% of the budget in an hour or 5% in six, a ticket at 10% in three days, scaled to the SLO's
+  window) and resolve when it stops. PagerDuty and Slack group a burst of one violation into one alert.
+  Delivery is durable and ordered, retrying 429/5xx/network failures for a day. `agentdynamics alerts
+  status|test`, `/api/alerts`, an Alert destinations card on the Integrations page, firing alerts and burn
+  rates on the SLOs page, and `agentdynamics_slo_burn_rate` / `_burn_threshold` / `_alert_firing` and
+  alert-delivery metrics on `/metrics`. Existing `[[alerts.webhooks]]` entries keep working unchanged: the
+  JSON body keeps its shape, and SLO alerts are sent only to destinations that ask for `"slos"`. Details:
+  [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#alerting).
 - **Project-scoped API keys.** `agentdynamics keys create --role read --project checkout` (repeat `--project`
   for several) makes a key that sees and sends only those projects. Reads go through a per-request, read-only
   connection on which `tasks`, `runs`, `steps` and `events` are views limited to the key's projects, so every
@@ -21,6 +32,12 @@ bumps the minor version.
   install-wide baselines, are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#project-scoped-keys).
 
 ### Fixed
+- **Health-rule messages could carry user text that redaction keeps out of storage.** The `rework` rule
+  quotes the correcting message; its event message skipped `store_content = false` in the database, and
+  skipped redaction entirely in alert webhooks, which sent the unredacted text. Messages are now built from
+  the redacted text.
+- **An alert whose webhook failed was lost**: it was marked sent before the request. Alerts now go through a
+  durable queue and are retried.
 - **Conversation threads and subagent parents no longer cross projects.** Two projects' runs with the same
   client-chosen `thread_id` were one conversation, so one project's follow-up could make another's task its
   next message and turn it into `rework`. A run naming another project's run as its parent added its cost to

@@ -111,7 +111,7 @@ class Handler(BaseHTTPRequestHandler):
         scope = self._scope()
         return self.api if scope is None else type(self.api)(self.api.e, projects=scope)
 
-    INSTALL_WIDE = ("/metrics", "/api/sources", "/api/config")   # nothing here belongs to one project
+    INSTALL_WIDE = ("/metrics", "/api/sources", "/api/config", "/api/alerts")   # nothing here belongs to one project
 
     def _ingest_scope(self):
         """What this key may write: None for the whole install, else an engine.IngestScope."""
@@ -169,6 +169,7 @@ class Handler(BaseHTTPRequestHandler):
                       "/api/process": api.process, "/api/analytics": api.analytics, "/api/compare": api.compare,
                       "/api/workflows": api.workflows, "/api/workflow": api.workflow, "/api/slos": api.slos,
                       "/api/sources": api.sources, "/api/config": api.config, "/api/connect": api.connect,
+                      "/api/alerts": api.alerts,
                       "/api/governance": api.governance, "/api/governance/policy": api.export_policy}
             if p in routes:
                 r = routes[p](q)

@@ -19,10 +19,21 @@ days = 90
 [analysis]
 interval = 15
 
+# [alerts]
+# console_url = "https://agentdynamics.example.com"   # alerts link back to the task or SLO
+#
 # [[alerts.webhooks]]
 # url = "https://hooks.slack.com/services/T000/B000/XXXX"
 # min_severity = "warning"
-# format = "slack"
+# format = "slack"                 # slack | pagerduty | json
+# kinds = ["events", "slos"]       # health-rule events, SLO burn-rate alerts
+#
+# [[alerts.webhooks]]
+# name = "pager"
+# format = "pagerduty"
+# routing_key_env = "PD_ROUTING_KEY"
+# min_severity = "critical"
+# kinds = ["slos"]
 
 # Pull from an existing LangSmith project (keeps LangSmith as the system of record)
 # [[sources]]

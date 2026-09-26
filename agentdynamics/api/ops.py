@@ -1,7 +1,9 @@
-"""Operations: sources, connection snippets, config, health and Prometheus metrics."""
+"""Operations: sources, connection snippets, config, alerts, health and Prometheus metrics."""
+import time
 from collections import Counter, defaultdict
 
-from ..store import rows
+from .. import alerts as alertmod, slo as slomod
+from ..store import alert_state, outbox_depth, rows
 
 
 
@@ -29,6 +31,23 @@ class OpsMixin:
     def config(self, q):
         from ..config import public_view
         return {"config": public_view(self.e.cfg), "data_dir": self.e.data_dir, "db": self.e.db_path}
+
+    def alerts(self, q):
+        """Alert destinations with what is queued and recent delivery results, config problems, and the SLO
+        alerts firing now."""
+        dests, problems = alertmod.destinations(self.e.cfg["alerts"])
+        depth = outbox_depth(self.con)
+        out = []
+        for d in dests:
+            log = self.e.alert_log.get(d["id"], {})
+            out.append({"id": d["id"], "format": d["format"], "kinds": d["kinds"], "min_severity": d["min_severity"],
+                        "projects": d["projects"], "rules": d["rules"], "queued": depth.get(d["id"], 0),
+                        "sent": log.get("sent", 0), "dropped": log.get("dropped", 0), "last_ok": log.get("last_ok"),
+                        "last_error": log.get("last_error"), "last_error_at": log.get("last_error_at")})
+        firing = sorted((dict(v, key=k) for k, v in alert_state(self.con).items()), key=lambda a: a["since"])
+        return {"destinations": out, "problems": problems, "firing": firing,
+                "console_url": self.e.cfg["alerts"].get("console_url") or "",
+                "stats": {k: self.e.stats.get(k, 0) for k in ("alerts_sent", "alerts_retried", "alerts_dropped")}}
 
     def healthz(self):
         # "ok" has to mean ingestion is working now, not that it worked once. A refresh that
@@ -81,4 +100,27 @@ class OpsMixin:
         m("agentdynamics_refresh_duration_seconds", "Duration of last analysis", "gauge", [({}, self.e.last_duration or 0)])
         m("agentdynamics_refresh_failures", "Consecutive failed analysis passes (0 when healthy)", "gauge",
           [({}, self.e.failed_refreshes)])
+        # SLO burn rates, so teams that page through Alertmanager can alert on the same numbers:
+        # agentdynamics_slo_burn_rate > agentdynamics_slo_burn_threshold, per window
+        now, slos = time.time(), slomod.load(self.e.data_dir)
+        horizon = max(p["long_h"] for p in slomod.BURN_POLICIES) * 3600
+        recent = rows(self.con, "SELECT * FROM tasks WHERE is_subagent = 0 AND (llm_calls > 0 OR tool_calls > 0) "
+                                "AND COALESCE(ended, started) >= ?", (now - horizon,))
+        burn, thr = [], []
+        for s in slos:
+            for w, b in slomod.burn_rates(recent, s, now).items():
+                burn.append(({"slo": s["id"], "window": w}, b))
+            if s["metric"] in slomod.RATIO:
+                thr += [({"slo": s["id"], "window": f"{p['long_h']}h"}, round(slomod.burn_threshold(s, p), 4))
+                        for p in slomod.BURN_POLICIES if p["long_h"] <= s["window_days"] * 24]
+        m("agentdynamics_slo_burn_rate", "Error-budget burn rate over each window (1 = spent exactly over the SLO window)",
+          "gauge", burn)
+        m("agentdynamics_slo_burn_threshold", "Burn rate at which AgentDynamics alerts, per window", "gauge", thr)
+        m("agentdynamics_slo_alert_firing", "SLO alerts firing now (1): page, ticket or breach", "gauge",
+          [({"slo": v.get("slo"), "alert": v.get("alert")}, 1) for v in alert_state(self.con).values()])
+        m("agentdynamics_alerts_sent_total", "Alert messages delivered since start", "counter", [({}, self.e.stats["alerts_sent"])])
+        m("agentdynamics_alerts_dropped_total", "Alert messages given up on since start (see /api/alerts)", "counter",
+          [({}, self.e.stats["alerts_dropped"])])
+        m("agentdynamics_alert_queue", "Alert messages waiting to be delivered, by destination", "gauge",
+          [({"destination": k}, v) for k, v in outbox_depth(self.con).items()])
         return "\n".join(lines) + "\n"

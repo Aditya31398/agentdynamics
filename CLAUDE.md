@@ -85,6 +85,11 @@ AGENTDYNAMICS_URL=http://127.0.0.1:8790 python examples/governed_agent.py 45   #
   either derive it from those views or refuse a scoped key, as `/metrics` and `/api/config` do. Ingest paths take
   a `scope` and check the whole request under `self.lock` before writing. `tests/test_scoped_keys.py` calls every
   route in `server.py` with a scoped key; plant new install-wide data (like its SLO fixture) there when you add some.
+- **Alerts leave the building.** Anything in an alert must be what the stored copy would hold: rule messages
+  are formatted from redacted text (`finalize(..., redact=)`), bodies are queued without secrets, and the
+  JSON webhook body `{"source", "events"}` is a contract. Delivery is `alert_outbox` (durable, ordered per
+  destination); SLO alert state is `alert_state`. Test destinations with a local receiver
+  (`tests/test_alerts.py`), never a real one.
 - **SQLite plans depend on statistics a fresh install doesn't have.** Name the index (`INDEXED BY`) for any
   lookup the engine does per trace or per refresh, and cover it in `test_span_lookups_use_their_indexes`.
 - **Console pages live in `web/pages/<area>.js`** and use `app.js`'s helpers through `window.AD`. A helper used by
@@ -104,7 +109,8 @@ agentdynamics/
   govern.py           observed behaviour -> tightened Aegis policy (+ minimal YAML emitter)
   collectors/         claude_code, spans (canonical assembler), otlp, langsmith, langfuse, inbox, generic, aegis_audit
   analysis.py         segment -> task_metrics -> flow_metrics / governance_metrics -> finalize (baselines, scores, events)
-  flows.py, slo.py    workflow process mining, SLOs
+  flows.py, slo.py    workflow process mining, SLOs and burn-rate alert conditions
+  alerts.py           alert destinations (Slack, PagerDuty, JSON), routing, rendering, sending
   engine.py           sources, spans_raw assembly, incremental refresh, alerts, pullers
   store.py            SQLite (WAL); durable vs derived tables
   server.py           HTTP handler: receivers (/v1/traces, /langsmith/*, /api/ingest*), auth roles, routing
@@ -112,7 +118,7 @@ agentdynamics/
   web/                index.html, app.js (helpers, router, boot), pages/<area>.js (each area's pages), charts.js, style.css
 tests/                test_core, test_integrations, test_autotrace, test_aegis_integration, test_ecosystem, test_live_anthropic,
                       test_console_ui, test_outcomes, test_token_accounting, test_policy_coverage, test_incremental,
-                      test_scoped_keys
+                      test_scoped_keys, test_alerts
 bench/                bench.py: ingest / rebuild / incremental timings and the CI scaling gate
 examples/             langgraph_style_app, otel_multiagent, governed_agent, demo_agent
 deploy/               Dockerfile companion: compose, OTel Collector config, example TOML

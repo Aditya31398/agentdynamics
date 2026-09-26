@@ -30,6 +30,55 @@ Design choices that make this production-safe:
 
 Setup snippets for each path are on the **Integrations** page in the console.
 
+## Alerting
+
+Configured as `[[alerts.webhooks]]` (the full reference is the docstring of `agentdynamics/alerts.py`):
+
+```toml
+[alerts]
+console_url = "https://agentdynamics.internal"   # alerts link to the task or SLO
+
+[[alerts.webhooks]]            # a team channel: its project's events and SLO alerts
+format = "slack"
+url = "https://hooks.slack.com/services/..."
+kinds = ["events", "slos"]
+projects = ["checkout"]
+
+[[alerts.webhooks]]            # the pager: only fast SLO burns
+name = "pager"
+format = "pagerduty"
+routing_key_env = "PD_ROUTING_KEY"
+kinds = ["slos"]
+min_severity = "critical"
+```
+
+- **Health-rule events** are points in time. Each new one is sent once. Nothing is sent for history on a
+  process's first start, or for tasks that ended more than an hour ago (a backfill does not page).
+  PagerDuty and Slack group a burst by rule, project and task type: fifty runaway-cost tasks are one
+  PagerDuty alert and one Slack line. JSON webhooks receive every event, in the original
+  `{"source": "agentdynamics", "events": [...]}` shape.
+- **SLO alerts** have a start and an end. Ratio objectives (success rate, Apdex) use multi-window,
+  multi-burn-rate alerting from the Google SRE Workbook. A *page* (critical) fires when 2% of the error
+  budget would go in an hour or 5% in six hours. A *ticket* (warning) fires at 10% in three days. Each is
+  confirmed by a short window (1/12 of the long one), so it clears soon after the burn stops. Thresholds
+  scale with the SLO's window; for 30 days they are the workbook's 14.4, 6 and 1. Other objectives raise a
+  *breach* alert while missed. A long window needs `slo_min_tasks` tasks (default 10) before it can alert.
+  An agent can go quiet for longer than a short window, so an empty short window keeps an alert firing
+  but never starts one. What is firing is kept in the `alert_state` table, so a restart neither repeats a
+  page nor forgets to resolve it. The alerts are evaluated every 30 seconds, not only when traffic
+  arrives, so a burn resolves as time passes.
+- **Delivery** goes through the durable `alert_outbox` table: at least once, and in order per destination
+  (a resolve never overtakes its trigger). A 429, 5xx or network error is retried with backoff for a day.
+  Any other 4xx is a configuration error: dropped, logged and shown on the Integrations page. No secret is
+  stored: PagerDuty routing keys are added at send time, and destinations are identified by name, not URL.
+- **Privacy.** A rule message can quote user text (the `rework` rule quotes the correcting message), so
+  messages get the same redaction as stored text, and none of it with `store_content = false`.
+- **Operating it.** `agentdynamics alerts status` lists destinations, queue and firing alerts;
+  `agentdynamics alerts test` sends a test alert to each (and resolves it on PagerDuty). `/api/alerts` and
+  the Integrations page show the same. `/metrics` exposes `agentdynamics_slo_burn_rate` and
+  `agentdynamics_slo_burn_threshold` per window, so teams already paging through Alertmanager can alert
+  on the same numbers.
+
 ## Project-scoped keys
 
 A key created with `--project` (repeatable) is confined to those projects.
@@ -64,7 +113,7 @@ A key created with `--project` (repeatable) is confined to those projects.
 | Retention | Per-deployment retention window; old spans and runs are purged automatically. |
 | Multi-environment | `deployment.environment` / metadata `environment` becomes a first-class filter, alongside project and framework. |
 | Operations | `/healthz`, Prometheus `/metrics`, a per-source status page with last error, gzip/deflate request bodies, a 64 MB body limit, and a non-root Docker image with a healthcheck. |
-| Alerting | New health events go to Slack or generic JSON webhooks, with deduplication and no replay of history on first start. |
+| Alerting | Health-rule events and SLO burn-rate alerts go to Slack, PagerDuty (Events API v2) or JSON webhooks, routed per destination by project, rule, severity and kind. See [Alerting](#alerting). |
 | Scale path | The storage layer is thin (`store.py`). SQLite in WAL mode handles single-node workloads. Swap in Postgres or ClickHouse for high volume; analysis already works incrementally per run. |
 
 ## Configuration

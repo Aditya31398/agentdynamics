@@ -9,6 +9,7 @@ PATTERNS = {
     "credit_card": r"\b(?:\d[ -]?){13,16}\b",
 }
 TEXT_FIELDS = ("text", "input_preview", "error", "target")
+TASK_TEXT_FIELDS = ("prompt", "final_text", "next_prompt", "root_error")   # what a user or model wrote
 
 
 class Redactor:
