@@ -57,8 +57,10 @@ for each of these; the work is making that number defensible to someone who will
       feature, not something AgentDynamics can bolt on.
 - [x] [#9](https://github.com/Aditya31398/agentdynamics/issues/9) **Split `server.py` and `web/app.js`** (weak area 4). Both are large single files. This
       unblocks the two items above it more than it stands on its own.
-- [ ] **Teams and projects.** API-key roles (ingest / read / admin) are the whole authorization
-      model. Multi-tenant use needs project scoping on keys at minimum.
+- [x] **Teams and projects.** `read` and `ingest` keys can be scoped to projects
+      (`keys create --project`): a scoped key reads only its projects on every endpoint and can't
+      write into or over another project's data. Baselines are still install-wide; per-project
+      baselines and per-project admin are the next steps if teams need them.
 - [ ] **Alert routing.** Webhooks exist; PagerDuty/Slack/Opsgenie shapes and SLO burn-rate alerts
       are what turns health rules into something someone is actually paged for.
 
