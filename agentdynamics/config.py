@@ -21,7 +21,7 @@ Example agentdynamics.toml:
     extra_patterns = []             # additional regexes to mask
 
     [retention]
-    days = 90                       # spans/runs older than this are purged
+    days = 90                       # spans/runs older than this are purged; daily totals are kept
 
     [alerts]
     console_url = "https://agentdynamics.internal"   # alerts link back to the task or SLO

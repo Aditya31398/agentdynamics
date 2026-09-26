@@ -53,7 +53,12 @@ class MonitorMixin:
         for t in ts:
             phase.update(t["phase_cost"] or {})
         top = sorted(ts, key=lambda t: -(t["cost"] + (t["subagent_cost"] or 0)))[:8]
-        return {"kpis": k, "daily": self.daily(ts), "events": events[:12], "severity": dict(sev), "types": types,
+        daily = self.daily(ts, q)
+        old = [d for d in daily if d.get("rolled_up")]
+        # the KPIs are the tasks still held; days retention rolled up are totals only, and said to be
+        history = {"through": self.boundary()[0], "days": len(old), "tasks": sum(d["tasks"] for d in old),
+                   "cost": round(sum(d["cost"] for d in old), 4)} if old else None
+        return {"kpis": k, "daily": daily, "history": history, "events": events[:12], "severity": dict(sev), "types": types,
                 "models": models, "phase_cost": {p: round(v, 4) for p, v in phase.items()},
                 "outcomes": dict(Counter(t["outcome"] for t in ts)),
                 "apdex_mix": dict(Counter(t["apdex"] for t in ts if t["apdex"])),
@@ -186,7 +191,8 @@ class MonitorMixin:
                       "top_matches": [m for m, _ in Counter(t["task_type_match"] for t in g if t.get("task_type_match")).most_common(3)]})
             k.update({"type": ty, "health": self.health(k["apdex"]), "baseline": base.get(ty) or base.get("__all__"),
                       "p90_cost": round(pct(costs, 0.9), 4), "p90_duration": round(pct([t["duration_s"] for t in g], 0.9), 1),
-                      "daily": [{"day": d["day"], "tasks": d["tasks"], "cost": d["cost"]} for d in self.daily(g)]})
+                      "daily": [{"day": d["day"], "tasks": d["tasks"], "cost": d["cost"]}
+                                for d in self.daily(g, dict(q, type=ty))]})
             out.append(k)
         ev = Counter(r["task_type"] for r in rows(self.con, "SELECT task_type FROM events"))
         for k in out:

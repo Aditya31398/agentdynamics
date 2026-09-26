@@ -47,22 +47,56 @@ class AssessMixin:
               "day": "date(t.started, 'unixepoch', 'localtime')", "week": "strftime('%Y-W%W', t.started, 'unixepoch', 'localtime')",
               "models": "t.models", "source": "t.source", "prompt_kind": "t.prompt_kind", "hour": "strftime('%H', t.started, 'unixepoch', 'localtime')"}
 
-    METRICS = {"tasks": "COUNT(*)", "cost": "SUM(t.cost + t.subagent_cost)", "avg_cost": "AVG(t.cost + t.subagent_cost)",
-               "tokens": "SUM(t.total_tokens)", "output_tokens": "SUM(t.output_tokens)", "avg_duration": "AVG(t.duration_s)",
-               "avg_score": "AVG(t.score)", "tool_calls": "SUM(t.tool_calls)", "tool_errors": "SUM(t.tool_errors)",
-               "error_rate": "1.0 * SUM(t.tool_errors) / MAX(1, SUM(t.tool_calls))", "waste": "SUM(t.waste_cost)",
-               "rework_rate": "AVG(CASE WHEN t.outcome IN ('rework','interrupted') THEN 1.0 ELSE 0 END)",
-               "verification_rate": "AVG(CASE WHEN t.code_changed = 1 THEN t.verified END)", "avg_context": "AVG(t.max_context)",
-               "cache_hit": "1.0 * SUM(t.cache_read) / MAX(1, SUM(t.cache_read + t.cache_write + t.input_tokens))"}
+    # Every metric is built from sums, so it can be computed over tasks and rollup_daily alike. FACTS gives
+    # each sum's per-task expression and its column in rollup_daily.
+    FACTS = {"n": ("1", "tasks"), "cost": ("t.cost + t.subagent_cost", "cost + subagent_cost"),
+             "total_tokens": ("t.total_tokens", "total_tokens"), "output_tokens": ("t.output_tokens", "output_tokens"),
+             "input_tokens": ("t.input_tokens", "input_tokens"), "cache_read": ("t.cache_read", "cache_read"),
+             "cache_write": ("t.cache_write", "cache_write"), "duration_s": ("t.duration_s", "duration_s"),
+             "duration_n": ("t.duration_s IS NOT NULL", "tasks"),
+             "score": ("t.score", "score_sum"), "score_n": ("t.score IS NOT NULL", "score_n"),
+             "tool_calls": ("t.tool_calls", "tool_calls"), "tool_errors": ("t.tool_errors", "tool_errors"),
+             "waste": ("t.waste_cost", "waste_cost"),
+             "reworked": ("t.outcome IN ('rework','interrupted')",
+                          "CASE WHEN outcome IN ('rework','interrupted') THEN tasks ELSE 0 END"),
+             "code_changed": ("t.code_changed = 1", "code_changed"),
+             "verified": ("CASE WHEN t.code_changed = 1 THEN t.verified END", "verified"),
+             "context": ("t.max_context", "max_context"), "context_n": ("t.max_context IS NOT NULL", "tasks")}
+
+    METRICS = {"tasks": "SUM(n)", "cost": "SUM(cost)", "avg_cost": "1.0 * SUM(cost) / SUM(n)",
+               "tokens": "SUM(total_tokens)", "output_tokens": "SUM(output_tokens)",
+               "avg_duration": "1.0 * SUM(duration_s) / NULLIF(SUM(duration_n), 0)",
+               "avg_score": "1.0 * SUM(score) / NULLIF(SUM(score_n), 0)", "tool_calls": "SUM(tool_calls)",
+               "tool_errors": "SUM(tool_errors)", "error_rate": "1.0 * SUM(tool_errors) / MAX(1, SUM(tool_calls))",
+               "waste": "SUM(waste)", "rework_rate": "1.0 * SUM(reworked) / SUM(n)",
+               "verification_rate": "1.0 * SUM(verified) / NULLIF(SUM(code_changed), 0)",
+               "avg_context": "1.0 * SUM(context) / NULLIF(SUM(context_n), 0)",
+               "cache_hit": "1.0 * SUM(cache_read) / MAX(1, SUM(cache_read + cache_write + input_tokens))"}
+    # the same groups over rollup_daily; a group it can't express (per-task detail) is live tasks only
+    ROLLUP_GROUPS = {"task_type": "r.task_type", "project": "r.project", "outcome": "r.outcome", "source": "r.source",
+                     "day": "r.day", "week": "strftime('%Y-W%W', r.day)"}
 
     def analytics(self, q):
-        g = self.GROUPS.get(q.get("group", "task_type"), "t.task_type")
+        group = q.get("group", "task_type")
+        g = self.GROUPS.get(group, "t.task_type")
         metrics = [m for m in (q.get("metrics") or "tasks,cost,avg_cost,avg_score").split(",") if m in self.METRICS]
+        through, through_end = self.boundary()
         w, a = self.where(q)
+        live = ", ".join(f"{expr} AS {k}" for k, (expr, _) in self.FACTS.items())
+        facts, args = f"SELECT {g} AS grp, {live} FROM tasks t{w}", list(a)
+        history = bool(through) and group in self.ROLLUP_GROUPS
+        if history:
+            # rolled-up days are counted from their totals, so not again from tasks still held for them
+            rw, ra = self.rollup_where(q)
+            old = ", ".join(f"{col} AS {k}" for k, (_, col) in self.FACTS.items())
+            facts += f" AND t.started >= ? UNION ALL SELECT {self.ROLLUP_GROUPS[group]} AS grp, {old} FROM rollup_daily r{rw}"
+            args += [through_end] + ra
         sel = ", ".join(f"{self.METRICS[m]} AS {m}" for m in metrics)
-        order = "grp" if q.get("group") in ("day", "week", "hour") else f"{metrics[0]} DESC"
-        data = rows(self.con, f"SELECT {g} AS grp, {sel} FROM tasks t{w} GROUP BY grp ORDER BY {order} LIMIT 200", a)
-        return {"rows": data, "metrics": metrics, "group": q.get("group", "task_type"),
+        order = "grp" if group in ("day", "week", "hour") else f"{metrics[0]} DESC"
+        data = rows(self.con, f"SELECT grp, {sel} FROM ({facts}) GROUP BY grp ORDER BY {order} LIMIT 200", args)
+        return {"rows": data, "metrics": metrics, "group": group,
+                # a grouping by per-task detail (model, hour, ...) can only cover the tasks still held
+                "history": {"through": through, "included": history} if through else None,
                 "available": {"groups": list(self.GROUPS), "metrics": list(self.METRICS)}}
 
     def compare(self, q):

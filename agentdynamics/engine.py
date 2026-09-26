@@ -36,6 +36,16 @@ class SourceStatus:
         self.d.update(status="error", last_error=str(err)[:400], last_error_at=time.time())
 
 
+def _midnight(ts):
+    lt = time.localtime(ts)
+    return time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
+
+
+def _next_midnight(ts):
+    lt = time.localtime(ts)
+    return time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday + 1, 0, 0, 0, 0, 0, -1))   # mktime rolls the month
+
+
 class ScopeError(Exception):
     """A project-scoped ingest key tried to write outside its projects. Nothing was written."""
 
@@ -516,15 +526,19 @@ class Engine:
                     dirty[x["id"]] = x
             for run in self._assemble_traces():
                 dirty[run["id"]] = run
-            # retention
+            # Retention. Never on a process's first refresh: the days about to be purged are rolled up from
+            # the analysis already written (store.rollup_daily), so it has to be written first -- after an
+            # outage, or on a fresh install importing history, it isn't yet.
             days = float(self.cfg["retention"].get("days") or 0)
-            if days > 0:
-                cutoff = time.time() - days * 86400
+            if days > 0 and not self._first:
+                cutoff = self._clock() - days * 86400
+                self._freeze_rollups(cutoff)
                 store.purge_spans_before(self.con, cutoff)
                 for rid, r in list(self._runs.items()) + list(dirty.items()):
-                    if (r.get("ended") or r.get("started") or time.time()) < cutoff:
+                    if (r.get("ended") or r.get("started") or cutoff) < cutoff:
                         removed.append(rid)
                         dirty.pop(rid, None)
+                        self._drop_run_file(r)
             dirty = {k: v for k, v in dirty.items() if v["steps"]}
             if not dirty and not removed and not force and not self._first and not self._regrade:
                 return False
@@ -566,6 +580,39 @@ class Engine:
             self.last_refresh_error, self.failed_refreshes = None, 0
             self.stats["refreshes"] += 1
             return True
+
+    def _freeze_rollups(self, cutoff):
+        """Roll up every local day that the retention cutoff has reached, once, before anything in it is
+        purged. A day is frozen when the cutoff enters it: its tasks are all still here, and all at least
+        retention-minus-one days old. Later changes to a frozen day (a backfill older than retention) are
+        not reflected."""
+        last = _midnight(cutoff)
+        through, through_end = store.rollup_boundary(self.con)
+        if through_end and through_end > last:
+            return
+        if through_end:
+            start = through_end
+        else:
+            first = self.con.execute("SELECT MIN(started) FROM tasks").fetchone()[0]
+            start = _midnight(min(first, last)) if first else last
+        days = []
+        while start <= last:
+            end = _next_midnight(start)
+            days.append((time.strftime("%Y-%m-%d", time.localtime(start)), start, end))
+            start = end
+        store.freeze_days(self.con, days, days[-1][0], days[-1][2])
+
+    def _drop_run_file(self, run):
+        """An SDK run past retention: its file in runs/ is our copy, so it goes too. Files elsewhere (Claude
+        Code transcripts) belong to the user and are never touched."""
+        path = run.get("file")
+        if not path or os.path.dirname(os.path.abspath(path)) != os.path.abspath(self.runs_dir):
+            return
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        self._files.pop(path, None)
 
     def watch(self, interval=None):
         interval = interval or float(self.cfg["analysis"].get("interval", 15))

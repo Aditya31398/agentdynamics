@@ -43,8 +43,9 @@ for each of these; the work is making that number defensible to someone who will
 - [ ] [#7](https://github.com/Aditya31398/agentdynamics/issues/7) **A store backend behind `store.py`.** SQLite is right for a laptop and wrong for a fleet.
       The interface is already narrow; the work is keeping `SCHEMA_VERSION` semantics (derived
       tables drop and rebuild) while a Postgres or ClickHouse backend holds the same model.
-- [ ] **Downsampling and rollups.** Retention currently purges. Keep daily aggregates past the
-      raw-span horizon so a quarter-old cost trend survives without the spans behind it.
+- [x] **Downsampling and rollups.** Retention rolls each day up into durable daily totals before
+      purging it; trends, analytics by day/week/project and the Prometheus counters include them.
+      Model- and tool-level history is the natural next rollup.
 - [x] [#6](https://github.com/Aditya31398/agentdynamics/issues/6) **A benchmark with a number in it.** "Fine to about 100k tasks" is an estimate, not a
       measurement. Generate a corpus, publish ingest and refresh timings per size, and make the
       nightly job fail when a change regresses them.

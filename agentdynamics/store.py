@@ -2,8 +2,9 @@
 
 Two kinds of tables:
   * durable  - spans_raw (pushed/pulled telemetry), source_state, alerts_sent, grades, alert_outbox,
-               alert_state. These are a system of record. grades holds outcomes stated after the fact, so it
-               must survive a schema change; the alert tables hold what was promised to a pager.
+               alert_state, rollup_daily. These are a system of record. grades holds outcomes stated after
+               the fact, so it must survive a schema change; the alert tables hold what was promised to a
+               pager; rollup_daily holds the only copy of days that retention has purged.
   * derived  - runs, steps, tasks, events, baselines, meta. Rebuildable from sources; dropped on schema change.
 
 The storage layer is intentionally thin so it can be swapped for Postgres/ClickHouse at larger scale.
@@ -52,6 +53,19 @@ EVENT_COLS = ["id", "ts", "rule_id", "rule", "severity", "task_id", "run_id", "p
 
 DERIVED = ["runs", "tasks", "steps", "events", "baselines", "meta"]
 
+# Daily totals of tasks, kept after retention purges the tasks themselves. One row per local day and
+# combination of these dimensions; every measure is a sum, so rows add up across any grouping.
+ROLLUP_DIMS = ["day", "project", "environment", "framework", "source", "workflow", "task_type", "outcome", "is_subagent"]
+ROLLUP_SUMS = ["tasks", "cost", "subagent_cost", "waste_cost", "total_tokens", "input_tokens", "output_tokens",
+               "cache_read", "cache_write", "llm_calls", "tool_calls", "tool_errors", "duration_s", "wall_s",
+               "score_sum", "score_n", "apdex_satisfied", "apdex_tolerating", "apdex_frustrated", "code_changed",
+               "verified", "max_context"]
+_ROLLUP_SELECT = ("COUNT(*), SUM(cost), SUM(subagent_cost), SUM(waste_cost), SUM(total_tokens), SUM(input_tokens), "
+                  "SUM(output_tokens), SUM(cache_read), SUM(cache_write), SUM(llm_calls), SUM(tool_calls), "
+                  "SUM(tool_errors), SUM(duration_s), SUM(wall_s), SUM(score), COUNT(score), "
+                  "SUM(apdex = 'satisfied'), SUM(apdex = 'tolerating'), SUM(apdex = 'frustrated'), "
+                  "SUM(code_changed = 1), SUM(CASE WHEN code_changed = 1 THEN verified ELSE 0 END), SUM(max_context)")
+
 SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS runs ({", ".join(RUN_COLS)}, PRIMARY KEY(id)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS tasks ({", ".join(TASK_COLS + TASK_JSON)}, PRIMARY KEY(id)) WITHOUT ROWID;
@@ -75,6 +89,7 @@ CREATE TABLE IF NOT EXISTS grades (task_id PRIMARY KEY, outcome, reason, graded_
 CREATE TABLE IF NOT EXISTS alert_outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, dest, body, created REAL,
                                          attempts INTEGER DEFAULT 0, next_try REAL, last_error);
 CREATE TABLE IF NOT EXISTS alert_state (key PRIMARY KEY, since REAL, data);
+CREATE TABLE IF NOT EXISTS rollup_daily ({", ".join(ROLLUP_DIMS + ROLLUP_SUMS)}, PRIMARY KEY({", ".join(ROLLUP_DIMS)})) WITHOUT ROWID;
 """
 
 
@@ -100,6 +115,7 @@ SCOPED_VIEWS = {
     "runs": "SELECT * FROM main.runs WHERE project IN ({p})",
     "events": "SELECT * FROM main.events WHERE project IN ({p})",
     "steps": "SELECT * FROM main.steps WHERE run_id IN (SELECT id FROM main.runs WHERE project IN ({p}))",
+    "rollup_daily": "SELECT * FROM main.rollup_daily WHERE project IN ({p})",
 }
 
 
@@ -356,3 +372,25 @@ def set_alert_state(con, firing, resolved, now):
         con.executemany("INSERT OR IGNORE INTO alert_state (key, since, data) VALUES (?, ?, ?)",
                         [(k, now, json.dumps(v, default=str)) for k, v in firing.items()])
         con.executemany("DELETE FROM alert_state WHERE key = ?", [(k,) for k in resolved])
+
+
+# ---------------------------------------------------------------- daily rollups (durable)
+
+def freeze_days(con, days, through, through_end):
+    """Write the daily totals of `days` [(label, start, end)] from the tasks table, and record that every
+    day up to `through` (ending at `through_end`) is frozen. One transaction: a day is rolled up exactly once."""
+    dims = ", ".join(ROLLUP_DIMS[1:])
+    with con:
+        for label, start, end in days:
+            con.execute(f"INSERT OR REPLACE INTO rollup_daily ({', '.join(ROLLUP_DIMS + ROLLUP_SUMS)}) "
+                        f"SELECT ?, {dims}, {_ROLLUP_SELECT} FROM tasks INDEXED BY tasks_started "
+                        f"WHERE started >= ? AND started < ? AND (llm_calls > 0 OR tool_calls > 0) GROUP BY {dims}",
+                        (label, start, end))
+        con.execute("INSERT OR REPLACE INTO source_state (name, data) VALUES ('rollups', ?)",
+                    (json.dumps({"through": through, "through_end": through_end}),))
+
+
+def rollup_boundary(con):
+    """(last frozen day, the time it ends). Tasks from before that time are counted in rollup_daily, not tasks."""
+    st = get_state(con, "rollups")
+    return st.get("through"), st.get("through_end") or 0

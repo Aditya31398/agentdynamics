@@ -14,7 +14,7 @@ redact = ["email", "api_key", "credit_card", "bearer", "aws_key"]
 extra_patterns = ['\b\d{3}-\d{2}-\d{4}\b']      # e.g. US SSNs
 
 [retention]
-days = 90
+days = 90          # raw spans and runs; daily totals are kept past it (docs/ARCHITECTURE.md)
 
 [analysis]
 interval = 15
