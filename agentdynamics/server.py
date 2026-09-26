@@ -32,6 +32,13 @@ ROLE_FOR = {"ingest": 1, "read": 2, "admin": 3}
 # ingest keys only write telemetry, read keys only read, admin can do everything
 CAN = {1: {"ingest"}, 2: {"read"}, 3: {"ingest", "read", "admin"}}
 MAX_BODY = 64 * 1024 * 1024
+# A client hanging up mid-request (a reload, a closed tab, an aborted fetch) is routine, not a server error.
+# Caught only around I/O on the client's socket: the same errors raised by our own code are still real errors.
+CLIENT_GONE = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
+
+
+class ClientGone(Exception):
+    """The client hung up while its request body was being read: there is no one left to answer."""
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -40,6 +47,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
         pass
+
+    def handle_one_request(self):
+        # Covers the socket I/O http.server does itself: the request line and headers (a keep-alive
+        # connection reset while idle) and its own error replies. Ours goes through _send and _body.
+        try:
+            super().handle_one_request()
+        except CLIENT_GONE:
+            self.close_connection = True
 
     def _send(self, code, body, ctype="application/json", extra_headers=None):
         if isinstance(body, bytes):
@@ -55,8 +70,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         for k, v in (extra_headers or {}).items():
             self.send_header(k, v)
-        self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.end_headers()
+            self.wfile.write(data)
+        except CLIENT_GONE:
+            self.close_connection = True
 
     # --- auth: API keys with roles ingest < read < admin
     def _key(self):
@@ -125,7 +143,11 @@ class Handler(BaseHTTPRequestHandler):
         n = int(self.headers.get("Content-Length") or 0)
         if n > MAX_BODY:
             raise ValueError("payload too large")
-        body = self.rfile.read(n) if n else b""
+        try:
+            body = self.rfile.read(n) if n else b""
+        except CLIENT_GONE as ex:
+            self.close_connection = True
+            raise ClientGone() from ex
         enc = (self.headers.get("Content-Encoding") or "").lower()
         if enc == "gzip":
             body = gzip.decompress(body)
@@ -211,6 +233,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {})
         except ScopeError as ex:
             return self._refuse(ex)
+        except ClientGone:
+            return
         except Exception as ex:
             return self._send(400, {"error": str(ex)})
         self._send(404, {"error": "not found"})
@@ -333,6 +357,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"ok": True})
         except ScopeError as ex:
             return self._refuse(ex)
+        except ClientGone:
+            return
         except Exception as ex:
             traceback.print_exc()
             return self._send(400, {"error": str(ex)})
