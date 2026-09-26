@@ -79,6 +79,27 @@ min_severity = "critical"
   `agentdynamics_slo_burn_threshold` per window, so teams already paging through Alertmanager can alert
   on the same numbers.
 
+## Retention and rollups
+
+`[retention] days = N` purges spans, runs and SDK run files older than N days. Before anything in a day is
+purged, that day's totals are written to `rollup_daily` (a durable table): per local day, project,
+environment, framework, source, workflow, task type, outcome and subagent flag, with every measure a sum
+(tasks, spend, tokens, cache, calls, errors, durations, score and Apdex counts, verified changes).
+
+- **When.** A day is rolled up once, when the retention cutoff first enters it, from the analysis already
+  written: all its tasks are still there, and all are at least N-1 days old. The first refresh of a process
+  never purges, so the analysis of whatever is about to go is written first (after an outage, or when a
+  fresh install imports history).
+- **Reading.** Every day up to the last rolled-up one is counted from `rollup_daily` and never from `tasks`,
+  which may still hold part of that day. The Overview's daily series, Analytics grouped by day, week,
+  project, task type, outcome or source, and the Prometheus `*_total` counters include rolled-up days, so a
+  quarter-old cost trend survives and counters never go down when retention runs. Groupings that need
+  per-task detail (model, hour, Apdex, prompt kind), and every per-task view, cover only the tasks still
+  held, and say so.
+- **Limits.** A rolled-up day doesn't change: a backfill older than retention is dropped. Raising retention
+  later doesn't un-roll days already rolled up. Rollups are kept indefinitely. Model- and tool-level history
+  isn't rolled up, only task-level.
+
 ## Project-scoped keys
 
 A key created with `--project` (repeatable) is confined to those projects.
@@ -87,7 +108,8 @@ A key created with `--project` (repeatable) is confined to those projects.
   `tasks`, `runs`, `steps` and `events` are temporary views limited to the key's projects
   (`store.connect_reader`), and the connection is read-only. Every endpoint, including ones added later, sees
   only those rows. Install-wide endpoints (`/metrics`, `/api/sources`, `/api/config`) refuse a scoped key.
-  SLOs are shown only when they cover the key's projects or its own tasks. `tests/test_scoped_keys.py` reads
+  SLOs are shown only when they cover the key's projects or its own tasks. Rolled-up history
+  (`rollup_daily`) is behind the same kind of view. `tests/test_scoped_keys.py` reads
   the route list out of `server.py` and calls every route with a scoped key, requiring that another project's
   data never appears.
 - **Writes.** Ingestion is keyed by ids the client chooses, so without checks a scoped key could add spans to
@@ -110,7 +132,7 @@ A key created with `--project` (repeatable) is confined to those projects.
 |---|---|
 | Security | API keys with roles: `ingest` writes telemetry only, `read` views console, API and metrics, `admin` edits rules and SLOs. `read` and `ingest` keys can be scoped to projects (`keys create --project`); see below. Constant-time key comparison. The LangSmith `x-api-key` header is honored. |
 | Privacy | Regex redaction of emails, API keys, bearer tokens, AWS keys and card numbers (plus custom patterns), applied before storage. `store_content = false` keeps only sizes and metadata. |
-| Retention | Per-deployment retention window; old spans and runs are purged automatically. |
+| Retention | Per-deployment retention window. Spans, runs and SDK run files older than it are purged, and each day's totals are kept first, so trends and counters outlive the raw data. See [Retention and rollups](#retention-and-rollups). |
 | Multi-environment | `deployment.environment` / metadata `environment` becomes a first-class filter, alongside project and framework. |
 | Operations | `/healthz`, Prometheus `/metrics`, a per-source status page with last error, gzip/deflate request bodies, a 64 MB body limit, and a non-root Docker image with a healthcheck. |
 | Alerting | Health-rule events and SLO burn-rate alerts go to Slack, PagerDuty (Events API v2) or JSON webhooks, routed per destination by project, rule, severity and kind. See [Alerting](#alerting). |

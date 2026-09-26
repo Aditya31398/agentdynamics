@@ -3,7 +3,7 @@ import time
 from collections import Counter, defaultdict
 
 from .. import alerts as alertmod, slo as slomod
-from ..store import alert_state, outbox_depth, rows
+from ..store import alert_state, outbox_depth, rollup_boundary, rows
 
 
 
@@ -75,9 +75,15 @@ class OpsMixin:
                 lab = ",".join(f'{k}="{esc(val)}"' for k, val in labels.items())
                 lines.append(f"{name}{{{lab}}} {v}")
 
-        t = rows(self.con, "SELECT project, environment, task_type, outcome, COUNT(*) n, SUM(cost+subagent_cost) cost, SUM(tool_calls) calls, "
-                           "SUM(tool_errors) errs, SUM(total_tokens) tok FROM tasks WHERE llm_calls>0 OR tool_calls>0 "
-                           "GROUP BY project, environment, task_type, outcome")
+        # counters must never go down: tasks retention purged are still counted, from their daily totals
+        _, through_end = rollup_boundary(self.con)
+        t = rows(self.con, "SELECT project, environment, task_type, outcome, SUM(n) n, SUM(cost) cost, SUM(calls) calls, "
+                           "SUM(errs) errs, SUM(tok) tok FROM ("
+                           "SELECT project, environment, task_type, outcome, 1 n, cost + subagent_cost cost, tool_calls calls, "
+                           "tool_errors errs, total_tokens tok FROM tasks WHERE (llm_calls > 0 OR tool_calls > 0) AND started >= ? "
+                           "UNION ALL SELECT project, environment, task_type, outcome, tasks, cost + subagent_cost, tool_calls, "
+                           "tool_errors, total_tokens FROM rollup_daily) GROUP BY project, environment, task_type, outcome",
+                 (through_end,))
 
         def lab(r):
             return {"project": r["project"], "environment": r["environment"], "task_type": r["task_type"], "outcome": r["outcome"]}

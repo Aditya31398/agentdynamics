@@ -239,6 +239,14 @@ class CoreTest(unittest.TestCase):
                 self.assertTrue(plan.startswith(f"SEARCH spans_raw USING INDEX {index}"), f"{sql!r} -> {plan}")
                 checked += 1
             self.assertEqual(checked, 2, seen)
+            # rolling up a day before retention purges it reads that day's tasks by start time
+            seen.clear()
+            con.set_trace_callback(seen.append)
+            store.freeze_days(con, [("2026-01-01", 1767225600, 1767312000)], "2026-01-01", 1767312000)
+            con.set_trace_callback(None)
+            sql = next(s for s in seen if s.startswith("INSERT OR REPLACE INTO rollup_daily"))
+            plan = " ".join(r[3] for r in con.execute("EXPLAIN QUERY PLAN " + sql))
+            self.assertIn("SEARCH tasks USING INDEX tasks_started", plan)
         finally:
             con.close()
 

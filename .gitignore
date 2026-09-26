@@ -9,3 +9,4 @@ build/
 dist/
 .scoped-data/
 .alerts-demo/
+.rollup-demo/

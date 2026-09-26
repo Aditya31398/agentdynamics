@@ -9,6 +9,14 @@ bumps the minor version.
 ## [Unreleased]
 
 ### Added
+- **Daily rollups past retention.** Before retention purges a day, its totals are kept in a durable
+  `rollup_daily` table: tasks, spend, tokens, calls, errors, durations, scores and Apdex, per project,
+  environment, framework, source, workflow, task type and outcome. The Overview's daily spend, Analytics by
+  day, week, project, type, outcome or source, and the Prometheus `*_total` counters include them, so a
+  quarter-old cost trend survives a 30-day retention and counters no longer drop when retention runs.
+  Views that need per-task detail say they cover only the tasks still held. A test holds every total
+  unchanged across a purge, a restart and days going by. Details:
+  [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#retention-and-rollups).
 - **Alert routing.** Destinations can be Slack, PagerDuty (Events API v2) or JSON webhooks, each filtered by
   project, rule, severity and kind (`kinds = ["events", "slos"]`). **SLO burn-rate alerts** page when an
   objective's error budget is burning fast (multi-window, multi-burn-rate, as in the Google SRE Workbook:
@@ -32,6 +40,9 @@ bumps the minor version.
   install-wide baselines, are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#project-scoped-keys).
 
 ### Fixed
+- **Retention never deleted SDK run files.** `runs/*.json` older than retention stayed on disk, and every
+  restart re-read them. They are now deleted with the rest of the run (Claude Code transcripts, which are
+  yours, are never touched). Retention also no longer runs on a process's first refresh.
 - **Health-rule messages could carry user text that redaction keeps out of storage.** The `rework` rule
   quotes the correcting message; its event message skipped `store_content = false` in the database, and
   skipped redaction entirely in alert webhooks, which sent the unredacted text. Messages are now built from

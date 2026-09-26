@@ -58,6 +58,17 @@ class ScopedKeysTest(unittest.TestCase):
             cls.eng.ingest(run(f"alpha-{i}", "alpha", "alpha_flow", f"alpha request {i}", "alpha_tool", error=i == 0))
             cls.eng.ingest(run(f"{MARK}-{i}", MARK, f"{MARK}_flow", f"{SECRET} request {i}", f"{MARK}_tool", error=i == 0))
         cls.eng.refresh(force=True)
+        # days retention has rolled up (store.rollup_daily): the other project's history as well as its tasks
+        old = time.strftime("%Y-%m-%d", time.localtime(T - 40 * 86400))
+        with cls.eng.con:
+            for project in ("alpha", MARK):
+                cls.eng.con.execute(
+                    "INSERT INTO rollup_daily (day, project, environment, framework, source, workflow, task_type, "
+                    "outcome, is_subagent, tasks, cost, subagent_cost, total_tokens, tool_calls, tool_errors) "
+                    "VALUES (?, ?, 'default', 'sdk', 'sdk', ?, ?, 'completed', 0, 5, 1.5, 0, 900, 4, 1)",
+                    (old, project, f"{project}_flow", f"{project}_flow"))
+            cls.eng.con.execute("INSERT OR REPLACE INTO source_state (name, data) VALUES ('rollups', ?)",
+                                (json.dumps({"through": old, "through_end": T - 39 * 86400}),))
         # install-wide config can name the other project too: an SLO on it, and one on its workflow
         slo.save(cls.eng.data_dir, slo.DEFAULT_SLOS + [
             {"id": "b1", "name": f"{MARK} latency", "metric": "p95_seconds", "op": "<=", "target": 60,

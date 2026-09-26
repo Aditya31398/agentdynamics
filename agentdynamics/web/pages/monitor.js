@@ -36,7 +36,7 @@
         ${kpi("User feedback", k.feedback_avg == null ? "–" : k.feedback_avg.toFixed(2), "avg score where collected")}
       </div>
       <div class="grid g-3-2">
-        ${card("Daily spend", `<div id="ch-daily"></div>`, "click a day to see its tasks")}
+        ${card("Daily spend", `<div id="ch-daily"></div>` + (d.history ? `<p class="small muted" style="margin:8px 0 0">Up to ${esc(dayLabel(d.history.through))}: daily totals only (${num(d.history.tasks)} tasks, ${usd(d.history.cost)} over ${d.history.days} days). Retention has removed the tasks themselves, so the figures above cover the tasks still held.</p>` : ""), "click a day to see its tasks")}
         ${card("Health by task type", `<div id="types-list"></div>`, `<a href="#/types">all types →</a>`)}
       </div>
       <div class="grid g3" style="margin-top:14px">
@@ -49,7 +49,7 @@
         ${card("Most expensive tasks", taskTable(d.top_tasks.slice(0, 6), { compact: true }), `<a href="#/tasks?sort=cost">all →</a>`)}
       </div>`;
     C.columns($("#ch-daily"), d.daily, { x: "day", keys: [{ key: "cost", label: "Spend", color: "var(--s1)" }], fmt: usd, xfmt: dayLabel, height: 210,
-      onClick: (r) => { location.hash = `#/tasks?day=${r.day}`; } });
+      onClick: (r) => { if (r.rolled_up) toast("Retention removed this day's tasks; only its totals are kept"); else location.hash = `#/tasks?day=${r.day}`; } });
     $("#types-list").innerHTML = `<table><thead><tr><th>Type</th><th class="num">Tasks</th><th class="num">Spend</th><th class="num">Apdex</th><th>Health</th></tr></thead><tbody>${d.types.map((t) =>
       `<tr class="click" data-href="#/tasks?type=${encodeURIComponent(t.type)}"><td>${esc(t.type)}</td><td class="num">${t.tasks}</td><td class="num">${usd(t.cost)}</td><td class="num">${t.apdex == null ? "–" : t.apdex.toFixed(2)}</td><td>${pill(t.health)}</td></tr>`).join("")}</tbody></table>`;
     C.stack100($("#apdex-mix"), [["satisfied", "var(--good)"], ["tolerating", "var(--warning)"], ["frustrated", "var(--critical)"]].map(([k, c]) => ({ key: k, label: k, value: d.apdex_mix[k] || 0, color: c })));

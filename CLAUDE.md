@@ -90,6 +90,10 @@ AGENTDYNAMICS_URL=http://127.0.0.1:8790 python examples/governed_agent.py 45   #
   JSON webhook body `{"source", "events"}` is a contract. Delivery is `alert_outbox` (durable, ordered per
   destination); SLO alert state is `alert_state`. Test destinations with a local receiver
   (`tests/test_alerts.py`), never a real one.
+- **Days up to the rollup boundary are counted from `rollup_daily`, never from `tasks`** (which may still hold
+  part of the last rolled-up day). A new total over time must merge history the way `ApiBase.daily` and
+  `analytics` (`FACTS`) do, or say it covers only the tasks still held. `tests/test_rollups.py` holds every
+  total unchanged across a purge; add a new total to its `totals()`.
 - **SQLite plans depend on statistics a fresh install doesn't have.** Name the index (`INDEXED BY`) for any
   lookup the engine does per trace or per refresh, and cover it in `test_span_lookups_use_their_indexes`.
 - **Console pages live in `web/pages/<area>.js`** and use `app.js`'s helpers through `window.AD`. A helper used by
@@ -118,7 +122,7 @@ agentdynamics/
   web/                index.html, app.js (helpers, router, boot), pages/<area>.js (each area's pages), charts.js, style.css
 tests/                test_core, test_integrations, test_autotrace, test_aegis_integration, test_ecosystem, test_live_anthropic,
                       test_console_ui, test_outcomes, test_token_accounting, test_policy_coverage, test_incremental,
-                      test_scoped_keys, test_alerts
+                      test_scoped_keys, test_alerts, test_rollups
 bench/                bench.py: ingest / rebuild / incremental timings and the CI scaling gate
 examples/             langgraph_style_app, otel_multiagent, governed_agent, demo_agent
 deploy/               Dockerfile companion: compose, OTel Collector config, example TOML

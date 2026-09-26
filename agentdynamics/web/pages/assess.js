@@ -41,7 +41,8 @@
       `<button id="csv">Export CSV</button>`) +
       `<div class="card"><div class="row"><label class="small muted">Group by <select id="a-group">${d.available.groups.map((g) => `<option ${g === group ? "selected" : ""}>${g}</option>`).join("")}</select></label>
         <span class="small muted">Metrics</span>${d.available.metrics.map((m) => `<label class="small"><input type="checkbox" class="a-m" value="${m}" ${metrics.includes(m) ? "checked" : ""}> ${LBL[m] || m}</label>`).join("")}</div></div>
-      <div class="card" style="margin-top:14px"><div class="card-head"><h2>${LBL[d.metrics[0]] || d.metrics[0]} by ${esc(group)}</h2></div><div id="a-chart"></div></div>
+      <div class="card" style="margin-top:14px"><div class="card-head"><h2>${LBL[d.metrics[0]] || d.metrics[0]} by ${esc(group)}</h2></div><div id="a-chart"></div>
+        ${d.history ? `<p class="small muted" style="margin:8px 0 0">${d.history.included ? `Days up to ${esc(dayLabel(d.history.through))} come from daily totals: retention has removed their tasks.` : `Covers only the tasks still held. Retention has removed tasks up to ${esc(dayLabel(d.history.through))} and kept daily totals by project, type, outcome and source; grouping by ${esc(group)} needs the tasks.`}</p>` : ""}</div>
       <div class="card" style="margin-top:14px"><div class="table-wrap"><table><thead><tr><th>${esc(group)}</th>${d.metrics.map((m) => `<th class="num">${LBL[m] || m}</th>`).join("")}</tr></thead><tbody>
         ${d.rows.map((r) => `<tr><td>${esc(r.grp ?? "(none)")}</td>${d.metrics.map((m) => `<td class="num">${f(m)(r[m])}</td>`).join("")}</tr>`).join("")}</tbody></table></div></div>`;
     const go = () => { const ms_ = $$(".a-m").filter((c) => c.checked).map((c) => c.value); location.hash = `#/analytics?group=${$("#a-group").value}&metrics=${ms_.join(",") || "tasks"}`; };

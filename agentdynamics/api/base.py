@@ -5,7 +5,7 @@ import time
 from collections import Counter, defaultdict
 
 from ..analysis import apdex_score, pct
-from ..store import connect_reader, rows
+from ..store import connect_reader, rollup_boundary, rows
 
 DAY = 86400
 
@@ -118,12 +118,56 @@ class ApiBase:
             return "unknown"
         return "normal" if apdex >= 0.85 else "warning" if apdex >= 0.7 else "critical"
 
-    def daily(self, ts, days=None):
+    # ---------------------------------------------------------------- history past retention
+    # Retention purges tasks but keeps their daily totals (store.rollup_daily). Every day up to the boundary
+    # is counted from those totals and never from tasks, which may still hold part of the last rolled-up day.
+
+    def boundary(self):
+        """(last rolled-up day or None, the time it ends)."""
+        return rollup_boundary(self.con)
+
+    def rollup_where(self, q, alias="r"):
+        """where() for rollup_daily: the same filters, applied to whole days."""
+        clauses, args = [], []
+        for key, col in (("project", "project"), ("source", "source"), ("type", "task_type"),
+                         ("environment", "environment"), ("workflow", "workflow"), ("framework", "framework")):
+            if q.get(key):
+                clauses.append(f"{alias}.{col} = ?")
+                args.append(q[key])
+        if q.get("days"):
+            clauses.append(f"{alias}.day >= ?")
+            args.append(time.strftime("%Y-%m-%d", time.localtime(time.time() - float(q["days"]) * DAY)))
+        if q.get("sub", "0") == "0":
+            clauses.append(f"{alias}.is_subagent = 0")
+        return (" WHERE " + " AND ".join(clauses)) if clauses else "", args
+
+    def history_daily(self, q):
+        """Daily totals from rollup_daily, shaped like daily() and marked rolled_up."""
+        if not self.boundary()[0]:
+            return []
+        w, a = self.rollup_where(q)
+        out = []
+        for r in rows(self.con, "SELECT day, SUM(tasks) tasks, SUM(cost + subagent_cost) cost, SUM(total_tokens) tokens, "
+                                "SUM(apdex_satisfied) sat, SUM(apdex_tolerating) tol, SUM(apdex_frustrated) fr, "
+                                f"SUM(tool_errors) errors, SUM(score_sum) ss, SUM(score_n) sn FROM rollup_daily r{w} "
+                                "GROUP BY day ORDER BY day", a):
+            rated = (r["sat"] or 0) + (r["tol"] or 0) + (r["fr"] or 0)
+            out.append({"day": r["day"], "tasks": r["tasks"], "cost": round(r["cost"] or 0, 4), "tokens": r["tokens"] or 0,
+                        "apdex": round((r["sat"] + r["tol"] / 2) / rated, 3) if rated else None,
+                        "errors": r["errors"] or 0, "score": round(r["ss"] / r["sn"], 1) if r["sn"] else 0,
+                        "rolled_up": True})
+        return out
+
+    def daily(self, ts, q=None):
+        """Per-day totals of `ts`. With `q`, days that retention rolled up come from rollup_daily instead."""
+        hist, since = [], 0
+        if q is not None:
+            hist, since = self.history_daily(q), self.boundary()[1]
         by = defaultdict(list)
         for t in ts:
-            if t["started"]:
+            if t["started"] and t["started"] >= since:
                 by[time.strftime("%Y-%m-%d", time.localtime(t["started"]))].append(t)
-        out = []
+        out = hist
         for d in sorted(by):
             g = by[d]
             out.append({"day": d, "tasks": len(g), "cost": round(sum(t["cost"] + (t["subagent_cost"] or 0) for t in g), 4),
