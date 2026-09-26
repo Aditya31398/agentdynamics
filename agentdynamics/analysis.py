@@ -706,7 +706,9 @@ def finalize(runs, tasks_by_run, rules=None, now=None, grades=None, cache=None, 
             for t in ts:
                 t["next_prompt"], t["rework"] = None, 0
             if run.get("thread_id"):
-                threads[(run["source"], run["thread_id"])].extend(ts)
+                # per project: thread ids are chosen by clients, and a run from another project that happens
+                # to (or means to) reuse one must not become "the next message" in this conversation
+                threads[(run["source"], run.get("project"), run["thread_id"])].extend(ts)
     # traced conversations: the next trace in the same thread plays the role of "your next message"
     for group in threads.values():
         # ties on start time break by id, not by whatever order the runs happen to be held in -- which
@@ -743,6 +745,11 @@ def finalize(runs, tasks_by_run, rules=None, now=None, grades=None, cache=None, 
         if not parent_task_id:
             cands = [t for t in parent_tasks.get(run["parent_id"], []) if t["started"] and run["started"] and t["started"] <= run["started"]]
             parent_task_id = cands[-1]["id"] if cands else None
+        # parent_id is chosen by the client: a subagent rolls up only into a parent in its own project,
+        # or another project's task would carry this one's cost
+        pt = task_by_id.get(parent_task_id)
+        if pt is not None and pt.get("project") != run.get("project"):
+            parent_task_id = None
         run["parent_task_id"] = parent_task_id
         for t in tasks_by_run[run["id"]]:
             t["parent_task_id"] = parent_task_id

@@ -180,10 +180,12 @@ Telemetry is sent from a background thread with a bounded queue. Your agent neve
 agentdynamics keys create --role ingest     # for apps / collectors
 agentdynamics keys create --role read       # for people and Grafana
 agentdynamics keys create --role admin      # for rules, SLOs and config
+agentdynamics keys create --role read --project checkout    # one team: sees and sends only its projects
 docker compose -f deploy/docker-compose.yml up -d   # AgentDynamics + OpenTelemetry Collector gateway
 ```
 
-- **Security:** role-based API keys.
+- **Security:** role-based API keys, optionally scoped to projects. A scoped key reads only its projects' tasks,
+  runs, steps and events, on every endpoint, and can't write into or over another project's traces.
 - **Privacy:** redaction of emails, API keys and card numbers, or `store_content = false` to keep metadata only.
 - **Operations:** retention, Prometheus `/metrics`, `/healthz`, Slack and webhook alerts, and a status page for every source.
 

@@ -233,6 +233,16 @@ class CoreTest(unittest.TestCase):
         finally:
             con.close()
 
+    def test_an_slo_over_no_tasks_is_unknown_not_an_error(self):
+        """A filter that matches nothing -- a project with no traffic yet, or one a scoped key can't
+        see -- made every ">=" objective raise, and /api/slos return a 500."""
+        from agentdynamics import slo
+        for op, metric, target in ((">=", "success_rate", 0.95), ("<=", "p95_duration", 60)):
+            with self.subTest(op=op):
+                r = slo.evaluate([], {"id": "x", "name": "x", "metric": metric, "op": op, "target": target,
+                                      "window_days": 7})
+                self.assertEqual((r["value"], r["met"], r["status"]), (None, None, "unknown"))
+
     def test_refresh_survives_a_missing_runs_dir(self):
         """Removing <data>/runs used to raise FileNotFoundError out of every later refresh, while
         /healthz went on reporting 'ok' from the last successful timestamp."""

@@ -66,7 +66,9 @@
   async function initFilters() {
     const f = await api("filters", { project: "", days: "" });
     const sel = $("#f-project");
-    sel.innerHTML = `<option value="">All projects</option>` + f.projects.map((p) => `<option value="${esc(p.project)}">${esc(p.project)} (${p.n})</option>`).join("");
+    // a project-scoped key sees only its projects; say so rather than let "All" imply the whole install
+    const all = f.scope ? `All ${f.scope.length === 1 ? "of this key's project" : `${f.scope.length} of this key's projects`}` : "All projects";
+    sel.innerHTML = `<option value="">${esc(all)}</option>` + f.projects.map((p) => `<option value="${esc(p.project)}">${esc(p.project)} (${p.n})</option>`).join("");
     sel.value = F.project;
     sel.onchange = () => { F.project = sel.value; persist(); };
     const envs = (f.environments || []).filter(Boolean);

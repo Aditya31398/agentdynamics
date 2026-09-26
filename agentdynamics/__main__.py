@@ -146,18 +146,27 @@ def cmd_keys(a, data):
     from .config import keys_path, load_keys, save_keys
     keys = load_keys(data)
     if a.action == "create":
+        if a.project and a.role == "admin":
+            print("admin keys cover the whole install and cannot be scoped to projects; "
+                  "use --role read or --role ingest", file=sys.stderr)
+            return 2
         k = {"name": a.name or f"{a.role}-{len(keys) + 1}", "role": a.role, "key": f"ad_{a.role[0]}_{secrets.token_urlsafe(24)}",
              "created": int(time.time())}
+        if a.project:
+            k["projects"] = sorted(set(a.project))
         keys.append(k)
         save_keys(data, keys)
-        print(f"Created {k['role']} key '{k['name']}':\n\n  {k['key']}\n\nAuth is now ON for the server using {keys_path(data)} (restart it).")
+        scope = f" for project(s) {', '.join(k['projects'])}" if a.project else ""
+        print(f"Created {k['role']} key '{k['name']}'{scope}:\n\n  {k['key']}\n\nAuth is now ON for the server using {keys_path(data)} (restart it).")
         if a.role == "ingest":
             print(f"Use it in your app:  export AGENTDYNAMICS_API_KEY={k['key']}")
     elif a.action == "list":
         if not keys:
             print("No keys: auth is off (local mode).")
         for k in keys:
-            print(f"  {k['name']:<20} {k['role']:<7} {k['key'][:8]}...  created {time.strftime('%Y-%m-%d', time.localtime(k.get('created', 0)))}")
+            scope = ", ".join(k["projects"]) or "no projects" if isinstance(k.get("projects"), list) else "all projects"
+            print(f"  {k['name']:<20} {k['role']:<7} {k['key'][:8]}...  created "
+                  f"{time.strftime('%Y-%m-%d', time.localtime(k.get('created', 0)))}  {scope}")
     elif a.action == "revoke":
         left = [k for k in keys if k["name"] != a.name and not k["key"].startswith(a.name or "\0")]
         save_keys(data, left)
@@ -297,6 +306,8 @@ def main(argv=None):
     k.add_argument("action", choices=["create", "list", "revoke"])
     k.add_argument("--role", choices=["ingest", "read", "admin"], default="ingest")
     k.add_argument("--name", default=None)
+    k.add_argument("--project", action="append", default=None, metavar="NAME",
+                   help="scope a read or ingest key to this project (repeat for several); omit for all projects")
     po = sub.add_parser("policy", help="Aegis policy from observed behaviour (observe -> govern)")
     po.add_argument("action", choices=["export", "report", "check"],
                     help="export: generate a tightened policy; report: governance summary; "

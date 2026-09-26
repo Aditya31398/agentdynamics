@@ -86,9 +86,28 @@ def connect(path):
     return con
 
 
-def connect_reader(path):
+# Tables a project-scoped reader sees through a filtering view. Anything a read endpoint can return about
+# a task, run, step or event comes from one of these, so scoping them scopes every endpoint -- including
+# ones written later -- instead of trusting each to remember a WHERE clause.
+SCOPED_VIEWS = {
+    "tasks": "SELECT * FROM main.tasks WHERE project IN ({p})",
+    "runs": "SELECT * FROM main.runs WHERE project IN ({p})",
+    "events": "SELECT * FROM main.events WHERE project IN ({p})",
+    "steps": "SELECT * FROM main.steps WHERE run_id IN (SELECT id FROM main.runs WHERE project IN ({p}))",
+}
+
+
+def connect_reader(path, projects=None):
+    """A read-only connection. With `projects`, the connection sees only those projects' data: SQLite
+    resolves an unqualified table name in the temp schema first, so a temp view named `tasks` stands in
+    for the real table in every query on this connection. The views are created before query_only is
+    switched on, after which the connection can write nothing at all."""
     con = sqlite3.connect(path, check_same_thread=False, timeout=30)
     con.row_factory = sqlite3.Row
+    if projects is not None:
+        lits = ",".join("'" + str(x).replace("'", "''") + "'" for x in projects) or "NULL"
+        for name, q in SCOPED_VIEWS.items():
+            con.execute(f"CREATE TEMP VIEW {name} AS " + q.format(p=lits))
     con.execute("PRAGMA query_only=ON")
     return con
 

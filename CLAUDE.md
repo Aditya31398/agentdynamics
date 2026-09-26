@@ -79,6 +79,12 @@ AGENTDYNAMICS_URL=http://127.0.0.1:8790 python examples/governed_agent.py 45   #
   baseline are unchanged, so any field the settle phase writes must be listed there, and must be *assigned*
   on every pass, never only set when a condition holds (a stale `next_prompt` survived exactly that way).
   `tests/test_incremental.py` compares every column against a full rebuild and diffs the settle phase's writes.
+- **Project-scoped keys: never filter by project inside an endpoint.** A scoped request's `self.con` already
+  shows only the key's projects (TEMP views over `tasks`/`runs`/`steps`/`events`, `store.connect_reader`).
+  Anything read from elsewhere (`meta`, config files, `spans_raw`, the engine's in-memory state) is install-wide:
+  either derive it from those views or refuse a scoped key, as `/metrics` and `/api/config` do. Ingest paths take
+  a `scope` and check the whole request under `self.lock` before writing. `tests/test_scoped_keys.py` calls every
+  route in `server.py` with a scoped key; plant new install-wide data (like its SLO fixture) there when you add some.
 - **SQLite plans depend on statistics a fresh install doesn't have.** Name the index (`INDEXED BY`) for any
   lookup the engine does per trace or per refresh, and cover it in `test_span_lookups_use_their_indexes`.
 - **Console pages live in `web/pages/<area>.js`** and use `app.js`'s helpers through `window.AD`. A helper used by
@@ -105,7 +111,8 @@ agentdynamics/
   api/                the read API as mixins, one per console area: base, monitor, diagnose, assess, governance, ops
   web/                index.html, app.js (helpers, router, boot), pages/<area>.js (each area's pages), charts.js, style.css
 tests/                test_core, test_integrations, test_autotrace, test_aegis_integration, test_ecosystem, test_live_anthropic,
-                      test_console_ui, test_outcomes, test_token_accounting, test_policy_coverage, test_incremental
+                      test_console_ui, test_outcomes, test_token_accounting, test_policy_coverage, test_incremental,
+                      test_scoped_keys
 bench/                bench.py: ingest / rebuild / incremental timings and the CI scaling gate
 examples/             langgraph_style_app, otel_multiagent, governed_agent, demo_agent
 deploy/               Dockerfile companion: compose, OTel Collector config, example TOML

@@ -22,9 +22,13 @@ class MonitorMixin:
         meta = {r["k"]: json.loads(r["v"]) for r in self.con.execute("SELECT k, v FROM meta")}
         return {"projects": projects, "types": [r["task_type"] for r in types], "sources": [r["source"] for r in sources],
                 "environments": [r["environment"] for r in envs], "frameworks": [r["framework"] for r in fws],
-                "auth": self.e.cfg["auth"]["enabled"],
+                "auth": self.e.cfg["auth"]["enabled"], "scope": self.projects,   # None: every project
                 "refreshed": meta.get("refreshed"), "refresh_seconds": self.e.last_duration,
-                "runs": meta.get("runs"), "task_count": meta.get("tasks")}
+                # meta holds install-wide counts; a scoped reader gets its own
+                "runs": meta.get("runs") if self.projects is None else
+                self.con.execute("SELECT COUNT(*) FROM runs").fetchone()[0],
+                "task_count": meta.get("tasks") if self.projects is None else
+                self.con.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]}
 
     def overview(self, q):
         ts = self.tasks(q)

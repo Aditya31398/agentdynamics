@@ -20,17 +20,26 @@ def mcp_group(name):
 
 
 class ApiBase:
-    def __init__(self, engine):
+    def __init__(self, engine, projects=None):
         self.e = engine
         self._local = threading.local()
+        # None: the whole install. A list: a project-scoped key's view, enforced by the connection itself
+        # (store.connect_reader), so no endpoint has to remember to filter.
+        self.projects = sorted(set(projects)) if projects is not None else None
 
     @property
     def con(self):
         """One read-only connection per server thread (WAL lets readers run while the engine writes)."""
         c = getattr(self._local, "con", None)
         if c is None:
-            c = self._local.con = connect_reader(self.e.db_path)
+            c = self._local.con = connect_reader(self.e.db_path, self.projects)
         return c
+
+    def close(self):
+        c = getattr(self._local, "con", None)
+        if c is not None:
+            c.close()
+            self._local.con = None
 
     def where(self, q, alias="t", subagents_default="0"):
         clauses, args = [], []

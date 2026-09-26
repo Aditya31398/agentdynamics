@@ -8,6 +8,26 @@ bumps the minor version.
 
 ## [Unreleased]
 
+### Added
+- **Project-scoped API keys.** `agentdynamics keys create --role read --project checkout` (repeat `--project`
+  for several) makes a key that sees and sends only those projects. Reads go through a per-request, read-only
+  connection on which `tasks`, `runs`, `steps` and `events` are views limited to the key's projects, so every
+  endpoint is scoped, including ones added later. `/metrics`, `/api/sources` and `/api/config` cover the whole
+  install and refuse a scoped key, and SLOs are shown only when they cover the key's projects. Writes are
+  checked before anything is stored: a single-project key's project is stamped onto everything it sends, a
+  multi-project key must name one of its projects, and no scoped key can add to, overwrite, PATCH or rate
+  another project's traces or runs (403, with the ids). `/api/whoami` and `/api/filters` report the scope, and
+  the console's project filter says whose projects "All" means. Admin keys can't be scoped. Limits, including
+  install-wide baselines, are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#project-scoped-keys).
+
+### Fixed
+- **Conversation threads and subagent parents no longer cross projects.** Two projects' runs with the same
+  client-chosen `thread_id` were one conversation, so one project's follow-up could make another's task its
+  next message and turn it into `rework`. A run naming another project's run as its parent added its cost to
+  that task. Both are now linked only within a project.
+- **`/api/slos` returned a 500 when a filter left an SLO with no tasks.** An empty window now reads `unknown`.
+- `/api/refresh` no longer reports the install-wide count of changed runs to a project-scoped key.
+
 ### Changed
 - **`server.py` and `web/app.js` are split by area of the console** (#9). The read endpoints live in
   `agentdynamics/api/` as one mixin per area (monitor, diagnose, assess, governance, ops); `server.Api` composes

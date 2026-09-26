@@ -16,6 +16,7 @@ import threading
 import time
 import traceback
 import urllib.request
+from collections import defaultdict
 
 from . import analysis, config as cfgmod, pricing, store
 from .collectors import aegis_audit, claude_code, generic, inbox, langfuse, langsmith, otlp, spans as spanmod
@@ -33,6 +34,45 @@ class SourceStatus:
 
     def fail(self, err):
         self.d.update(status="error", last_error=str(err)[:400], last_error_at=time.time())
+
+
+class ScopeError(Exception):
+    """A project-scoped ingest key tried to write outside its projects. Nothing was written."""
+
+    def __init__(self, reason, ids=()):
+        super().__init__(reason)
+        self.reason, self.ids = reason, sorted({str(i) for i in ids})[:50]
+
+
+class IngestScope:
+    """What a project-scoped ingest key may write.
+
+    Ingestion is keyed by ids the client chooses -- run, span and trace ids, LangSmith PATCHes -- so a key
+    scoped to one project could otherwise write into another's traces, overwrite its runs or amend them.
+    Rules: a single-project key has its project stamped onto everything it sends (an exporter's
+    service.name need not match); a multi-project key must name one of its projects on everything; and
+    no scoped key may touch data that already exists in a project outside its scope. The whole request is
+    checked before any of it is written.
+    """
+
+    def __init__(self, projects):
+        self.projects = sorted(set(projects))
+
+    @property
+    def stamp(self):
+        return self.projects[0] if len(self.projects) == 1 else None
+
+    def allows(self, project):
+        return (project or "default") in self.projects
+
+
+def _doc_project(source, doc):
+    """The project a stored document belongs to, read the way assembly reads it."""
+    if source == "langsmith":
+        return doc.get("session_name") or ((doc.get("extra") or {}).get("metadata") or {}).get("project")
+    if source == "aegis":
+        return ((doc.get("details") or {}).get("ctx") or {}).get("project") or "aegis"
+    return doc.get("project")
 
 
 class Engine:
@@ -146,10 +186,43 @@ class Engine:
         return n
 
     # ------------------------------------------------------------------ push ingestion
-    def ingest_spans(self, spans_, source, count_source=True):
+    def _scoped_spans(self, spans_, source, scope):
+        """Stamp or check canonical spans for a scoped key; raises ScopeError before anything is written."""
+        spans_ = [dict(s) for s in spans_]
+        by_trace = defaultdict(list)
+        for s in spans_:
+            by_trace[s.get("trace_id")].append(s)
+        bad = []
+        for tid, ss in by_trace.items():
+            if not tid:
+                continue
+            # a trace that already exists must already be ours: no adding spans to another project's trace
+            have = [_doc_project(source, d) for _, d in store.trace_spans(self.con, source, tid)]
+            if have and not all(scope.allows(x) for x in have):
+                bad.append(tid)
+                continue
+            if scope.stamp:
+                for s in ss:
+                    s["project"] = scope.stamp
+                continue
+            named = [s.get("project") for s in ss if s.get("project")]
+            if not all(scope.allows(x) for x in named) or (not named and not have):
+                bad.append(tid)          # a multi-project key must say which of its projects this is
+        # the same span id stored elsewhere would be overwritten by the upsert
+        ids = [s["span_id"] for s in spans_ if s.get("span_id")]
+        for sid, d in store.get_span_docs(self.con, source, ids).items():
+            if not scope.allows(_doc_project(source, d)):
+                bad.append(d.get("trace_id") or sid)
+        if bad:
+            raise ScopeError(f"these traces belong to, or would land in, projects outside {scope.projects}", bad)
+        return spans_
+
+    def ingest_spans(self, spans_, source, count_source=True, scope=None):
         """Canonical spans (OTLP, Langfuse, inbox) -> durable store."""
-        items = [(s["trace_id"], s["span_id"], "canonical", s) for s in spans_ if s.get("trace_id") and s.get("span_id")]
         with self.lock:
+            if scope is not None:
+                spans_ = self._scoped_spans(spans_, source, scope)
+            items = [(s["trace_id"], s["span_id"], "canonical", s) for s in spans_ if s.get("trace_id") and s.get("span_id")]
             store.upsert_spans(self.con, source, items)
         self.stats["spans_ingested"] += len(items)
         if count_source and source in self.sources:
@@ -157,12 +230,43 @@ class Engine:
         self._wake.set()
         return len(items)
 
-    def ingest_otlp(self, body, content_type):
-        return self.ingest_spans(otlp.parse_request(body, content_type), "otlp")
+    def ingest_otlp(self, body, content_type, scope=None):
+        return self.ingest_spans(otlp.parse_request(body, content_type), "otlp", scope=scope)
 
-    def ingest_langsmith(self, posts, patches, feedback=(), count_source=True):
+    def _scoped_langsmith(self, posts, patches, feedback, scope):
+        """Stamp or check LangSmith runs for a scoped key; raises ScopeError before anything is written."""
+        posts, patches, feedback = [dict(r) for r in posts], [dict(r) for r in patches], list(feedback)
+        ids = [str(r.get("id")) for r in posts + patches] + [str(f.get("run_id")) for f in feedback]
+        have = store.get_span_docs(self.con, "langsmith", ids)
+        bad = [rid for rid, d in have.items() if not scope.allows(_doc_project("langsmith", d))]
+        created = {str(r.get("id")) for r in posts}
+        for r in posts:
+            if scope.stamp:
+                r["session_name"] = scope.stamp
+            elif not scope.allows(r.get("session_name")):
+                bad.append(r.get("id"))
+        for r in patches:
+            rid = str(r.get("id"))
+            if rid in have or rid in created:
+                continue
+            if scope.stamp:                   # a PATCH ahead of its POST: the stub it leaves is ours
+                r["session_name"] = scope.stamp
+            else:
+                bad.append(rid)
+        # feedback can't name a project. Ahead of its run (the SDK sends feedback directly but batches runs),
+        # a single-project key's stub is stamped like a PATCH's; a multi-project key's can't be placed.
+        if not scope.stamp:
+            bad += [f.get("run_id") for f in feedback
+                    if str(f.get("run_id")) not in have and str(f.get("run_id")) not in created]
+        if bad:
+            raise ScopeError(f"these runs belong to, or would land in, projects outside {scope.projects}", bad)
+        return posts, patches, feedback
+
+    def ingest_langsmith(self, posts, patches, feedback=(), count_source=True, scope=None):
         """LangSmith runs: posts create, patches update. Merged per run id, idempotently."""
         with self.lock:
+            if scope is not None:
+                posts, patches, feedback = self._scoped_langsmith(posts, patches, feedback, scope)
             ids = [str(r["id"]) for r in list(posts) + list(patches) if r.get("id")]
             ids += [str(f.get("run_id")) for f in feedback if f.get("run_id")]
             existing = store.get_span_docs(self.con, "langsmith", ids)
@@ -174,7 +278,10 @@ class Engine:
             for f in feedback:
                 rid = str(f.get("run_id"))
                 # feedback can arrive before the (asynchronously batched) run: keep a stub that the run merges into
-                base = merged.get(rid) or existing.get(rid) or {"id": rid, "trace_id": rid, "_stub": True}
+                stub = {"id": rid, "trace_id": rid, "_stub": True}
+                if scope is not None and scope.stamp:      # the stub a scoped key leaves is its project's
+                    stub["session_name"] = scope.stamp
+                base = merged.get(rid) or existing.get(rid) or stub
                 merged[rid] = langsmith.merge(base, {"feedback": [{"key": f.get("key"), "score": f.get("score")}]})
             items = [(str(d.get("trace_id") or rid), rid, "langsmith", d) for rid, d in merged.items()]
             store.upsert_spans(self.con, "langsmith", items)
@@ -184,24 +291,57 @@ class Engine:
         self._wake.set()
         return len(items)
 
-    def ingest(self, payload):
+    def _run_path(self, run_id):
+        return os.path.join(self.runs_dir, f"{run_id.replace(':', '_').replace('/', '_')}.json")
+
+    def _scoped_generic(self, payload, scope):
+        """Stamp or check an SDK run for a scoped key; raises ScopeError before anything is written."""
+        run = generic.normalize(payload)
+        path = self._run_path(run["id"])
+        if os.path.exists(path):           # re-sending a run id overwrites that run: it must be ours
+            try:
+                with open(path, encoding="utf-8") as f:
+                    old = generic.normalize(json.load(f))["project"]
+            except (OSError, ValueError):
+                old = None
+            if not scope.allows(old):
+                raise ScopeError(f"run belongs to a project outside {scope.projects}", [run["id"]])
+        if scope.stamp:
+            return dict(payload, project=scope.stamp)
+        if not scope.allows(run["project"]):
+            raise ScopeError(f"run names project {run['project']!r}, outside {scope.projects}", [run["id"]])
+        return payload
+
+    def ingest(self, payload, scope=None):
         """Generic run JSON (SDK / webhook)."""
-        run = generic.normalize(payload)  # validate before writing
-        path = os.path.join(self.runs_dir, f"{run['id'].replace(':', '_').replace('/', '_')}.json")
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(payload, f)
+        with self.lock:
+            if scope is not None:
+                payload = self._scoped_generic(payload, scope)
+            run = generic.normalize(payload)  # validate before writing
+            with open(self._run_path(run["id"]), "w", encoding="utf-8") as f:
+                json.dump(payload, f)
         self.sources["sdk"].ok(1)
         self._wake.set()
         return run["id"]
 
-    def ingest_records(self, recs):
+    def ingest_runs(self, payloads, scope=None):
+        """Several SDK runs, all or nothing for a scoped key: every one is checked before any is written."""
+        with self.lock:
+            if scope is not None:
+                payloads = [self._scoped_generic(r, scope) for r in payloads]
+            return [self.ingest(r) for r in payloads]
+
+    def ingest_records(self, recs, scope=None):
         """Auto-detected records from files/log pipelines."""
-        by = {"otlp": [], "langsmith": [], "langfuse": [], "span": [], "aegis": []}
+        by = {"otlp": [], "langsmith": [], "langfuse": [], "span": [], "aegis": [], "generic": []}
         for fmt, r in recs:
-            if fmt == "generic":
-                self.ingest(r)
-            elif fmt in by:
+            if fmt in by:
                 by[fmt].append(r)
+        if scope is not None:
+            with self.lock:
+                return self._scoped_records(by, scope)
+        for r in by["generic"]:
+            self.ingest(r)
         n = 0
         for doc in by["otlp"]:
             n += self.ingest_spans([otlp.map_span(a, b, c) for a, b, c in otlp.decode_json(doc)], "otlp", count_source=False)
@@ -215,10 +355,48 @@ class Engine:
             n += self.ingest_aegis(by["aegis"])
         return n
 
-    def ingest_aegis(self, records):
+    def _scoped_records(self, by, scope):
+        """A mixed batch from a scoped key: check every record first, write only if all pass."""
+        generic_ = [self._scoped_generic(r, scope) for r in by["generic"]]
+        batches = [(self._scoped_spans([otlp.map_span(a, b, c) for a, b, c in otlp.decode_json(d)], "otlp", scope), "otlp")
+                   for d in by["otlp"]]
+        batches += [(self._scoped_spans(langfuse.trace_to_spans(tr), "langfuse", scope), "langfuse")
+                    for tr in by["langfuse"]]
+        batches += [(self._scoped_spans([sp], sp.get("source") or "inbox", scope), sp.get("source") or "inbox")
+                    for sp in by["span"]]
+        ls = self._scoped_langsmith(by["langsmith"], [], [], scope) if by["langsmith"] else None
+        self._scoped_aegis(by["aegis"], scope)
+        for r in generic_:
+            self.ingest(r)
+        n = sum(self.ingest_spans(sp, src, count_source=False) for sp, src in batches)
+        if ls:
+            n += self.ingest_langsmith(ls[0], [], count_source=False)
+        if by["aegis"]:
+            n += self.ingest_aegis(by["aegis"])
+        return n + len(generic_)
+
+    def _scoped_aegis(self, records, scope):
+        """Aegis audit records are hash-chained, so they are checked, never stamped: rewriting a record's
+        project would alter the audit trail. Each must already name a project in scope."""
+        bad = []
+        for r in records:
+            if not aegis_audit.is_record(r):
+                continue
+            if not scope.allows(_doc_project("aegis", r)):
+                bad.append(aegis_audit.span_id(r))
+                continue
+            have = [_doc_project("aegis", d) for _, d in store.trace_spans(self.con, "aegis", aegis_audit.group_key(r))]
+            if not all(scope.allows(x) for x in have):
+                bad.append(aegis_audit.span_id(r))
+        if bad:
+            raise ScopeError(f"these audit records name projects outside {scope.projects}", bad)
+
+    def ingest_aegis(self, records, scope=None):
         """Aegis audit records (JSONL audit log lines), grouped into runs by correlation id."""
         items = [(aegis_audit.group_key(r), aegis_audit.span_id(r), "aegis", r) for r in records if aegis_audit.is_record(r)]
         with self.lock:
+            if scope is not None:
+                self._scoped_aegis(records, scope)
             store.upsert_spans(self.con, "aegis", items)
         self.stats["spans_ingested"] += len(items)
         if "aegis" in self.sources:

@@ -15,6 +15,7 @@ from .api.diagnose import DiagnoseMixin
 from .api.governance import GovernanceMixin
 from .api.monitor import MonitorMixin
 from .api.ops import OpsMixin
+from .engine import IngestScope, ScopeError
 
 WEB_DIR = os.path.join(os.path.dirname(__file__), "web")
 
@@ -58,40 +59,67 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     # --- auth: API keys with roles ingest < read < admin
-    def _role(self):
+    def _key(self):
+        """The key record this request authenticated with, or None. Auth off: the local admin."""
         auth = self.api.e.cfg["auth"]
         if not auth.get("enabled"):
-            return 3
+            return {"name": "local", "role": "admin"}
         key = self.headers.get("x-api-key") or ""
         h = self.headers.get("Authorization") or ""
         if h.lower().startswith("bearer "):
             key = h[7:].strip()
         for k in auth.get("keys") or []:
             if key and hmac.compare_digest(key, str(k.get("key", ""))):
-                return ROLE_FOR.get(k.get("role"), 0)
-        return 0
+                if k.get("role") == "admin" and "projects" in k:
+                    # admin edits install-wide rules and SLOs; a "scoped admin" can't mean anything
+                    # safe, so the key is refused rather than guessed at
+                    return {"name": k.get("name"), "role": None,
+                            "invalid": "admin keys cannot be scoped to projects; use a read or ingest key"}
+                return k
+        return None
+
+    def _role(self):
+        k = self._key()
+        return ROLE_FOR.get(k.get("role"), 0) if k else 0
 
     def _key_name(self):
         """Who is calling, for the audit trail on a grade: the matched key's name, or 'local'."""
-        auth = self.api.e.cfg["auth"]
-        if not auth.get("enabled"):
-            return "local"
-        key = self.headers.get("x-api-key") or ""
-        h = self.headers.get("Authorization") or ""
-        if h.lower().startswith("bearer "):
-            key = h[7:].strip()
-        for k in auth.get("keys") or []:
-            if key and hmac.compare_digest(key, str(k.get("key", ""))):
-                return k.get("name") or k.get("role")
-        return None
+        k = self._key()
+        return (k.get("name") or k.get("role")) if k else None
+
+    def _scope(self):
+        """The projects this key may see, or None for the whole install. Only a missing `projects` field
+        means everything: an empty list means nothing, so a hand-edited [] can never widen access."""
+        k = self._key()
+        return list(k["projects"]) if k and isinstance(k.get("projects"), list) else None
 
     def _require(self, need):
+        k = self._key()
+        if k and k.get("invalid"):
+            self._send(403, {"error": k["invalid"]})
+            return False
         r = self._role()
         if need in CAN.get(r, set()):
             return True
         self._send(401 if r == 0 else 403, {"error": "unauthorized" if r == 0 else f"requires '{need}' role"},
                    extra_headers={"WWW-Authenticate": "Bearer"} if r == 0 else None)
         return False
+
+    def _scoped_api(self):
+        """The Api this request may use: the shared one, or a per-request one confined to the key's
+        projects. The caller closes a scoped one (it owns a connection)."""
+        scope = self._scope()
+        return self.api if scope is None else type(self.api)(self.api.e, projects=scope)
+
+    INSTALL_WIDE = ("/metrics", "/api/sources", "/api/config")   # nothing here belongs to one project
+
+    def _ingest_scope(self):
+        """What this key may write: None for the whole install, else an engine.IngestScope."""
+        scope = self._scope()
+        return None if scope is None else IngestScope(scope)
+
+    def _refuse(self, ex):
+        return self._send(403, {"error": ex.reason, "ids": ex.ids})
 
     def _body(self):
         n = int(self.headers.get("Content-Length") or 0)
@@ -128,6 +156,11 @@ class Handler(BaseHTTPRequestHandler):
             if p.startswith("/api/") or p == "/metrics":
                 if not self._require("read"):
                     return
+                if self._scope() is not None:
+                    if p in self.INSTALL_WIDE:
+                        return self._send(403, {"error": f"{p} covers the whole install; it needs a key that "
+                                                         f"isn't scoped to projects"})
+                    api = self._scoped_api()
             if p == "/metrics":
                 return self._send(200, api.prometheus(), "text/plain; version=0.0.4")
             routes = {"/api/filters": api.filters, "/api/overview": api.overview, "/api/types": api.types,
@@ -146,12 +179,16 @@ class Handler(BaseHTTPRequestHandler):
             if p == "/api/rules":
                 return self._send(200, {"rules": api.e.rules()})
             if p == "/api/whoami":
-                return self._send(200, {"role": {3: "admin", 2: "read", 1: "ingest"}.get(self._role())})
+                return self._send(200, {"role": {3: "admin", 2: "read", 1: "ingest"}.get(self._role()),
+                                        "projects": self._scope()})
             if p.startswith("/api/") or p.startswith("/langsmith/"):
                 return self._send(404 if p.startswith("/api/") else 200, {"error": "not found"} if p.startswith("/api/") else {})
         except Exception as ex:  # surface errors to the console instead of a dropped connection
             traceback.print_exc()
             return self._send(500, {"error": str(ex)})
+        finally:
+            if api is not self.api:
+                api.close()                  # a scoped Api owns its own connection
         # static console
         rel = "index.html" if p in ("/", "") else p.lstrip("/")
         path = os.path.normpath(os.path.join(WEB_DIR, rel))
@@ -169,8 +206,10 @@ class Handler(BaseHTTPRequestHandler):
                 rid = u.path.rstrip("/").rsplit("/", 1)[-1]
                 patch = json.loads(self._body() or b"{}")
                 patch["id"] = rid
-                self.api.e.ingest_langsmith([], [patch])
+                self.api.e.ingest_langsmith([], [patch], scope=self._ingest_scope())
                 return self._send(200, {})
+        except ScopeError as ex:
+            return self._refuse(ex)
         except Exception as ex:
             return self._send(400, {"error": str(ex)})
         self._send(404, {"error": "not found"})
@@ -185,7 +224,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not self._require("ingest"):
                     return
                 ctype = self.headers.get("Content-Type") or ""
-                n = e.ingest_otlp(self._body(), ctype)
+                n = e.ingest_otlp(self._body(), ctype, scope=self._ingest_scope())
                 if "protobuf" in ctype:
                     return self._send(200, b"", "application/x-protobuf")  # empty ExportTraceServiceResponse
                 return self._send(200, {"partialSuccess": {}, "accepted": n})
@@ -197,14 +236,14 @@ class Handler(BaseHTTPRequestHandler):
                 body = self._body()
                 if sub == "/runs/batch":
                     posts, patches = ls.parse_batch(body)
-                    e.ingest_langsmith(posts, patches)
+                    e.ingest_langsmith(posts, patches, scope=self._ingest_scope())
                 elif sub == "/runs/multipart":
                     posts, patches, fb = ls.parse_multipart(body, self.headers.get("Content-Type") or "")
-                    e.ingest_langsmith(posts, patches, fb)
+                    e.ingest_langsmith(posts, patches, fb, scope=self._ingest_scope())
                 elif sub == "/runs":
-                    e.ingest_langsmith([json.loads(body or b"{}")], [])
+                    e.ingest_langsmith([json.loads(body or b"{}")], [], scope=self._ingest_scope())
                 elif sub == "/feedback":
-                    e.ingest_langsmith([], [], [json.loads(body or b"{}")])
+                    e.ingest_langsmith([], [], [json.loads(body or b"{}")], scope=self._ingest_scope())
                 else:
                     return self._send(200, {})  # accept and ignore other LangSmith calls (datasets, sessions...)
                 return self._send(202, {})
@@ -213,7 +252,7 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 payload = json.loads(self._body() or b"{}")
                 runs = payload if isinstance(payload, list) else [payload]
-                return self._send(200, {"ok": True, "ids": [e.ingest(r) for r in runs]})
+                return self._send(200, {"ok": True, "ids": e.ingest_runs(runs, scope=self._ingest_scope())})
             if p == "/api/ingest/records":
                 # log pipelines (Fluent Bit / Vector / Logstash HTTP outputs): JSON array or NDJSON of any supported format
                 if not self._require("ingest"):
@@ -222,7 +261,7 @@ class Handler(BaseHTTPRequestHandler):
                 body = self._body().strip()
                 recs = json.loads(body) if body.startswith(b"[") else [json.loads(x) for x in body.splitlines() if x.strip()]
                 recs = [unwrap(r) for r in recs]
-                n = e.ingest_records([(detect(r), r) for r in recs if detect(r)])
+                n = e.ingest_records([(detect(r), r) for r in recs if detect(r)], scope=self._ingest_scope())
                 return self._send(200, {"ok": True, "accepted": n, "received": len(recs)})
             if p == "/api/policy/check":
                 # reads recorded traffic, writes nothing: a CI job with a read key can gate a policy change
@@ -231,7 +270,12 @@ class Handler(BaseHTTPRequestHandler):
                 body = json.loads(self._body() or b"{}")
                 q = {k: str(v) for k, v in body.items() if k in ("workflow", "project", "environment", "days", "policy") and v}
                 q["candidate_doc"] = body.get("candidate")
-                res = self.api.check_policy(q)
+                api = self._scoped_api()
+                try:
+                    res = api.check_policy(q)
+                finally:
+                    if api is not self.api:
+                        api.close()
                 return self._send(400 if res.get("error") else 200, res)
             # ---- outcome grades: state what happened instead of leaving it to inference.
             # Needs `ingest`, like feedback: whoever writes telemetry may say how a task ended.
@@ -243,6 +287,20 @@ class Handler(BaseHTTPRequestHandler):
                     items = body if isinstance(body, list) else body.get("grades", [])
                 else:
                     items = [dict(body, task_id=unquote(p[len("/api/tasks/"):-len("/outcome")]))]
+                if self._scope() is not None:
+                    # A scoped key grades only tasks that exist in its projects. All or nothing, and the same
+                    # answer whether an id is in another project or nowhere, so it can't probe for ids.
+                    api = self._scoped_api()
+                    try:
+                        ids = [str(it.get("task_id")) for it in items]
+                        seen = {r[0] for i in range(0, len(ids), 500) for r in api.con.execute(
+                            f"SELECT id FROM tasks WHERE id IN ({','.join('?' * len(ids[i:i + 500]))})", ids[i:i + 500])}
+                    finally:
+                        api.close()
+                    outside = sorted(set(ids) - seen)
+                    if outside:
+                        return self._send(403, {"error": "this key may only grade tasks in its projects",
+                                                "task_ids": outside})
                 who, graded, cleared = self._key_name(), 0, 0
                 for it in items:
                     if it.get("outcome") is None:          # null clears: back to feedback, then inference
@@ -257,7 +315,10 @@ class Handler(BaseHTTPRequestHandler):
                 if not self._require("read"):
                     return
                 changed = e.refresh(force=True)
-                return self._send(200, {"ok": True, "changed": changed, "seconds": e.last_duration})
+                out = {"ok": True, "seconds": e.last_duration}
+                if self._scope() is None:          # an install-wide count: other projects' activity
+                    out["changed"] = changed
+                return self._send(200, out)
             if p == "/api/rules":
                 if not self._require("admin"):
                     return
@@ -269,6 +330,8 @@ class Handler(BaseHTTPRequestHandler):
                 from . import slo
                 slo.save(e.data_dir, json.loads(self._body())["slos"])
                 return self._send(200, {"ok": True})
+        except ScopeError as ex:
+            return self._refuse(ex)
         except Exception as ex:
             traceback.print_exc()
             return self._send(400, {"error": str(ex)})

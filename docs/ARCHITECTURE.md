@@ -30,11 +30,36 @@ Design choices that make this production-safe:
 
 Setup snippets for each path are on the **Integrations** page in the console.
 
+## Project-scoped keys
+
+A key created with `--project` (repeatable) is confined to those projects.
+
+- **Reads.** Scoping is not left to each endpoint. A scoped request reads through its own connection on which
+  `tasks`, `runs`, `steps` and `events` are temporary views limited to the key's projects
+  (`store.connect_reader`), and the connection is read-only. Every endpoint, including ones added later, sees
+  only those rows. Install-wide endpoints (`/metrics`, `/api/sources`, `/api/config`) refuse a scoped key.
+  SLOs are shown only when they cover the key's projects or its own tasks. `tests/test_scoped_keys.py` reads
+  the route list out of `server.py` and calls every route with a scoped key, requiring that another project's
+  data never appears.
+- **Writes.** Ingestion is keyed by ids the client chooses, so without checks a scoped key could add spans to
+  another project's trace, overwrite its runs or PATCH and rate them. A single-project key has its project
+  stamped onto everything it sends; a multi-project key must name one of its projects. No scoped key may
+  touch a trace, span id, run or LangSmith run that exists in another project. The whole request is checked,
+  under the engine lock, before any of it is written, and a refusal is a 403 listing the ids.
+- **Analysis.** Conversation threads and subagent parents are linked only within a project, so a client-chosen
+  thread or parent id can't reach into another project's tasks.
+- **Limits.** Baselines are computed per task type across the install, so a scoped key's `cost_vs_baseline`
+  reflects every project's tasks of that type. A scoped key can grade only tasks that already exist in its
+  projects. Aegis audit records are hash-chained, so they are checked, never stamped: each must already name
+  a project in scope. Feedback that arrives ahead of its run is accepted from a single-project key (the stub
+  is stamped with its project) and refused from a multi-project key, which can't say where it belongs. Admin
+  keys cover the whole install and can't be scoped.
+
 ## Enterprise features
 
 | Area | What's there |
 |---|---|
-| Security | API keys with roles: `ingest` writes telemetry only, `read` views console, API and metrics, `admin` edits rules and SLOs. Constant-time key comparison. The LangSmith `x-api-key` header is honored. |
+| Security | API keys with roles: `ingest` writes telemetry only, `read` views console, API and metrics, `admin` edits rules and SLOs. `read` and `ingest` keys can be scoped to projects (`keys create --project`); see below. Constant-time key comparison. The LangSmith `x-api-key` header is honored. |
 | Privacy | Regex redaction of emails, API keys, bearer tokens, AWS keys and card numbers (plus custom patterns), applied before storage. `store_content = false` keeps only sizes and metadata. |
 | Retention | Per-deployment retention window; old spans and runs are purged automatically. |
 | Multi-environment | `deployment.environment` / metadata `environment` becomes a first-class filter, alongside project and framework. |

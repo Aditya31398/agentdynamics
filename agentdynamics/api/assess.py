@@ -16,7 +16,8 @@ class AssessMixin:
         ts = self.tasks(q)
         meta = {r["k"]: json.loads(r["v"]) for r in self.con.execute("SELECT k, v FROM meta")}
         from ..analysis import process_insights
-        insights = process_insights(ts) if (q.get("project") or q.get("days") or q.get("type")) else meta.get("insights", [])
+        # the stored insights are install-wide: recompute for any filter, and always for a scoped reader
+        insights = process_insights(ts) if (q.get("project") or q.get("days") or q.get("type") or self.projects is not None) else meta.get("insights", [])
         dims = ["efficiency", "focus", "reliability", "verification", "context", "autonomy", "compliance", "overall"]
         avg = {}
         for d in dims:
@@ -101,4 +102,14 @@ class AssessMixin:
     def slos(self, q):
         from .. import slo
         ts = self.tasks(dict(q, days=""))
-        return {"slos": [slo.evaluate(ts, s) for s in slo.load(self.e.data_dir)]}
+        slos = slo.load(self.e.data_dir)
+        if self.projects is not None:
+            # SLOs are install-wide config, and one's name and scope describe what it covers: another
+            # team's project or workflow. A scoped key sees those covering its projects or its own tasks.
+            def covers(s):
+                sc = {k: v for k, v in (s.get("scope") or {}).items() if v}
+                if "project" in sc:
+                    return sc["project"] in self.projects
+                return not sc or any(all((t.get(k) or "") == v for k, v in sc.items()) for t in ts)
+            slos = [s for s in slos if covers(s)]
+        return {"slos": [slo.evaluate(ts, s) for s in slos]}

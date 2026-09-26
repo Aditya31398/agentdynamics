@@ -203,7 +203,7 @@ Change with --claude-root, or disable with --claude-root "".`)}
       `<div class="grid g2">
       ${card("Security", `<table>${row("Authentication", c.auth.enabled ? pill("ok", "API keys required") : pill("warning", "off: local mode"))}
         ${row("Keys", c.auth.keys.length ? c.auth.keys.map((k) => `<span class="tag">${esc(k.name)} · ${esc(k.role)} · ${esc(k.key)}</span>`).join(" ") : "<span class='muted'>none</span>")}
-        ${row("Roles", "<span class='small'><b>ingest</b> writes telemetry only · <b>read</b> views console, API and /metrics · <b>admin</b> edits rules and SLOs</span>")}</table>`)}
+        ${row("Roles", "<span class='small'><b>ingest</b> writes telemetry only · <b>read</b> views console, API and /metrics · <b>admin</b> edits rules and SLOs · <b>read</b> and <b>ingest</b> keys can be scoped to projects (<code>keys create --project</code>)</span>")}</table>`)}
       ${card("Privacy", `<table>${row("Store prompt/tool content", c.privacy.store_content ? "yes" : pill("ok", "no: sizes and metadata only"))}
         ${row("Redaction", c.privacy.redact.map((r) => `<span class="tag">${esc(r)}</span>`).join(" ") + (c.privacy.extra_patterns.length ? ` + ${c.privacy.extra_patterns.length} custom` : ""))}</table>`)}
       ${card("Data", `<table>${row("Retention", c.retention.days ? `${c.retention.days} days` : "unlimited")}${row("Data directory", `<code>${esc(d.data_dir)}</code>`)}${row("Database", `<code>${esc(d.db)}</code>`)}

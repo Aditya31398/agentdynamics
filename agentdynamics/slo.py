@@ -56,7 +56,12 @@ def evaluate(all_tasks, slo, now=None):
     ts = [t for t in all_tasks if all((t.get(k) or "") == v for k, v in sc.items() if v)]
     win = [t for t in ts if (t["started"] or 0) >= now - slo["window_days"] * 86400]
     val = metric(win, slo["metric"])
-    good = (val >= slo["target"]) if slo["op"] == ">=" else (val <= slo["target"]) if val is not None else None
+    # No tasks in the window means no value, and so no verdict. The old one-liner guarded only its
+    # second branch, so every ">=" objective raised on an empty window instead of reading "unknown".
+    if val is None:
+        good = None
+    else:
+        good = val >= slo["target"] if slo["op"] == ">=" else val <= slo["target"]
     res = {**slo, "value": val, "n": len(win), "met": good if val is not None else None}
     if slo["metric"] in RATIO and val is not None:
         allowed = 1 - slo["target"]
