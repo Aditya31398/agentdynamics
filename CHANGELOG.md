@@ -8,6 +8,15 @@ bumps the minor version.
 
 ## [Unreleased]
 
+### Changed
+- **The console is tested by using it.** A new test drives headless Chrome through the console as a person
+  would -- every sidebar link, the time-window and project filters (and that they survive a reload), opening a
+  task and going back, the task list's filters and search, regrouping Analytics, Refresh, issuing and clearing
+  a revocation directive, switching a health rule off, and adding an SLO -- and fails on any console error,
+  uncaught exception or HTTP error along the way. It drives Chrome over the DevTools protocol with the standard
+  library alone (`tests/cdp.py`). Eleven breakages, from the 501 after a body-less POST to a filter that stops
+  filtering, were each checked to fail it.
+
 ## [0.8.0] - 2026-09-27
 
 Server-side revocation (#8): the server can stop an agent wherever it runs, when an operator asks or when it sees

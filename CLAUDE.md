@@ -70,6 +70,10 @@ AGENTDYNAMICS_URL=http://127.0.0.1:8790 python examples/governed_agent.py 45   #
   compatibility.
 - **Verify in the demo console.** Several real bugs (watchdog payload variation, the Aegis audit-file bug) only
   appeared when the demo traffic was viewed as a user would see it.
+- **A new console control gets an interaction test** in `tests/test_console_interaction.py`: `tests/cdp.py`
+  drives Chrome over the DevTools protocol (standard library only), and every test ends with
+  `assertNothingWentWrong()` -- no console error, exception or HTTP error during the whole interaction. The
+  501 after a body-less POST was invisible on screen and plain in that list.
 - Tests that set `os.environ` must restore it (`addCleanup`); later tests spawn subprocesses that inherit it.
 - **Check that a new test can fail.** Reintroduce the bug and watch it go red before trusting it green.
   The first version of the grants-used UI test passed against the broken code.
@@ -137,7 +141,8 @@ agentdynamics/
   web/                index.html, app.js (helpers, router, boot), pages/<area>.js (each area's pages), charts.js, style.css
 tests/                test_core, test_integrations, test_autotrace, test_aegis_integration, test_ecosystem, test_live_anthropic,
                       test_console_ui, test_outcomes, test_token_accounting, test_policy_coverage, test_incremental,
-                      test_scoped_keys, test_alerts, test_rollups, test_postgres, test_revocations
+                      test_scoped_keys, test_alerts, test_rollups, test_postgres, test_revocations,
+                      test_console_interaction (+ cdp.py, its Chrome DevTools driver)
 bench/                bench.py: ingest / rebuild / incremental timings and the CI scaling gate
 examples/             langgraph_style_app, otel_multiagent, governed_agent, demo_agent
 deploy/               Dockerfile companion: compose, OTel Collector config, example TOML
@@ -156,8 +161,10 @@ deploy/               Dockerfile companion: compose, OTel Collector config, exam
 3. **Coding-task typing is still keyword rules.** Traced apps use the workflow name; every task records
    which (`task_type_source`) and the matched word. Follow-ups inherit the previous task's type, so a
    "continue" after a slash command is typed "slash command".
-4. **UI tests are smoke-level.** `tests/test_console_ui.py` renders every page in headless Chrome and
-   checks headings plus the governance table cells. It does not click, filter or navigate.
+4. **The console's tests use it, but not everywhere.** `tests/test_console_interaction.py` clicks through the
+   sidebar, the filters, a task, Analytics, Refresh, revocation directives, Health Rules and the SLO editor, and
+   fails on any console error or HTTP error. Other controls (Compare, the flow map, CSV export, theme) and the
+   look of a page (layout, dark mode, narrow screens) are still checked by hand.
 5. **Server-side enforcement reaches only processes that opt in** (`instrument(..., revocations=True)`), and within
    one poll interval (10 s). A kernel not wrapped by the integration can't be reached; an Aegis-side revocation
    source checked on every call would close both gaps.
