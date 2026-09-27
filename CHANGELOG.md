@@ -54,6 +54,11 @@ bumps the minor version.
   next message and turn it into `rework`. A run naming another project's run as its parent added its cost to
   that task. Both are now linked only within a project.
 - **`/api/slos` returned a 500 when a filter left an SLO with no tasks.** An empty window now reads `unknown`.
+- **A client hanging up mid-request printed tracebacks.** Reloading the console, closing a tab or restarting
+  the server while a page loaded logged `ConnectionAbortedError` / `BrokenPipeError` / `ConnectionResetError`,
+  twice per request (the server then tried to send a 500 on the closed connection), plus socketserver's
+  "Exception occurred during processing of request". Disconnects on the client's connection are now closed
+  quietly; errors from the server's own code are still logged and answered with 500/400.
 - `/api/refresh` no longer reports the install-wide count of changed runs to a project-scoped key.
 
 ### Changed

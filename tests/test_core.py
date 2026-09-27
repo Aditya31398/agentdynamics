@@ -1,17 +1,26 @@
 """End-to-end tests on a synthetic Claude Code transcript + SDK run."""
+import contextlib
+import http.client
+import io
 import json
 import os
 import shutil
+import socket
+import struct
 import sys
 import tempfile
+import threading
 import unittest
+import urllib.error
+import urllib.request
+from http.server import ThreadingHTTPServer
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from agentdynamics import analysis, pricing  # noqa: E402
 from agentdynamics.collectors import claude_code, generic  # noqa: E402
 from agentdynamics.engine import Engine  # noqa: E402
-from agentdynamics.server import Api  # noqa: E402
+from agentdynamics.server import Api, Handler  # noqa: E402
 
 T0 = "2026-09-01T10:%02d:%02dZ"
 
@@ -307,6 +316,96 @@ class CoreTest(unittest.TestCase):
             self.assertEqual(api.healthz()["status"], "ok")
         finally:
             eng.con.close()
+
+
+def reset(sock):
+    """Close with an RST, the way a browser drops a connection it has given up on."""
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+    sock.close()
+
+
+class ClientDisconnectTest(unittest.TestCase):
+    """A client hanging up mid-request (a reload, a closed tab) is routine: nothing is printed and the
+    server goes on serving. The same exception types raised by our own code are still real errors."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.eng = Engine(os.path.join(self.tmp, "data"), None)
+        self.addCleanup(self.eng.con.close)
+        self.api = api = Api(self.eng)
+        api.overview = lambda q: {"blob": "x" * (16 << 20)}     # far more than the socket buffers hold
+        self.reading = reading = threading.Event()
+
+        class H(Handler):
+            timeout = 10                                         # a stuck handler can't hang server_close()
+
+            def _body(self):
+                reading.set()
+                return super()._body()
+
+        H.api = api
+        # everything the server prints (tracebacks, socketserver's "Exception occurred") lands here
+        self.err = io.StringIO()
+        redirect = contextlib.redirect_stderr(self.err)
+        redirect.__enter__()
+        self.addCleanup(redirect.__exit__, None, None, None)
+        self.srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.addCleanup(self.stop)
+        self.addr = self.srv.server_address
+        self.url = f"http://127.0.0.1:{self.addr[1]}"
+
+    def stop(self):
+        """Stop the server and join its handler threads, so whatever they print has been printed."""
+        if self.srv:
+            self.srv.shutdown()
+            self.srv.server_close()                              # joins them: daemon_threads is off
+            self.srv = None
+
+    def assert_still_serving_quietly(self):
+        with urllib.request.urlopen(self.url + "/healthz", timeout=30) as r:
+            self.assertEqual(r.status, 200)
+        self.stop()
+        self.assertEqual(self.err.getvalue(), "")
+
+    def test_a_client_hanging_up_mid_response(self):
+        s = socket.create_connection(self.addr)
+        s.sendall(b"GET /api/overview HTTP/1.1\r\nHost: test\r\n\r\n")
+        s.close()                                                # before reading a byte of the answer
+        self.assert_still_serving_quietly()
+
+    def test_a_client_resetting_an_idle_keep_alive_connection(self):
+        s = socket.create_connection(self.addr)
+        s.sendall(b"GET /healthz HTTP/1.1\r\nHost: test\r\n\r\n")
+        r = http.client.HTTPResponse(s)
+        r.begin()
+        r.read()
+        self.assertEqual(r.status, 200)
+        reset(s)                                                 # the server is waiting for the next request
+        self.assert_still_serving_quietly()
+
+    def test_a_client_hanging_up_mid_upload(self):
+        s = socket.create_connection(self.addr)
+        s.sendall(b"POST /api/ingest HTTP/1.1\r\nHost: test\r\nContent-Length: 100000\r\n\r\n[{\"id\": ")
+        self.assertTrue(self.reading.wait(10))
+        reset(s)
+        self.assert_still_serving_quietly()
+
+    def test_our_own_errors_are_still_logged_and_answered(self):
+        def fail(*a, **kw):
+            raise ConnectionResetError("upstream went away")    # a disconnect type, but not from the client
+        self.api.overview = fail
+        self.eng.ingest_runs = fail
+        for req, code in ((self.url + "/api/overview", 500),
+                          (urllib.request.Request(self.url + "/api/ingest", data=b"{}", method="POST"), 400)):
+            with self.assertRaises(urllib.error.HTTPError) as cm:
+                urllib.request.urlopen(req, timeout=30)
+            self.assertEqual(cm.exception.code, code)
+            self.assertIn("upstream went away", json.loads(cm.exception.read())["error"])
+            cm.exception.close()
+        self.stop()
+        self.assertEqual(self.err.getvalue().count("ConnectionResetError: upstream went away"), 2)
 
 
 if __name__ == "__main__":
