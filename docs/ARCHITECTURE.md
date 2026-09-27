@@ -104,7 +104,8 @@ dependencies: the driver is the optional extra `agentdynamics[postgres]` (psycop
   when the rules change. `/healthz` says which role an instance has.
 - **Limits.** The writer holds the analysis in memory, as a single instance does, so the analysis scales up,
   not out: adding instances adds read and ingest capacity, not analysis capacity. Instances share one
-  configuration (keys by environment, not `keys create`, which writes a local file). Local dates follow
+  configuration (keys by environment, not `keys create`, which writes a local file). Switching an existing
+  SQLite install to Postgres starts from an empty store: nothing imports the SQLite file yet. Local dates follow
   `TZ`, else the system zone where the OS names it, else today's UTC offset.
 
 ## Retention and rollups

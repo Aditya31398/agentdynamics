@@ -8,6 +8,30 @@ bumps the minor version.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-27
+
+For teams and for volume: project-scoped API keys, alert routing with SLO burn-rate pages, daily totals kept past
+retention, an optional Postgres store that several instances can share, and an incremental refresh about twice as
+fast at 100,000 tasks. It also fixes a privacy bug: a health-rule message could carry user text that redaction
+keeps out of storage, and alert webhooks sent it unredacted. Upgrade if you use redaction or `store_content =
+false` together with alert webhooks.
+
+**Upgrading.** No schema change and nothing to migrate: the new durable tables (alert delivery, alert state,
+daily rollups) are created on first start, and the first refresh rebuilds every task as usual, rewriting stored
+event messages with the redaction applied.
+
+- **Retention now deletes SDK run files** (`runs/*.json`) older than the window, as the documentation always
+  said it did. Copy them first if something else reads them. Each day's totals are kept in `rollup_daily` before
+  it is purged, from this release on; days purged before the upgrade have none. Retention now waits for the
+  second refresh after a start.
+- **Existing `[[alerts.webhooks]]` keep working unchanged**: the JSON body has the same shape, and SLO alerts
+  go only to destinations that set `kinds = ["slos"]`. Delivery is now queued and retried.
+- **Process Review's unfiltered view leaves out subagent tasks**, as the filtered views always did.
+- **Postgres is optional.** A new install can start on it (`pip install "agentdynamics[postgres]"`,
+  `AGENTDYNAMICS_DB_URL`). Moving an existing SQLite install starts from an empty store: nothing imports the
+  SQLite file yet, and only sources that are read again (Claude Code transcripts, LangSmith/Langfuse pulls) come
+  back.
+
 ### Added
 - **A Postgres store** (#7). `[store] url = "postgresql://..."` (or `AGENTDYNAMICS_DB_URL`) keeps the store in
   a Postgres schema instead of the SQLite file; the driver is the optional extra `agentdynamics[postgres]`
@@ -63,6 +87,15 @@ bumps the minor version.
   after a bulk load one could fall inside a timed refresh and add half again to it. Incremental timings now
   start from a collected heap, and a "full GC" column reports what one costs (0.77 s at 100,000 tasks, an
   occasional pause rather than a per-refresh cost).
+- **`server.py` and `web/app.js` are split by area of the console** (#9). The read endpoints live in
+  `agentdynamics/api/` as one mixin per area (monitor, diagnose, assess, governance, ops); `server.Api` composes
+  them, so `from agentdynamics.server import Api` is unchanged. The console's pages live in `web/pages/<area>.js`
+  and use `app.js`'s helpers through `window.AD`; the router now starts on `DOMContentLoaded`, after every page
+  script has registered. No behaviour change: moved mechanically, checked member-for-member against the old
+  class, and every page and its main interactions exercised in a browser with no errors. A new `package` CI job
+  installs the built wheel and fails if any script `index.html` loads is missing from it.
+- **Editing `rules.json` by hand takes effect without a restart.** The rules are fingerprinted each
+  refresh and every task is re-scored when they change (it used to take a restart, or a save from the console).
 
 ### Fixed
 - **An "in progress" task stayed that way on a quiet install.** Outcomes settle as time passes, but a
@@ -70,7 +103,7 @@ bumps the minor version.
   arrived (a rebuild said "unknown"). Found by the incremental-equals-rebuild test when it ran on Postgres.
 - **Lists could come out in a different order from one load to the next** where their SQL left the order
   open: sessions, the flow map's nodes, tool error samples, ties in rankings. Each now has a defined
-  order and a tie-breaker. Editing `rules.json` by hand now takes effect without a restart.
+  order and a tie-breaker.
 - **Retention never deleted SDK run files.** `runs/*.json` older than retention stayed on disk, and every
   restart re-read them. They are now deleted with the rest of the run (Claude Code transcripts, which are
   yours, are never touched). Retention also no longer runs on a process's first refresh.
@@ -91,15 +124,6 @@ bumps the minor version.
   "Exception occurred during processing of request". Disconnects on the client's connection are now closed
   quietly; errors from the server's own code are still logged and answered with 500/400.
 - `/api/refresh` no longer reports the install-wide count of changed runs to a project-scoped key.
-
-### Changed
-- **`server.py` and `web/app.js` are split by area of the console** (#9). The read endpoints live in
-  `agentdynamics/api/` as one mixin per area (monitor, diagnose, assess, governance, ops); `server.Api` composes
-  them, so `from agentdynamics.server import Api` is unchanged. The console's pages live in `web/pages/<area>.js`
-  and use `app.js`'s helpers through `window.AD`; the router now starts on `DOMContentLoaded`, after every page
-  script has registered. No behaviour change: moved mechanically, checked member-for-member against the old
-  class, and every page and its main interactions exercised in a browser with no errors. A new `package` CI job
-  installs the built wheel and fails if any script `index.html` loads is missing from it.
 
 ## [0.6.0] - 2026-09-25
 
