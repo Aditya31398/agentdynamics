@@ -7,9 +7,11 @@ Two kinds of tables:
                pager; rollup_daily holds the only copy of days that retention has purged.
   * derived  - runs, steps, tasks, events, baselines, meta. Rebuildable from sources; dropped on schema change.
 
-The storage layer is intentionally thin so it can be swapped for Postgres/ClickHouse at larger scale.
+Where it lives: a SQLite file in the data directory (the default, and the zero-dependency path), or a
+Postgres schema when [store] url is set (pg.py adapts the same queries). `target()` says which.
 """
 import json
+import os
 import sqlite3
 import time
 
@@ -63,8 +65,10 @@ ROLLUP_SUMS = ["tasks", "cost", "subagent_cost", "waste_cost", "total_tokens", "
 _ROLLUP_SELECT = ("COUNT(*), SUM(cost), SUM(subagent_cost), SUM(waste_cost), SUM(total_tokens), SUM(input_tokens), "
                   "SUM(output_tokens), SUM(cache_read), SUM(cache_write), SUM(llm_calls), SUM(tool_calls), "
                   "SUM(tool_errors), SUM(duration_s), SUM(wall_s), SUM(score), COUNT(score), "
-                  "SUM(apdex = 'satisfied'), SUM(apdex = 'tolerating'), SUM(apdex = 'frustrated'), "
-                  "SUM(code_changed = 1), SUM(CASE WHEN code_changed = 1 THEN verified ELSE 0 END), SUM(max_context)")
+                  "SUM(CASE WHEN apdex = 'satisfied' THEN 1 ELSE 0 END), "
+                  "SUM(CASE WHEN apdex = 'tolerating' THEN 1 ELSE 0 END), "
+                  "SUM(CASE WHEN apdex = 'frustrated' THEN 1 ELSE 0 END), SUM(CASE WHEN code_changed = 1 THEN 1 ELSE 0 END), "
+                  "SUM(CASE WHEN code_changed = 1 THEN verified ELSE 0 END), SUM(max_context)")
 
 SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS runs ({", ".join(RUN_COLS)}, PRIMARY KEY(id)) WITHOUT ROWID;
@@ -93,7 +97,23 @@ CREATE TABLE IF NOT EXISTS rollup_daily ({", ".join(ROLLUP_DIMS + ROLLUP_SUMS)},
 """
 
 
-def connect(path):
+def target(cfg, data_dir):
+    """(where the store is, its Postgres schema or None): the [store] url if set, else SQLite in data_dir."""
+    st = cfg.get("store") or {}
+    if st.get("url"):
+        from .pg import schema_name
+        return st["url"], schema_name(st.get("schema") or "agentdynamics", data_dir)
+    return os.path.join(data_dir, "agentdynamics.db"), None
+
+
+def is_postgres(where):
+    return isinstance(where, str) and where.split(":", 1)[0] in ("postgres", "postgresql")
+
+
+def connect(path, schema=None):
+    if is_postgres(path):
+        from . import pg
+        return pg.connect_store(path, schema, SCHEMA_VERSION, DERIVED)
     con = sqlite3.connect(path, check_same_thread=False, timeout=30)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA journal_mode=WAL")
@@ -105,6 +125,25 @@ def connect(path):
         con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     con.executescript(SCHEMA)
     return con
+
+
+def claim_writer(con, schema):
+    """Whether this connection's engine may write the analysis. Always, for SQLite (one process per data
+    directory). On a shared Postgres schema, the one instance holding a session advisory lock: it is released
+    when that instance's connection closes, and the next claim takes it."""
+    if schema is None:
+        return True
+    return bool(con.execute("SELECT pg_try_advisory_lock(hashtext(?))", (f"agentdynamics-writer:{schema}",)).fetchone()[0])
+
+
+def mark_schema_stale(con):
+    """Make the next connect treat the derived tables as another schema version's: dropped and rebuilt."""
+    if isinstance(con, sqlite3.Connection):
+        con.execute("PRAGMA user_version=0")
+        con.commit()
+    else:
+        with con:
+            con.execute("UPDATE schema_version SET version = -1")
 
 
 # Tables a project-scoped reader sees through a filtering view. Anything a read endpoint can return about
@@ -119,11 +158,22 @@ SCOPED_VIEWS = {
 }
 
 
-def connect_reader(path, projects=None):
+def connect_reader(path, projects=None, schema=None):
     """A read-only connection. With `projects`, the connection sees only those projects' data: SQLite
     resolves an unqualified table name in the temp schema first, so a temp view named `tasks` stands in
     for the real table in every query on this connection. The views are created before query_only is
-    switched on, after which the connection can write nothing at all."""
+    switched on, after which the connection can write nothing at all. Postgres resolves unqualified names
+    in the temp schema first too; there an unscoped reader comes from a pool (pg.reader)."""
+    if is_postgres(path):
+        from . import pg
+        if projects is None:
+            return pg.reader(path, schema)
+        con = pg.connect(path, schema)
+        lits = ",".join("'" + str(x).replace("'", "''") + "'" for x in projects) or "NULL"
+        for name, q in SCOPED_VIEWS.items():
+            con.execute(f"CREATE TEMP VIEW {name} AS " + q.format(p=lits))
+        con.execute("SET default_transaction_read_only = on")
+        return con
     con = sqlite3.connect(path, check_same_thread=False, timeout=30)
     con.row_factory = sqlite3.Row
     if projects is not None:
@@ -199,6 +249,9 @@ def _task_row(t, red):
 
 def _event_row(e, red):
     row = [e.get(c) for c in EVENT_COLS]
+    v = row[EVENT_COLS.index("value")]
+    if not isinstance(v, (int, float)):          # a custom rule on a text field: the message says it
+        row[EVENT_COLS.index("value")] = None
     if red and red.rx is not None:  # messages can quote user text (e.g. the correcting follow-up)
         i = EVENT_COLS.index("message")
         row[i] = red.rx.sub("[REDACTED]", row[i] or "")
@@ -270,6 +323,23 @@ def get_span_docs(con, source, span_ids):
 def trace_spans(con, source, trace_id):
     return [(r["fmt"], json.loads(r["doc"])) for r in con.execute(
         "SELECT fmt, doc FROM spans_raw INDEXED BY spans_trace WHERE source=? AND trace_id=?", (source, trace_id))]
+
+
+def spans_for_traces(con, pairs):
+    """{(source, trace_id): [(fmt, doc)]} for many traces: a query per 500 of them, not one each -- which on
+    Postgres is a round trip each, and made a full rebuild 6x slower than SQLite's. Spans come in span id
+    order within a trace, as SQLite's index returns them anyway."""
+    by_source, out = {}, {}
+    for source, tid in pairs:
+        by_source.setdefault(source, []).append(tid)
+    for source, tids in by_source.items():
+        for i in range(0, len(tids), 500):
+            chunk = tids[i:i + 500]
+            for r in con.execute(f"SELECT trace_id, fmt, doc FROM spans_raw INDEXED BY spans_trace WHERE source=? "
+                                 f"AND trace_id IN ({','.join('?' * len(chunk))}) ORDER BY trace_id, span_id",
+                                 [source] + chunk):
+                out.setdefault((source, r["trace_id"]), []).append((r["fmt"], json.loads(r["doc"])))
+    return out
 
 
 def traces_updated_since(con, since):

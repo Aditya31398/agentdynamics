@@ -1,4 +1,5 @@
 """Operations: sources, connection snippets, config, alerts, health and Prometheus metrics."""
+import json
 import time
 from collections import Counter, defaultdict
 
@@ -30,7 +31,10 @@ class OpsMixin:
 
     def config(self, q):
         from ..config import public_view
-        return {"config": public_view(self.e.cfg), "data_dir": self.e.data_dir, "db": self.e.db_path}
+        from ..pg import redact_url
+        db = redact_url(self.e.db_path) if self.e.db_schema else self.e.db_path
+        return {"config": public_view(self.e.cfg), "data_dir": self.e.data_dir, "db": db,
+                "db_schema": self.e.db_schema}
 
     def alerts(self, q):
         """Alert destinations with what is queued and recent delivery results, config problems, and the SLO
@@ -52,13 +56,19 @@ class OpsMixin:
     def healthz(self):
         # "ok" has to mean ingestion is working now, not that it worked once. A refresh that
         # keeps throwing leaves last_refresh frozen, which used to read as healthy forever.
-        if self.e.last_refresh is None:
+        last = self.e.last_refresh
+        if not self.e.writer:
+            # a reader instance serves what the writer analysed; it is healthy if that is being kept up
+            r = self.con.execute("SELECT v FROM meta WHERE k = 'refreshed'").fetchone()
+            last = json.loads(r[0]) if r else None
+        if last is None:
             status = "starting"
         elif self.e.failed_refreshes:
             status = "degraded"
         else:
             status = "ok"
-        return {"status": status, "last_refresh": self.e.last_refresh, "refresh_seconds": self.e.last_duration,
+        return {"status": status, "role": "writer" if self.e.writer else "reader", "last_refresh": last,
+                "refresh_seconds": self.e.last_duration,
                 "failed_refreshes": self.e.failed_refreshes, "last_refresh_error": self.e.last_refresh_error,
                 "sources": {k: v.d["status"] for k, v in self.e.sources.items()}}
 
@@ -108,7 +118,7 @@ class OpsMixin:
           [({}, self.e.failed_refreshes)])
         # SLO burn rates, so teams that page through Alertmanager can alert on the same numbers:
         # agentdynamics_slo_burn_rate > agentdynamics_slo_burn_threshold, per window
-        now, slos = time.time(), slomod.load(self.e.data_dir)
+        now, slos = time.time(), self.e.slos()
         horizon = max(p["long_h"] for p in slomod.BURN_POLICIES) * 3600
         recent = rows(self.con, "SELECT * FROM tasks WHERE is_subagent = 0 AND (llm_calls > 0 OR tool_calls > 0) "
                                 "AND COALESCE(ended, started) >= ?", (now - horizon,))

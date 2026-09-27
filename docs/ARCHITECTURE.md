@@ -79,6 +79,34 @@ min_severity = "critical"
   `agentdynamics_slo_burn_threshold` per window, so teams already paging through Alertmanager can alert
   on the same numbers.
 
+## The store: SQLite or Postgres
+
+The store is a SQLite file in the data directory unless `[store] url` (or `AGENTDYNAMICS_DB_URL`) names a
+Postgres database; `[store] schema` (default `agentdynamics`) picks the schema. The package stays free of
+dependencies: the driver is the optional extra `agentdynamics[postgres]` (psycopg 3; psycopg2 also works).
+
+- **One model, two dialects.** `store.py` and the read API are written against SQLite's connection and SQL.
+  `pg.py` adapts a Postgres connection to that interface and translates each statement once: placeholders,
+  `INSERT OR REPLACE`/`OR IGNORE` to `ON CONFLICT`, `INDEXED BY` dropped, scalar `MAX(1, x)`, local dates,
+  weeks and hours, and SQLite's NULL ordering spelled out. What no translation can express is written
+  portably at the source: no bare columns beside a `GROUP BY`, no booleans summed as integers, and a
+  tie-breaker on every `ORDER BY`. Columns are `TEXT` or `DOUBLE PRECISION`, never an integer type, so no
+  value is rounded on insert.
+- **Same answers.** `tests/test_postgres.py` loads the same traffic into both stores and calls every console
+  route with a dozen query variants: the JSON must match. It also runs dialect probes (NULLs in a sort, a
+  week at a year boundary, `%` beside a placeholder) and the fleet behaviour below. CI runs the whole suite
+  against Postgres too.
+- **Several instances.** On Postgres the sources live in the store: spans as before, and SDK runs as well
+  (they are local files with SQLite). Any instance can take ingest. One instance, holding a Postgres
+  advisory lock, writes the analysis, sends alerts and pulls from LangSmith/Langfuse; the others serve the
+  console from what it wrote, and the first to find the lock free takes over. Grades, health rules and
+  SLOs saved on any instance are stored in the database and reach the writer, which re-scores every task
+  when the rules change. `/healthz` says which role an instance has.
+- **Limits.** The writer holds the analysis in memory, as a single instance does, so the analysis scales up,
+  not out: adding instances adds read and ingest capacity, not analysis capacity. Instances share one
+  configuration (keys by environment, not `keys create`, which writes a local file). Local dates follow
+  `TZ`, else the system zone where the OS names it, else today's UTC offset.
+
 ## Retention and rollups
 
 `[retention] days = N` purges spans, runs and SDK run files older than N days. Before anything in a day is

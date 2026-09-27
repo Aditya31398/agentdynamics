@@ -40,9 +40,10 @@ for each of these; the work is making that number defensible to someone who will
 - [x] [#5](https://github.com/Aditya31398/agentdynamics/issues/5) **Incremental finalize** (weak area 1, the big one). Each refresh rewrites the whole `tasks`
       table and `finalize()` runs over every run in memory. That is fine to roughly 100k tasks and
       then it is not. Recompute only dirty runs and the baselines they touch.
-- [ ] [#7](https://github.com/Aditya31398/agentdynamics/issues/7) **A store backend behind `store.py`.** SQLite is right for a laptop and wrong for a fleet.
-      The interface is already narrow; the work is keeping `SCHEMA_VERSION` semantics (derived
-      tables drop and rebuild) while a Postgres or ClickHouse backend holds the same model.
+- [x] [#7](https://github.com/Aditya31398/agentdynamics/issues/7) **A store backend behind `store.py`.** Postgres, with the same model and `SCHEMA_VERSION`
+      semantics, and several instances on one schema (one elected writer). ClickHouse was set aside: its
+      eventually-deduplicated updates fight idempotent, order-independent ingestion (invariant 4). What
+      remains is the analysis itself scaling out; the writer still holds it in memory.
 - [x] **Downsampling and rollups.** Retention rolls each day up into durable daily totals before
       purging it; trends, analytics by day/week/project and the Prometheus counters include them.
       Model- and tool-level history is the natural next rollup.

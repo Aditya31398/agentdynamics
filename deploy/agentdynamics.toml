@@ -8,6 +8,12 @@ port = 8787
 [auth]
 enabled = true
 
+# The store: the SQLite file on the data volume by default. For several instances or managed backups, point
+# it at Postgres (the image includes the driver). AGENTDYNAMICS_DB_URL keeps the password out of this file.
+# [store]
+# url = "postgresql://agentdynamics@db.internal/agentdynamics"
+# schema = "agentdynamics"
+
 [privacy]
 store_content = true
 redact = ["email", "api_key", "credit_card", "bearer", "aws_key"]

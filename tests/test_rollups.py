@@ -112,6 +112,7 @@ class RollupTest(unittest.TestCase):
         self.assertGreater(overview["history"]["tasks"], 80)
         self.assertEqual(overview["history"]["through"], store.rollup_boundary(e.con)[0])
 
+    @unittest.skipIf(os.environ.get("AGENTDYNAMICS_DB_URL"), "SDK runs are files only in a SQLite store")
     def test_expired_sdk_run_files_are_deleted(self):
         e = self.engine()
         self.seed(e)

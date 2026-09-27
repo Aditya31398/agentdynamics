@@ -19,7 +19,8 @@ class GovernanceMixin:
         out = []
         for i in range(0, len(ids), 400):
             chunk = ids[i:i + 400]
-            out += rows(self.con, f"SELECT {cols} FROM steps WHERE task_id IN ({','.join('?' * len(chunk))}){extra}", chunk)
+            out += rows(self.con, f"SELECT {cols} FROM steps WHERE task_id IN ({','.join('?' * len(chunk))}){extra} "
+                                  "ORDER BY task_id, seq", chunk)
         return out
 
     def governance(self, q):

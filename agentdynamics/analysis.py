@@ -565,6 +565,10 @@ def run_tasks(run):
     return [task_metrics(run, i, seg) for i, seg in enumerate(segment(run))]
 
 
+# A task that ended this recently, in a run not yet complete, is "in progress"; after that it settles.
+IN_PROGRESS_S = 600
+
+
 def _outcomes_claude(ts, now):
     for i, t in enumerate(ts):
         # "continue" / "yes" carries on the previous request, so it belongs to that task type
@@ -582,7 +586,7 @@ def _outcomes_claude(ts, now):
             t["outcome"] = "rework"
         elif t["ended_on_error"] or (t["api_errors"] and t["final_stop"] != "end_turn"):
             t["outcome"] = "failed"
-        elif nxt is None and t["source"] == "claude-code" and t["ended"] and now - t["ended"] < 600:
+        elif nxt is None and t["source"] == "claude-code" and t["ended"] and now - t["ended"] < IN_PROGRESS_S:
             t["outcome"] = "in progress"
         elif t["final_stop"] in ("end_turn", "stop_sequence") or t["llm_calls"]:
             t["outcome"] = "completed"
@@ -600,7 +604,7 @@ def _outcome_trace(t, run, now):
     elif t["rework"] or (t["feedback_score"] is not None and t["feedback_score"] < 0.5):
         t["outcome"] = "rework"
     elif run.get("complete") is False:
-        t["outcome"] = "in progress" if t["ended"] and now - t["ended"] < 600 else "unknown"
+        t["outcome"] = "in progress" if t["ended"] and now - t["ended"] < IN_PROGRESS_S else "unknown"
     else:
         t["outcome"] = "completed"
     t["root_error"] = run.get("root_error")

@@ -153,7 +153,7 @@ def cmd_alerts(a, data):
               "(see `python -c \"import agentdynamics.alerts; help(agentdynamics.alerts)\"`).")
         return 1
     if a.action == "status":
-        con = store.connect(os.path.join(data, "agentdynamics.db"))
+        con = store.connect(*store.target(cfg, data))
         depth = store.outbox_depth(con)
         oldest = {r["dest"]: dict(r) for r in con.execute(
             "SELECT dest, created, attempts, last_error FROM alert_outbox WHERE id IN "
@@ -409,7 +409,9 @@ def main(argv=None):
         eng.refresh()
         return 0
     eng.refresh(force=True)
-    print(f"indexed in {eng.last_duration}s -> {os.path.join(a.data, 'agentdynamics.db')}", file=sys.stderr)
+    from .pg import redact_url
+    where = f"{redact_url(eng.db_path)} (schema {eng.db_schema})" if eng.db_schema else eng.db_path
+    print(f"indexed in {eng.last_duration}s -> {where}", file=sys.stderr)
     if cmd == "ingest":
         return 0
     if cmd == "policy":

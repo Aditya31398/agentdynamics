@@ -225,12 +225,13 @@ class CoreTest(unittest.TestCase):
             seen = []
             con.set_trace_callback(seen.append)
             store.trace_spans(con, "otlp", "t1")
+            store.spans_for_traces(con, [("otlp", "t1"), ("otlp", "t2")])     # the batched form refresh uses
             store.traces_updated_since(con, 0)
             con.set_trace_callback(None)
             checked = 0
             for sql in seen:
                 where = sql.split("WHERE", 1)[-1]
-                index = ("spans_trace" if "trace_id =" in where or "trace_id=" in where
+                index = ("spans_trace" if "trace_id =" in where or "trace_id=" in where or "trace_id IN" in where
                          else "spans_updated" if "updated >" in where else None)
                 if index is None or "spans_raw" not in sql:
                     continue
@@ -238,7 +239,7 @@ class CoreTest(unittest.TestCase):
                 plan = " ".join(r[3] for r in con.execute("EXPLAIN QUERY PLAN " + sql))
                 self.assertTrue(plan.startswith(f"SEARCH spans_raw USING INDEX {index}"), f"{sql!r} -> {plan}")
                 checked += 1
-            self.assertEqual(checked, 2, seen)
+            self.assertEqual(checked, 3, seen)
             # rolling up a day before retention purges it reads that day's tasks by start time
             seen.clear()
             con.set_trace_callback(seen.append)
@@ -260,6 +261,7 @@ class CoreTest(unittest.TestCase):
                                       "window_days": 7})
                 self.assertEqual((r["value"], r["met"], r["status"]), (None, None, "unknown"))
 
+    @unittest.skipIf(os.environ.get("AGENTDYNAMICS_DB_URL"), "SDK runs are files only in a SQLite store")
     def test_refresh_survives_a_missing_runs_dir(self):
         """Removing <data>/runs used to raise FileNotFoundError out of every later refresh, while
         /healthz went on reporting 'ok' from the last successful timestamp."""
@@ -281,6 +283,7 @@ class CoreTest(unittest.TestCase):
         finally:
             eng.con.close()
 
+    @unittest.skipIf(os.environ.get("AGENTDYNAMICS_DB_URL"), "SDK runs are files only in a SQLite store")
     def test_deleting_one_run_file_still_removes_it(self):
         """The guard above must not turn into "file deletions are ignored"."""
         eng = Engine(os.path.join(self.tmp, "data4"), None)

@@ -210,8 +210,9 @@ class Handler(BaseHTTPRequestHandler):
             traceback.print_exc()
             return self._send(500, {"error": str(ex)})
         finally:
-            if api is not self.api:
-                api.close()                  # a scoped Api owns its own connection
+            # a scoped Api owns its connection; the shared one holds one per request thread (a pooled one on
+            # Postgres), so this request's goes back either way
+            api.close()
         # static console
         rel = "index.html" if p in ("/", "") else p.lstrip("/")
         path = os.path.normpath(os.path.join(WEB_DIR, rel))
@@ -299,8 +300,7 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     res = api.check_policy(q)
                 finally:
-                    if api is not self.api:
-                        api.close()
+                    api.close()
                 return self._send(400 if res.get("error") else 200, res)
             # ---- outcome grades: state what happened instead of leaving it to inference.
             # Needs `ingest`, like feedback: whoever writes telemetry may say how a task ended.
@@ -352,8 +352,7 @@ class Handler(BaseHTTPRequestHandler):
             if p == "/api/slos":
                 if not self._require("admin"):
                     return
-                from . import slo
-                slo.save(e.data_dir, json.loads(self._body())["slos"])
+                e.save_slos(json.loads(self._body())["slos"])
                 return self._send(200, {"ok": True})
         except ScopeError as ex:
             return self._refuse(ex)

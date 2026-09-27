@@ -32,7 +32,7 @@ class ApiBase:
         """One read-only connection per server thread (WAL lets readers run while the engine writes)."""
         c = getattr(self._local, "con", None)
         if c is None:
-            c = self._local.con = connect_reader(self.e.db_path, self.projects)
+            c = self._local.con = connect_reader(self.e.db_path, self.projects, self.e.db_schema)
         return c
 
     def close(self):
@@ -66,6 +66,10 @@ class ApiBase:
 
     def tasks(self, q, extra="", extra_args=(), cols="t.*"):
         w, a = self.where(q)
+        if "ORDER BY" not in extra:
+            # a defined order: callers take "the first" of a group and break ties by position, and SQL without
+            # ORDER BY returns rows in whatever order the store likes (SQLite and Postgres differ)
+            extra += " ORDER BY t.started, t.id"
         return rows(self.con, f"SELECT {cols} FROM tasks t{w}{extra}", a + list(extra_args))
 
     @staticmethod

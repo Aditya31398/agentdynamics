@@ -14,11 +14,11 @@ from .base import mcp_group
 class MonitorMixin:
     def filters(self, q):
         live = "WHERE llm_calls>0 OR tool_calls>0"
-        projects = rows(self.con, f"SELECT project, COUNT(*) n, SUM(cost) cost FROM tasks {live} GROUP BY project ORDER BY cost DESC")
+        projects = rows(self.con, f"SELECT project, COUNT(*) n, SUM(cost) cost FROM tasks {live} GROUP BY project ORDER BY cost DESC, project")
         types = rows(self.con, "SELECT DISTINCT task_type FROM tasks ORDER BY task_type")
-        sources = rows(self.con, "SELECT DISTINCT source FROM tasks")
-        envs = rows(self.con, f"SELECT environment, COUNT(*) n FROM tasks {live} GROUP BY environment ORDER BY n DESC")
-        fws = rows(self.con, f"SELECT DISTINCT framework FROM tasks {live}")
+        sources = rows(self.con, "SELECT DISTINCT source FROM tasks ORDER BY source")
+        envs = rows(self.con, f"SELECT environment, COUNT(*) n FROM tasks {live} GROUP BY environment ORDER BY n DESC, environment")
+        fws = rows(self.con, f"SELECT DISTINCT framework FROM tasks {live} ORDER BY framework")
         meta = {r["k"]: json.loads(r["v"]) for r in self.con.execute("SELECT k, v FROM meta")}
         return {"projects": projects, "types": [r["task_type"] for r in types], "sources": [r["source"] for r in sources],
                 "environments": [r["environment"] for r in envs], "frameworks": [r["framework"] for r in fws],
@@ -48,7 +48,7 @@ class MonitorMixin:
                           "apdex": ap, "health": self.health(ap)})
         types.sort(key=lambda x: -x["cost"])
         models = rows(self.con, f"""SELECT s.model, COUNT(*) calls, SUM(s.cost) cost FROM steps s JOIN tasks t ON t.id = s.task_id
-            {self.where(subq)[0]} AND s.kind='llm' AND s.model != '<synthetic>' GROUP BY s.model ORDER BY cost DESC""", self.where(subq)[1])
+            {self.where(subq)[0]} AND s.kind='llm' AND s.model != '<synthetic>' GROUP BY s.model ORDER BY cost DESC, s.model""", self.where(subq)[1])
         phase = Counter()
         for t in ts:
             phase.update(t["phase_cost"] or {})
@@ -77,8 +77,8 @@ class MonitorMixin:
         steps = rows(self.con, f"""SELECT s.kind, s.name, s.model, s.duration_ms, s.cost, s.attributed_cost, s.is_error, s.phase,
             s.output_chars, s.context_tokens, s.input_tokens, s.output_tokens, s.cache_read, s.cache_write, t.is_subagent, t.id tid,
             s.agent, t.workflow, t.source
-            FROM steps s JOIN tasks t ON t.id = s.task_id{cond}{extra}""", args)
-        nodes, edges = {}, {}
+            FROM steps s JOIN tasks t ON t.id = s.task_id{cond}{extra} ORDER BY t.started, t.id, s.seq""", args)
+        nodes, edges = {}, {}     # in first-seen order, which is the map's layout: the steps' order must be defined
 
         def node(nid, kind, label):
             if nid not in nodes:
@@ -219,7 +219,7 @@ class MonitorMixin:
         sort = {"cost": "(t.cost + t.subagent_cost) DESC", "recent": "t.started DESC", "score": "t.score ASC",
                 "duration": "t.duration_s DESC", "baseline": "t.cost_vs_baseline DESC", "waste": "t.waste_cost DESC"}.get(q.get("sort"), "t.started DESC")
         ex = (" AND " + " AND ".join(extra)) if extra else ""
-        ts = self.tasks(q, f"{ex} ORDER BY {sort} LIMIT {int(q.get('limit', 300))}", args)
+        ts = self.tasks(q, f"{ex} ORDER BY {sort}, t.id LIMIT {int(q.get('limit', 300))}", args)
         return {"tasks": [self._task_brief(t) for t in ts]}
 
     def task(self, tid):
@@ -228,10 +228,11 @@ class MonitorMixin:
             return None
         t = t[0]
         steps = rows(self.con, "SELECT * FROM steps WHERE task_id = ? ORDER BY seq", (tid,))
-        events = rows(self.con, "SELECT * FROM events WHERE task_id = ?", (tid,))
+        events = rows(self.con, "SELECT * FROM events WHERE task_id = ? ORDER BY ts, id", (tid,))
         run = rows(self.con, "SELECT * FROM runs WHERE id = ?", (t["run_id"],))
         base = rows(self.con, "SELECT data FROM baselines WHERE task_type IN (?, '__all__') ORDER BY task_type = '__all__'", (t["task_type"],))
-        children = rows(self.con, "SELECT id, run_id, prompt, cost, duration_s, tool_calls, tool_errors, outcome, score FROM tasks WHERE parent_task_id = ?", (tid,))
+        children = rows(self.con, "SELECT id, run_id, prompt, cost, duration_s, tool_calls, tool_errors, outcome, score FROM tasks WHERE parent_task_id = ? "
+                        "ORDER BY started, id", (tid,))
         for c in children:
             c["prompt"] = (c["prompt"] or "")[:200]
             c["title"] = (rows(self.con, "SELECT agent_name, title FROM runs WHERE id=?", (c["run_id"],)) or [{}])[0]
@@ -243,8 +244,7 @@ class MonitorMixin:
                 "baseline": base[0]["data"] if base else None, "children": children, "nav": nav}
 
     def sessions(self, q):
-        w, a = self.where(q)
-        ts = rows(self.con, f"SELECT * FROM tasks t{w}", a)
+        ts = self.tasks(q)
         by = defaultdict(list)
         for t in ts:
             by[t["run_id"]].append(t)
@@ -258,7 +258,7 @@ class MonitorMixin:
                         "project": r.get("project"), "cwd": r.get("cwd"), "started": r.get("started"), "ended": r.get("ended"),
                         "source": r.get("source"), "models": ",".join(sorted({m for t in g for m in (t["models"] or "").split(",") if m})),
                         "events": ev.get(rid, 0), **k})
-        out.sort(key=lambda x: -(x["started"] or 0))
+        out.sort(key=lambda x: (-(x["started"] or 0), x["id"]))
         return {"sessions": out}
 
     def workflows(self, q):

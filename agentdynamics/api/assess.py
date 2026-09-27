@@ -50,15 +50,15 @@ class AssessMixin:
              "total_tokens": ("t.total_tokens", "total_tokens"), "output_tokens": ("t.output_tokens", "output_tokens"),
              "input_tokens": ("t.input_tokens", "input_tokens"), "cache_read": ("t.cache_read", "cache_read"),
              "cache_write": ("t.cache_write", "cache_write"), "duration_s": ("t.duration_s", "duration_s"),
-             "duration_n": ("t.duration_s IS NOT NULL", "tasks"),
-             "score": ("t.score", "score_sum"), "score_n": ("t.score IS NOT NULL", "score_n"),
+             "duration_n": ("CASE WHEN t.duration_s IS NULL THEN 0 ELSE 1 END", "tasks"),
+             "score": ("t.score", "score_sum"), "score_n": ("CASE WHEN t.score IS NULL THEN 0 ELSE 1 END", "score_n"),
              "tool_calls": ("t.tool_calls", "tool_calls"), "tool_errors": ("t.tool_errors", "tool_errors"),
              "waste": ("t.waste_cost", "waste_cost"),
-             "reworked": ("t.outcome IN ('rework','interrupted')",
+             "reworked": ("CASE WHEN t.outcome IN ('rework','interrupted') THEN 1 ELSE 0 END",
                           "CASE WHEN outcome IN ('rework','interrupted') THEN tasks ELSE 0 END"),
-             "code_changed": ("t.code_changed = 1", "code_changed"),
+             "code_changed": ("CASE WHEN t.code_changed = 1 THEN 1 ELSE 0 END", "code_changed"),
              "verified": ("CASE WHEN t.code_changed = 1 THEN t.verified END", "verified"),
-             "context": ("t.max_context", "max_context"), "context_n": ("t.max_context IS NOT NULL", "tasks")}
+             "context": ("t.max_context", "max_context"), "context_n": ("CASE WHEN t.max_context IS NULL THEN 0 ELSE 1 END", "tasks")}
 
     METRICS = {"tasks": "SUM(n)", "cost": "SUM(cost)", "avg_cost": "1.0 * SUM(cost) / SUM(n)",
                "tokens": "SUM(total_tokens)", "output_tokens": "SUM(output_tokens)",
@@ -89,7 +89,7 @@ class AssessMixin:
             facts += f" AND t.started >= ? UNION ALL SELECT {self.ROLLUP_GROUPS[group]} AS grp, {old} FROM rollup_daily r{rw}"
             args += [through_end] + ra
         sel = ", ".join(f"{self.METRICS[m]} AS {m}" for m in metrics)
-        order = "grp" if group in ("day", "week", "hour") else f"{metrics[0]} DESC"
+        order = "grp" if group in ("day", "week", "hour") else f"{metrics[0]} DESC, grp"   # ties: by name
         data = rows(self.con, f"SELECT grp, {sel} FROM ({facts}) GROUP BY grp ORDER BY {order} LIMIT 200", args)
         return {"rows": data, "metrics": metrics, "group": group,
                 # a grouping by per-task detail (model, hour, ...) can only cover the tasks still held
@@ -133,7 +133,7 @@ class AssessMixin:
     def slos(self, q):
         from .. import slo
         ts = self.tasks(dict(q, days=""))
-        slos = slo.load(self.e.data_dir)
+        slos = self.e.slos()
         if self.projects is not None:
             # SLOs are install-wide config, and one's name and scope describe what it covers: another
             # team's project or workflow. A scoped key sees those covering its projects or its own tasks.

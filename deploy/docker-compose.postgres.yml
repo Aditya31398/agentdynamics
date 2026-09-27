@@ -1,0 +1,32 @@
+# The store in Postgres instead of the SQLite file on the data volume: several AgentDynamics instances can
+# share it (one is elected to write the analysis; the others serve the console and take ingest), and it is
+# backed up and operated like any other database.
+#
+#   AGENTDYNAMICS_API_KEYS=... AGENTDYNAMICS_INGEST_KEY=... POSTGRES_PASSWORD=... \
+#   docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.postgres.yml up -d --scale agentdynamics=2
+#
+# With more than one instance, put a load balancer in front of port 8787 instead of publishing it per
+# instance, and give every instance the same configuration (keys by environment, not `keys create`).
+services:
+  agentdynamics:
+    ports: !reset []
+    expose: ["8787"]
+    environment:
+      AGENTDYNAMICS_DB_URL: postgresql://agentdynamics:${POSTGRES_PASSWORD:?set a password}@postgres/agentdynamics
+    depends_on: [postgres]
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: agentdynamics
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set a password}
+      POSTGRES_DB: agentdynamics
+    volumes:
+      - agentdynamics-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "agentdynamics"]
+      interval: 5s
+    restart: unless-stopped
+
+volumes:
+  agentdynamics-pg:

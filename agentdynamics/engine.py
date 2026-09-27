@@ -10,6 +10,7 @@ Pipeline:
             per-run analysis (cached; only dirty runs recomputed) -> cross-run finalize
             (baselines, scores, events) -> SQLite -> API / console / alerts / Prometheus
 """
+import hashlib
 import json
 import os
 import sys
@@ -94,8 +95,18 @@ class Engine:
         self.runs_dir = os.path.join(data_dir, "runs")
         os.makedirs(self.runs_dir, exist_ok=True)
         pricing.load_overrides(data_dir)
-        self.db_path = os.path.join(data_dir, "agentdynamics.db")
-        self.con = store.connect(self.db_path)
+        # a SQLite file in data_dir, or a Postgres schema when [store] url is set
+        self.db_path, self.db_schema = store.target(self.cfg, data_dir)
+        self.con = store.connect(self.db_path, self.db_schema)
+        # SDK runs are sources too (invariant 3). With SQLite they are files in runs/; on Postgres they go in
+        # the shared store beside the spans, where every instance sees them and a redeploy doesn't lose them
+        self._runs_in_store = self.db_schema is not None
+        # One engine writes the analysis. On a shared Postgres schema the others serve the API and take
+        # ingest (both go through the store), and one of them takes over if the writer goes away.
+        self.writer = store.claim_writer(self.con, self.db_schema)
+        self._grades_sig = self._rules_sig = None
+        self._store_sdk_ids = set()           # ids of SDK runs read from the store, as _files holds file ones
+        self._store_sdk_sig = {}              # run id -> hash of the payload last read
         self.lock = threading.RLock()
         self.redactor = Redactor(self.cfg["privacy"])
         self._files = {}          # path -> (mtime, size, run)
@@ -119,6 +130,7 @@ class Engine:
         # because outcomes depend on it: a recent task is "in progress", an old one is not.
         self._cache = analysis.ScoreCache()
         self._clock = time.time
+        self._settle_due = None      # when the earliest "in progress" outcome settles (refresh is due then)
         self.stats = {"spans_ingested": 0, "refreshes": 0, "alerts_sent": 0, "alerts_dropped": 0, "alerts_retried": 0}
         self.alert_log = {}        # destination id -> recent delivery results, for /api/alerts and the console
         self._alert_wake = threading.Event()
@@ -178,6 +190,11 @@ class Engine:
 
             def loop(name=name, t=t, sc=sc, st=st, interval=interval):
                 while True:
+                    # pulling an API is the writer's job (every instance would repeat it); an inbox is a local
+                    # directory, read wherever it is configured
+                    if t != "inbox" and not self.writer:
+                        time.sleep(interval)
+                        continue
                     self._run_puller(name, t, sc, st)
                     self._wake.set()
                     time.sleep(interval)
@@ -308,15 +325,26 @@ class Engine:
     def _run_path(self, run_id):
         return os.path.join(self.runs_dir, f"{run_id.replace(':', '_').replace('/', '_')}.json")
 
+    def _stored_run(self, run_id):
+        """The payload an SDK run was stored with, or None."""
+        if self._runs_in_store:
+            return store.get_span_docs(self.con, "sdk", [run_id]).get(run_id)
+        try:
+            with open(self._run_path(run_id), encoding="utf-8") as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError):
+            return {}                      # there, but unreadable: belongs to no project
+
     def _scoped_generic(self, payload, scope):
         """Stamp or check an SDK run for a scoped key; raises ScopeError before anything is written."""
         run = generic.normalize(payload)
-        path = self._run_path(run["id"])
-        if os.path.exists(path):           # re-sending a run id overwrites that run: it must be ours
+        stored = self._stored_run(run["id"])
+        if stored is not None:             # re-sending a run id overwrites that run: it must be ours
             try:
-                with open(path, encoding="utf-8") as f:
-                    old = generic.normalize(json.load(f))["project"]
-            except (OSError, ValueError):
+                old = generic.normalize(stored)["project"]
+            except Exception:
                 old = None
             if not scope.allows(old):
                 raise ScopeError(f"run belongs to a project outside {scope.projects}", [run["id"]])
@@ -332,8 +360,11 @@ class Engine:
             if scope is not None:
                 payload = self._scoped_generic(payload, scope)
             run = generic.normalize(payload)  # validate before writing
-            with open(self._run_path(run["id"]), "w", encoding="utf-8") as f:
-                json.dump(payload, f)
+            if self._runs_in_store:
+                store.upsert_spans(self.con, "sdk", [(run["id"], run["id"], "run", payload)])
+            else:
+                with open(self._run_path(run["id"]), "w", encoding="utf-8") as f:
+                    json.dump(payload, f)
         self.sources["sdk"].ok(1)
         self._wake.set()
         return run["id"]
@@ -418,23 +449,47 @@ class Engine:
         self._wake.set()
         return len(items)
 
-    # ------------------------------------------------------------------ health rules config
+    # ------------------------------------------------------------------ settings saved from the console
+    # Health rules and SLOs. With SQLite they are files in the data directory. On Postgres a saved one goes in
+    # the store, where every instance reads it (a file in the data directory still works, as the default).
     @property
     def rules_path(self):
         return os.path.join(self.data_dir, "rules.json")
 
+    def _setting(self, name):
+        if self.db_schema:
+            v = store.get_state(self.con, f"setting:{name}")
+            if v:
+                return v["value"]
+        path = os.path.join(self.data_dir, f"{name}.json")
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                return json.load(f)
+        return None
+
+    def _save_setting(self, name, value):
+        if self.db_schema:
+            store.set_state(self.con, f"setting:{name}", {"value": value})
+            return
+        with open(os.path.join(self.data_dir, f"{name}.json"), "w", encoding="utf-8") as f:
+            json.dump(value, f, indent=2)
+
     def rules(self):
-        if os.path.exists(self.rules_path):
-            with open(self.rules_path, encoding="utf-8") as f:
-                saved = json.load(f)
+        saved = self._setting("rules")
+        if saved:
             known = {r["id"] for r in saved}
             return saved + [r for r in analysis.DEFAULT_RULES if r["id"] not in known]  # new built-in rules appear automatically
         return analysis.DEFAULT_RULES
 
     def save_rules(self, rules):
-        with open(self.rules_path, "w", encoding="utf-8") as f:
-            json.dump(rules, f, indent=2)
-        self.refresh(force=True)
+        self._save_setting("rules", rules)
+        self.refresh()                    # re-scores everything (the rules changed); a no-op on a reader
+
+    def slos(self):
+        return self._setting("slos") or slomod.DEFAULT_SLOS
+
+    def save_slos(self, slos):
+        self._save_setting("slos", slos)
 
     # ------------------------------------------------------------------ refresh
     def _scan_files(self):
@@ -494,9 +549,25 @@ class Engine:
         now = time.time()
         touched = store.all_traces(self.con) if since == 0 else store.traces_updated_since(self.con, since - 2)
         runs = []
-        sdk_ids = {f[2]["id"] for f in self._files.values()}
-        for source, trace_id in touched:
-            docs = store.trace_spans(self.con, source, trace_id)
+
+        def batches(pairs):              # a chunk of traces' spans at a time: never the whole store in memory
+            for i in range(0, len(pairs), 500):
+                chunk = pairs[i:i + 500]
+                docs = store.spans_for_traces(self.con, chunk)
+                for st in chunk:
+                    yield st, docs.get(st, [])
+        # SDK runs first: an Aegis audit trail the in-process integration already recorded as one is skipped
+        for (source, trace_id), docs in batches([st for st in touched if st[0] == "sdk"]):
+            for _, d in docs:
+                # re-read inside the reassembly window but unchanged: not new, as an unchanged file isn't
+                sig = hashlib.sha1(json.dumps(d, sort_keys=True, default=str).encode()).hexdigest()
+                if self._store_sdk_sig.get(trace_id) == sig and trace_id in self._runs:
+                    continue
+                self._store_sdk_sig[trace_id] = sig
+                runs.append(generic.normalize(d))
+        self._store_sdk_ids.update(r["id"] for r in runs)
+        sdk_ids = {f[2]["id"] for f in self._files.values()} | self._store_sdk_ids
+        for (source, trace_id), docs in batches([st for st in touched if st[0] != "sdk"]):
             if source == "aegis":
                 if trace_id in sdk_ids:
                     continue  # already recorded in-process by agentdynamics.integrations.aegis
@@ -514,6 +585,20 @@ class Engine:
     def refresh(self, force=False):
         with self.lock:
             t0 = time.time()
+            if not self.writer:
+                self.writer = store.claim_writer(self.con, self.db_schema)
+                if not self.writer:
+                    return False          # another instance writes the analysis; this one serves it
+            # a grade or a rule change can come from another instance, so it is noticed in the store
+            gsig = tuple(self.con.execute("SELECT COUNT(*), MAX(ts) FROM grades").fetchone())
+            if gsig != self._grades_sig:
+                self._regrade = self._grades_sig is not None or self._regrade
+                self._grades_sig = gsig
+            rsig = hashlib.sha1(json.dumps(self.rules(), sort_keys=True, default=str).encode()).hexdigest()
+            rules_changed = self._rules_sig is not None and rsig != self._rules_sig
+            self._rules_sig = rsig
+            if rules_changed:             # every task's events depend on the rules: re-score them all
+                self._cache = analysis.ScoreCache()
             if force:
                 self._files.clear()
                 self._span_since = 0
@@ -543,10 +628,13 @@ class Engine:
                         dirty.pop(rid, None)
                         self._drop_run_file(r)
             dirty = {k: v for k, v in dirty.items() if v["steps"]}
-            if not dirty and not removed and not force and not self._first and not self._regrade:
+            # an "in progress" outcome settles as time passes, with or without new traffic
+            settle = self._settle_due is not None and self._clock() >= self._settle_due
+            if (not dirty and not removed and not force and not self._first and not self._regrade and not settle
+                    and not rules_changed):
                 return False
             self._regrade = False
-            full = force or self._first
+            full = force or self._first or rules_changed
             # every task id that may no longer exist: those of removed runs, and the previous tasks of
             # runs being re-analysed (a PATCH can re-segment a run into fewer tasks)
             gone = {t["id"] for rid in list(removed) + list(dirty) for t in self._tasks.get(rid, [])}
@@ -564,6 +652,8 @@ class Engine:
                                                          grades=store.get_grades(self.con),
                                                          cache=self._cache, dirty=dirty.keys(),
                                                          redact=self.redactor.text)
+            self._settle_due = min((t["ended"] + analysis.IN_PROGRESS_S for t in tasks
+                                    if t.get("outcome") == "in progress" and t.get("ended")), default=None)
             # Process Review insights are computed when the page asks, over the tasks it shows: every
             # filter needed that anyway, and computing them here cost 28% of each refresh at 20k tasks.
             meta = {"refreshed": time.time(), "runs": len(runs), "tasks": len(tasks)}
@@ -684,7 +774,10 @@ class Engine:
 
     def check_slos(self):
         """Compare the SLO alerts that should be firing with those that are, and queue triggers and
-        resolves. Runs on the alert tick, not only on refresh: a burn stops as time passes with no traffic."""
+        resolves. Runs on the alert tick, not only on refresh: a burn stops as time passes with no traffic.
+        Only on the writer: a reader holds no tasks, so to it nothing is firing -- it would resolve every page."""
+        if not self.writer:
+            return []
         with self.lock:
             dests = self.alert_destinations()
             if not any("slos" in d["kinds"] for d in dests):
@@ -693,7 +786,7 @@ class Engine:
             live = [t for ts in self._tasks.values() for t in ts
                     if not t.get("is_subagent") and (t.get("llm_calls") or t.get("tool_calls"))]
             state = store.alert_state(self.con)
-            firing = slomod.alert_conditions(live, slomod.load(self.data_dir), now,
+            firing = slomod.alert_conditions(live, self.slos(), now,
                                              int(self.cfg["alerts"].get("slo_min_tasks", 10)), firing=set(state))
             started = {k: v for k, v in firing.items() if k not in state}
             stopped = [k for k in state if k not in firing]
@@ -705,7 +798,10 @@ class Engine:
 
     def deliver_alerts(self):
         """Send what is due from the outbox. Per destination, strictly in order: a message waiting to be
-        retried holds back the ones queued after it, so a resolve never overtakes its trigger."""
+        retried holds back the ones queued after it, so a resolve never overtakes its trigger. Only the writer
+        delivers: the outbox is shared, and two senders would page twice."""
+        if not self.writer:
+            return 0
         dests = {d["id"]: d for d in self.alert_destinations()}
         with self.lock:
             pending = store.outbox_pending(self.con)

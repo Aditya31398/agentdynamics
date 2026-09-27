@@ -20,6 +20,7 @@ from urllib.parse import quote
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from agentdynamics import store  # noqa: E402
 from agentdynamics.engine import Engine  # noqa: E402
 from agentdynamics.server import Api, Handler  # noqa: E402
 
@@ -150,8 +151,7 @@ class OutcomeTest(unittest.TestCase):
         self.eng.refresh(force=True)
         tid = self.task("r")["id"]
         self.eng.grade(tid, "failed", "kept")
-        self.eng.con.execute("PRAGMA user_version=1")     # pretend the schema is stale
-        self.eng.con.commit()
+        store.mark_schema_stale(self.eng.con)             # pretend the schema is stale
         self.eng.con.close()
         self.eng = Engine(self.data, None)                 # reconnect: derived tables drop
         self.eng.refresh(force=True)

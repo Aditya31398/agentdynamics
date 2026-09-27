@@ -97,6 +97,16 @@ AGENTDYNAMICS_URL=http://127.0.0.1:8790 python examples/governed_agent.py 45   #
   part of the last rolled-up day). A new total over time must merge history the way `ApiBase.daily` and
   `analytics` (`FACTS`) do, or say it covers only the tasks still held. `tests/test_rollups.py` holds every
   total unchanged across a purge; add a new total to its `totals()`.
+- **SQL runs on SQLite and Postgres.** `pg.translate` handles placeholders, `INSERT OR REPLACE/IGNORE`,
+  `INDEXED BY`, `MAX(1, x)`, local dates and NULL ordering. Write everything else portably: no bare column
+  beside a `GROUP BY`, `CASE WHEN` instead of summing a boolean, a tie-breaker on every `ORDER BY`, and never
+  rely on row order without one (`ApiBase.tasks()` orders by start and id for this). `tests/test_postgres.py`
+  compares every route across the two; run the suite on Postgres with
+  `AGENTDYNAMICS_DB_URL=<url> AGENTDYNAMICS_DB_SCHEMA="t_{data_dir}" AGENTDYNAMICS_TEST_PG_URL=<url>` (CI does).
+- **On Postgres, several instances share a schema; only the writer analyses** (`engine.writer`, an advisory
+  lock). Anything a reader instance does that the writer must see goes through the store: ingest, grades,
+  rules and SLOs (`Engine._setting`). Work that uses the in-memory analysis (SLO checks, alert delivery,
+  API pulls) checks `self.writer`.
 - **SQLite plans depend on statistics a fresh install doesn't have.** Name the index (`INDEXED BY`) for any
   lookup the engine does per trace or per refresh, and cover it in `test_span_lookups_use_their_indexes`.
 - **Console pages live in `web/pages/<area>.js`** and use `app.js`'s helpers through `window.AD`. A helper used by
@@ -119,13 +129,14 @@ agentdynamics/
   flows.py, slo.py    workflow process mining, SLOs and burn-rate alert conditions
   alerts.py           alert destinations (Slack, PagerDuty, JSON), routing, rendering, sending
   engine.py           sources, spans_raw assembly, incremental refresh, alerts, pullers
-  store.py            SQLite (WAL); durable vs derived tables
+  store.py            SQLite (WAL) or Postgres; durable vs derived tables
+  pg.py               the Postgres store: sqlite3-like connection adapter, SQL translation, typed schema, reader pool
   server.py           HTTP handler: receivers (/v1/traces, /langsmith/*, /api/ingest*), auth roles, routing
   api/                the read API as mixins, one per console area: base, monitor, diagnose, assess, governance, ops
   web/                index.html, app.js (helpers, router, boot), pages/<area>.js (each area's pages), charts.js, style.css
 tests/                test_core, test_integrations, test_autotrace, test_aegis_integration, test_ecosystem, test_live_anthropic,
                       test_console_ui, test_outcomes, test_token_accounting, test_policy_coverage, test_incremental,
-                      test_scoped_keys, test_alerts, test_rollups
+                      test_scoped_keys, test_alerts, test_rollups, test_postgres
 bench/                bench.py: ingest / rebuild / incremental timings and the CI scaling gate
 examples/             langgraph_style_app, otel_multiagent, governed_agent, demo_agent
 deploy/               Dockerfile companion: compose, OTel Collector config, example TOML

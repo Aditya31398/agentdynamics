@@ -78,7 +78,7 @@ class Scenario:
             self.run(parent_id=parent)
         elif op < 0.65:                                          # an existing run is updated
             self.run(rid=rng.choice(sorted(self.runs)))
-        elif op < 0.72:                                          # a run is deleted at its source
+        elif op < 0.72 and not e._runs_in_store:                 # a run is deleted at its source (a file)
             rid = rng.choice(sorted(self.runs))
             path = os.path.join(e.runs_dir, f"{rid}.json")
             if os.path.exists(path):
@@ -228,6 +228,7 @@ class BaselineReuseTest(SameAsRebuild, unittest.TestCase):
         self.eng.refresh()
         self.check("a task earlier than the sample")
 
+    @unittest.skipIf(os.environ.get("AGENTDYNAMICS_DB_URL"), "SDK runs are files only in a SQLite store")
     def test_a_task_in_the_sample_goes(self):
         os.remove(os.path.join(self.eng.runs_dir, "r000.json"))
         self.eng.ingest(self.payload("late", self.clock - 10))      # and one arrives, so the size holds
@@ -248,6 +249,34 @@ class BaselineReuseTest(SameAsRebuild, unittest.TestCase):
         self.eng.ingest(self.payload("parent", self.clock - 80000, tokens=4000, second=True))
         self.eng.refresh()
         self.check("a spawn step removed")
+
+
+class TimeSettlesOutcomesTest(unittest.TestCase):
+    """An "in progress" task settles as time passes. A refresh with no new traffic returned early, so on a
+    quiet install it stayed "in progress" until something else arrived -- while a rebuild said "unknown".
+    The random histories found it only on the Postgres run, whose different sequence of steps ended on a
+    stretch of time with no traffic."""
+
+    def test_in_progress_settles_without_traffic(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        clock = [1_900_000_000.0]
+        eng = Engine(os.path.join(tmp, "data"), None)
+        self.addCleanup(eng.con.close)
+        eng._clock = lambda: clock[0]
+        eng.ingest({"id": "r1", "project": "p", "workflow": "w", "complete": False, "status": "ok", "steps": [
+            {"kind": "prompt", "ts": clock[0] - 100, "text": "hi"},
+            {"kind": "llm", "ts": clock[0] - 100, "end_ts": clock[0] - 99, "model": "claude-sonnet-5",
+             "input_tokens": 10, "output_tokens": 5}]})
+        eng.refresh(force=True)
+        q = "SELECT outcome FROM tasks WHERE id = 'r1#0'"
+        self.assertEqual(eng.con.execute(q).fetchone()[0], "in progress")
+        clock[0] += 60
+        self.assertFalse(eng.refresh(), "nothing is due yet")
+        clock[0] += analysis.IN_PROGRESS_S
+        self.assertTrue(eng.refresh(), "the outcome is due to settle")
+        self.assertEqual(eng.con.execute(q).fetchone()[0], "unknown")
+        self.assertFalse(eng.refresh(), "and once settled, nothing more is due")
 
 
 class OnlyNewTrafficIsScoredTest(unittest.TestCase):

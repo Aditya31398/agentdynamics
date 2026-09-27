@@ -15,7 +15,7 @@ class DiagnoseMixin:
     def tools(self, q):
         cond, args = self.where(dict(q, sub=q.get("sub", "1")))
         st = rows(self.con, f"""SELECT s.name, s.phase, s.duration_ms, s.is_error, s.output_chars, s.attributed_cost, s.flags, s.error, s.task_id
-            FROM steps s JOIN tasks t ON t.id = s.task_id{cond} AND s.kind = 'tool'""", args)
+            FROM steps s JOIN tasks t ON t.id = s.task_id{cond} AND s.kind = 'tool' ORDER BY t.started, t.id, s.seq""", args)
         by = defaultdict(list)
         for s in st:
             by[s["name"]].append(s)
@@ -38,7 +38,7 @@ class DiagnoseMixin:
         cond, args = self.where(dict(q, sub=q.get("sub", "1")))
         st = rows(self.con, f"""SELECT s.model, s.ts, s.duration_ms, s.cost, s.input_tokens, s.output_tokens, s.cache_read, s.cache_write,
             s.context_tokens, s.thinking_tokens, s.effort, s.stop_reason, s.is_error, s.rate_limited, s.ttft_ms FROM steps s JOIN tasks t ON t.id = s.task_id{cond} AND s.kind = 'llm'
-            AND s.model != '<synthetic>'""", args)
+            AND s.model != '<synthetic>' ORDER BY t.started, t.id, s.seq""", args)
         by = defaultdict(list)
         for s in st:
             by[s["model"]].append(s)
@@ -80,8 +80,8 @@ class DiagnoseMixin:
         if q.get("days"):
             clauses.append("ts >= ?")
             args.append(time.time() - float(q["days"]) * DAY)
-        ev = rows(self.con, f"SELECT e.*, t.prompt FROM events e LEFT JOIN tasks t ON t.id = e.task_id WHERE {' AND '.join(clauses).replace('project', 'e.project').replace('task_type', 'e.task_type')} ORDER BY e.ts DESC LIMIT 500", args)
+        ev = rows(self.con, f"SELECT e.*, t.prompt FROM events e LEFT JOIN tasks t ON t.id = e.task_id WHERE {' AND '.join(clauses).replace('project', 'e.project').replace('task_type', 'e.task_type')} ORDER BY e.ts DESC, e.id LIMIT 500", args)
         for e in ev:
             e["prompt"] = (e["prompt"] or "")[:140]
-        rule_counts = rows(self.con, "SELECT rule_id, rule, severity, COUNT(*) n FROM events GROUP BY rule_id ORDER BY n DESC")
+        rule_counts = rows(self.con, "SELECT rule_id, MAX(rule) rule, MAX(severity) severity, COUNT(*) n FROM events GROUP BY rule_id ORDER BY n DESC, rule_id")
         return {"events": ev, "rules": rule_counts}

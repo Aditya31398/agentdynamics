@@ -7,7 +7,7 @@ RUN useradd --create-home --uid 10001 agentdynamics
 WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY agentdynamics ./agentdynamics
-RUN pip install --no-cache-dir . && mkdir -p /data && chown agentdynamics /data
+RUN pip install --no-cache-dir ".[postgres]" && mkdir -p /data && chown agentdynamics /data
 
 USER agentdynamics
 ENV AGENTDYNAMICS_DATA=/data \

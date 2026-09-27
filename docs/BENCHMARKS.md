@@ -138,3 +138,24 @@ At 20,000 tasks the pass broke down as baselines 140 ms (re-sorting every type's
 insights about 200 ms, subagent roll-up 66 ms (reading every step of every run). After: baselines 36 ms,
 no insights, roll-up 38 ms. What remains is spread thinly: settling outcomes, conversation threads, grades
 and the per-task change check, 20 to 45 ms each.
+
+## Postgres
+
+The same benchmark with the store in Postgres 16 (`AGENTDYNAMICS_DB_URL=... AGENTDYNAMICS_DB_SCHEMA="bench_{data_dir}"
+python bench/bench.py`), running in Docker Desktop on the same laptop, so every statement crosses a VM's
+network: a real deployment's numbers depend mostly on that round trip.
+
+| path | tasks | ingest | full refresh | +1% (re-scored) | +100 (re-scored) |
+|---|---:|---:|---:|---:|---:|
+| span (OTLP) | 1,000 | 0.6 s | 1.8 s | 0.06 s (10) | 0.71 s (1,110) |
+| span (OTLP) | 10,000 | 6.8 s | 17.8 s | 0.34 s (100) | 0.33 s (100) |
+| SDK | 1,000 | 4.5 s | 2.0 s | 0.11 s (10) | 0.82 s (1,110) |
+| SDK | 10,000 | 48 s | 23.4 s | 0.45 s (100) | 0.52 s (100) |
+
+- **A full rebuild is about 3x SQLite's** (17.8 s against 5.7 s at 10k). It was 6x before two changes:
+  trace assembly reads spans 500 traces to a query instead of one query per trace, and batched writes go as
+  multi-row `INSERT`s instead of one statement per row.
+- **The steady state is close to SQLite's** (0.33 s against 0.16 s to absorb 100 tasks at 10k): most of an
+  incremental refresh is in-memory analysis, which doesn't depend on the store.
+- **SDK ingest pays a round trip per run** (about 5 ms here), since each run is its own request. On this
+  machine it still rebuilds 4x faster than SQLite's SDK path, whose run files the antivirus scans on open.

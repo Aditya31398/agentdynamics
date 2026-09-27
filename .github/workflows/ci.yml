@@ -31,6 +31,34 @@ jobs:
       - name: Test
         run: python -m unittest discover tests -v
 
+  postgres:
+    # The whole suite with the store in Postgres (psycopg 3), plus tests/test_postgres.py: every console route
+    # answering the same on SQLite and Postgres, the SQL dialect probes, and two instances sharing a schema.
+    name: postgres (whole suite, psycopg 3)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ad
+          POSTGRES_PASSWORD: ad-ci
+          POSTGRES_DB: ad
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ad -d ad" --health-interval 2s --health-timeout 5s --health-retries 20
+    env:
+      AGENTDYNAMICS_DB_URL: postgresql://ad:ad-ci@127.0.0.1:5432/ad
+      AGENTDYNAMICS_DB_SCHEMA: "t_{data_dir}"          # a schema per test store
+      AGENTDYNAMICS_TEST_PG_URL: postgresql://ad:ad-ci@127.0.0.1:5432/ad
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[test,toml,postgres]" && pip install "aegis-kernel>=0.4.0"
+      - name: Test
+        run: python -m unittest discover tests -v
+
   ecosystem:
     name: ecosystem (latest releases)
     runs-on: ubuntu-latest

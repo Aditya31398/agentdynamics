@@ -69,7 +69,8 @@ def workflow_detail(api, name, q):
     for i in range(0, len(ids), 400):
         chunk = ids[i:i + 400]
         steps += rows(api.con, f"""SELECT task_id, kind, name, node, phase, span_kind, duration_ms, cost, attributed_cost, is_error,
-            input_tokens, output_tokens, cache_read, cache_write, agent FROM steps WHERE task_id IN ({','.join('?' * len(chunk))})""", chunk)
+            input_tokens, output_tokens, cache_read, cache_write, agent FROM steps WHERE task_id IN ({','.join('?' * len(chunk))})
+            ORDER BY task_id, seq""", chunk)
     nodes = defaultdict(lambda: {"executions": 0, "errors": 0, "ms": [], "llm_calls": 0, "tool_calls": 0, "cost": 0.0, "tokens": 0})
     for s in steps:
         if graph:
@@ -108,7 +109,7 @@ def workflow_detail(api, name, q):
                           "p50_ms": round(pct(ms, 0.5)) if ms else None, "p95_ms": round(pct(ms, 0.95)) if ms else None,
                           "error_rate": round(n["errors"] / max(1, n["executions"] + n["llm_calls"] + (0 if graph else 0)), 3),
                           "cost_share": round(n["cost"] / total_cost, 3)})
-    node_list.sort(key=lambda x: -x["executions"])
+    node_list.sort(key=lambda x: (-x["executions"], x["node"]))
     # --- path variants
     by_path = defaultdict(list)
     for t in ts:

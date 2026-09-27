@@ -9,6 +9,15 @@ bumps the minor version.
 ## [Unreleased]
 
 ### Added
+- **A Postgres store** (#7). `[store] url = "postgresql://..."` (or `AGENTDYNAMICS_DB_URL`) keeps the store in
+  a Postgres schema instead of the SQLite file; the driver is the optional extra `agentdynamics[postgres]`
+  and the Docker image includes it. The model, the `SCHEMA_VERSION` rules and every query are the same:
+  a translation layer turns SQLite's dialect into Postgres's, and a new test loads the same traffic into
+  both stores and requires every console route to answer identically. Several instances can share one
+  schema: SDK runs join spans in the shared store, one instance (holding an advisory lock) writes the
+  analysis, sends alerts and pulls from APIs, the others serve the console and take ingest, and one takes
+  over if the writer goes away. Grades, health rules and SLOs saved on any instance reach the writer.
+  CI runs the whole suite against Postgres. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#the-store-sqlite-or-postgres).
 - **Daily rollups past retention.** Before retention purges a day, its totals are kept in a durable
   `rollup_daily` table: tasks, spend, tokens, calls, errors, durations, scores and Apdex, per project,
   environment, framework, source, workflow, task type and outcome. The Overview's daily spend, Analytics by
@@ -56,6 +65,12 @@ bumps the minor version.
   occasional pause rather than a per-refresh cost).
 
 ### Fixed
+- **An "in progress" task stayed that way on a quiet install.** Outcomes settle as time passes, but a
+  refresh with no new traffic returned early, so a task showed "in progress" until something else
+  arrived (a rebuild said "unknown"). Found by the incremental-equals-rebuild test when it ran on Postgres.
+- **Lists could come out in a different order from one load to the next** where their SQL left the order
+  open: sessions, the flow map's nodes, tool error samples, ties in rankings. Each now has a defined
+  order and a tie-breaker. Editing `rules.json` by hand now takes effect without a restart.
 - **Retention never deleted SDK run files.** `runs/*.json` older than retention stayed on disk, and every
   restart re-read them. They are now deleted with the rest of the run (Claude Code transcripts, which are
   yours, are never touched). Retention also no longer runs on a process's first refresh.

@@ -184,6 +184,11 @@ agentdynamics keys create --role read --project checkout    # one team: sees and
 docker compose -f deploy/docker-compose.yml up -d   # AgentDynamics + OpenTelemetry Collector gateway
 ```
 
+The store is a SQLite file by default. For several instances behind a load balancer, or a database you back up
+and operate like any other, use Postgres: `pip install "agentdynamics[postgres]"` and set
+`AGENTDYNAMICS_DB_URL=postgresql://...` (or `deploy/docker-compose.postgres.yml`). One instance is elected to
+write the analysis; the others serve the console and take ingest, and one takes over if the writer goes away.
+
 - **Security:** role-based API keys, optionally scoped to projects. A scoped key reads only its projects' tasks,
   runs, steps and events, on every endpoint, and can't write into or over another project's traces.
 - **Privacy:** redaction of emails, API keys and card numbers, or `store_content = false` to keep metadata only.

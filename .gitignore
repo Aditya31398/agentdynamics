@@ -10,3 +10,4 @@ dist/
 .scoped-data/
 .alerts-demo/
 .rollup-demo/
+.pg-demo/

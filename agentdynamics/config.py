@@ -20,6 +20,10 @@ Example agentdynamics.toml:
     redact = ["email", "api_key", "credit_card", "bearer", "aws_key"]
     extra_patterns = []             # additional regexes to mask
 
+    [store]                         # optional: Postgres instead of the SQLite file in the data directory
+    url = "postgresql://agentdynamics@db.internal/agentdynamics"   # needs pip install "agentdynamics[postgres]"
+    schema = "agentdynamics"
+
     [retention]
     days = 90                       # spans/runs older than this are purged; daily totals are kept
 
@@ -73,6 +77,7 @@ DEFAULTS = {
     "privacy": {"store_content": True, "redact": ["email", "api_key", "credit_card", "bearer", "aws_key"], "extra_patterns": []},
     "retention": {"days": 0},
     "alerts": {"webhooks": [], "console_url": "", "slo_min_tasks": 10},
+    "store": {"url": "", "schema": "agentdynamics"},
     "analysis": {"interval": 15, "idle_cap_seconds": 300},
     "sources": [],
 }
@@ -135,6 +140,11 @@ def load(data_dir):
     if file_keys:
         cfg["auth"]["enabled"] = True
         cfg["auth"]["keys"] = list(cfg["auth"]["keys"]) + file_keys
+    # the store: a Postgres URL (the SQLite file in the data directory otherwise), and its schema
+    if os.environ.get("AGENTDYNAMICS_DB_URL"):
+        cfg["store"]["url"] = os.environ["AGENTDYNAMICS_DB_URL"]
+    if os.environ.get("AGENTDYNAMICS_DB_SCHEMA"):
+        cfg["store"]["schema"] = os.environ["AGENTDYNAMICS_DB_SCHEMA"]
     if os.environ.get("AGENTDYNAMICS_STORE_CONTENT") in ("0", "false"):
         cfg["privacy"]["store_content"] = False
     if os.environ.get("AGENTDYNAMICS_RETENTION_DAYS"):
@@ -146,6 +156,9 @@ def public_view(cfg):
     """Config safe to show in the UI (no secrets)."""
     v = copy.deepcopy(cfg)
     v["auth"]["keys"] = [{"name": k.get("name"), "role": k.get("role"), "key": (k.get("key") or "")[:6] + "…"} for k in v["auth"]["keys"]]
+    if v.get("store", {}).get("url"):
+        from .pg import redact_url
+        v["store"]["url"] = redact_url(v["store"]["url"])
     for w in v["alerts"]["webhooks"]:
         w["url"] = (w.get("url") or "")[:28] + "…"     # a Slack webhook URL is itself the secret
         if w.get("routing_key"):

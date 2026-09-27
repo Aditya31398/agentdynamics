@@ -240,8 +240,9 @@ class IngestScopeTest(unittest.TestCase):
         r = self.eng.con.execute("SELECT project FROM runs WHERE id = ?", (rid,)).fetchone()
         return r[0] if r else None
 
-    def run_file(self, rid):
-        return os.path.join(self.eng.runs_dir, f"{rid}.json")
+    def stored(self, rid):
+        """The payload a run was stored with (a file, or the Postgres store), or None."""
+        return self.eng._stored_run(rid)
 
     def test_a_single_project_key_lands_everything_in_its_project(self):
         self.assertEqual(self.send("/api/ingest", "k-alpha", run("a-1", "whatever", "alpha_flow", "hi", "t"))[0], 200)
@@ -255,8 +256,7 @@ class IngestScopeTest(unittest.TestCase):
 
     def test_it_cannot_overwrite_another_projects_run(self):
         def read():
-            with open(self.run_file("bravo-run-1"), encoding="utf-8") as f:
-                return f.read()
+            return json.dumps(self.stored("bravo-run-1"), sort_keys=True)
         before = read()
         st, body = self.send("/api/ingest", "k-alpha", run("bravo-run-1", "alpha", "x", "hijack", "t"))
         self.assertEqual(st, 403)
@@ -267,11 +267,11 @@ class IngestScopeTest(unittest.TestCase):
         st, _ = self.send("/api/ingest", "k-alpha", [run("a-ok", "alpha", "x", "fine", "t"),
                                                       run("bravo-run-1", "alpha", "x", "hijack", "t")])
         self.assertEqual(st, 403)
-        self.assertFalse(os.path.exists(self.run_file("a-ok")), "the valid half of a refused batch was written")
+        self.assertIsNone(self.stored("a-ok"), "the valid half of a refused batch was written")
         st, _ = self.send("/api/ingest/records", "k-alpha",
                           [run("a-rec", "alpha", "x", "fine", "t"), otlp_doc("b" * 32, "evil", None, span="7" * 16)])
         self.assertEqual(st, 403)
-        self.assertFalse(os.path.exists(self.run_file("a-rec")))
+        self.assertIsNone(self.stored("a-rec"))
 
     def test_it_cannot_add_spans_to_another_projects_trace(self):
         count = "SELECT COUNT(*) FROM spans_raw WHERE trace_id = ?"
