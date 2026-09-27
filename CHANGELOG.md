@@ -8,6 +8,17 @@ bumps the minor version.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-27
+
+Server-side revocation (#8): the server can stop an agent wherever it runs, when an operator asks or when it sees
+the agent probing its policy across runs, through Aegis's own `Kernel.revoke`. Also a fix for requests that
+followed a body-less POST on the same connection.
+
+**Upgrading.** No schema change and nothing to migrate: the new `revocations` table is created on first start.
+Revocation is off on both sides until you turn it on: agents opt in with
+`instrument(kernel, root, revocations=True)`, and the server issues directives on its own only with
+`[enforcement] probing`. Works with aegis-kernel 0.4.0 and 0.5.0.
+
 ### Added
 - **Server-side revocation** (#8). A **directive** revokes an agent (or every agent) in a project (or every
   project) until a given time. Operators issue one with `agentdynamics revoke`, the Revocation directives card
