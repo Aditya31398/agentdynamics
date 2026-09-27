@@ -22,6 +22,7 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from agentdynamics import analysis  # noqa: E402
+from agentdynamics.server import Api  # noqa: E402
 from agentdynamics.engine import Engine  # noqa: E402
 
 WORKFLOWS = ["support", "billing", "research"]
@@ -113,24 +114,24 @@ class Scenario:
         self.eng.ingest_otlp(json.dumps(body).encode(), "application/json")
 
     def snapshot(self):
-        con = self.eng.con
-
-        def table(q):
-            return [dict(r) for r in con.execute(q)]
-        meta = {r["k"]: json.loads(r["v"]) for r in con.execute("SELECT k, v FROM meta") if r["k"] != "refreshed"}
-        return {"tasks": table("SELECT * FROM tasks ORDER BY id"),
-                "events": table("SELECT * FROM events ORDER BY id"),
-                "baselines": table("SELECT * FROM baselines ORDER BY task_type"),
-                "meta": meta}
+        return snapshot(self.eng)
 
 
-class IncrementalEqualsFullTest(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+def snapshot(eng):
+    con = eng.con
 
-    def tearDown(self):
-        shutil.rmtree(self.tmp, ignore_errors=True)
+    def table(q):
+        return [dict(r) for r in con.execute(q)]
+    meta = {r["k"]: json.loads(r["v"]) for r in con.execute("SELECT k, v FROM meta") if r["k"] != "refreshed"}
+    return {"tasks": table("SELECT * FROM tasks ORDER BY id"),
+            "events": table("SELECT * FROM events ORDER BY id"),
+            "baselines": table("SELECT * FROM baselines ORDER BY task_type"),
+            "meta": meta,
+            # computed by the API from the stored tasks, so it must not depend on how they got there
+            "insights": Api(eng).process({"days": "", "sub": "1"})["insights"]}
 
+
+class SameAsRebuild:
     def assert_same(self, inc, full, where):
         self.assertEqual(len(inc["tasks"]), len(full["tasks"]), f"{where}: task count")
         for a, b in zip(inc["tasks"], full["tasks"]):
@@ -139,7 +140,16 @@ class IncrementalEqualsFullTest(unittest.TestCase):
                 self.fail(f"{where}: task {a['id']} differs from a full rebuild (incremental, full): {diff}")
         self.assertEqual(inc["events"], full["events"], f"{where}: events")
         self.assertEqual(inc["baselines"], full["baselines"], f"{where}: baselines")
-        self.assertEqual(inc["meta"], full["meta"], f"{where}: insights")
+        self.assertEqual(inc["meta"], full["meta"], f"{where}: meta")
+        self.assertEqual(inc["insights"], full["insights"], f"{where}: insights")
+
+
+class IncrementalEqualsFullTest(SameAsRebuild, unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
 
     def test_random_histories(self):
         rescored = total = 0
@@ -160,6 +170,84 @@ class IncrementalEqualsFullTest(unittest.TestCase):
                     sc.eng.con.close()
         # and it has to actually be incremental: most refreshes re-score a small part of the store
         self.assertLess(rescored / total, 0.5, f"re-scored {rescored} of {total} task-refreshes")
+
+
+class BaselineReuseTest(SameAsRebuild, unittest.TestCase):
+    """A baseline is re-computed only when its sample could have changed (analysis.finalize). Below 21
+    tasks a type's baseline uses all of them, so any arrival changes the sample size and forces the
+    re-computation: the random histories above never reach the reuse path. Here each kind of change
+    is made to a type large enough that its sample size holds still, and must equal a full rebuild.
+    Percentiles shrug off most changes to a sample, so the fixture is built for them to show: cost rises
+    with start time, and each change moves the median. (Two first drafts passed with the check removed.)"""
+
+    def setUp(self):
+        m = analysis.baseline_sample_size
+        n0 = next(n for n in range(60, 400) if m(n - 1) == m(n) == m(n + 1))   # a size that holds for +-1
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.clock = 1_900_000_000.0
+        self.eng = Engine(os.path.join(self.tmp, "data"), None)
+        self.eng._clock = lambda: self.clock
+        self.addCleanup(self.eng.con.close)
+        for i in range(n0 - 2):         # with the parent's two tasks, the type holds n0
+            # cost rises with start time, so any change in which tasks form the sample moves its percentiles
+            self.eng.ingest(self.payload(f"r{i:03}", self.clock - 90000 + i * 60, tokens=1000 + i * 10))
+        # a parent with two tasks that spawns a subagent from the first; the subagent starts after the
+        # second, so without the spawn step it would roll up into the second instead
+        self.eng.ingest(self.payload("parent", self.clock - 80000, tokens=4000, spawn="S1", second=True))
+        self.eng.ingest(self.payload("agent-S1", self.clock - 79000, parent_id="parent"))
+        self.eng.refresh(force=True)
+
+    def payload(self, rid, ts, tokens=1000, spawn=None, second=False, **over):
+        def turn(t, text):
+            return [{"kind": "prompt", "ts": t, "text": text},
+                    {"kind": "llm", "ts": t, "end_ts": t + 2, "model": "claude-sonnet-5", "input_tokens": tokens,
+                     "output_tokens": 100, "stop_reason": "end_turn"}]
+        steps = turn(ts, "Where is my refund?")
+        if spawn:
+            steps.append({"kind": "tool", "ts": ts + 2, "end_ts": ts + 3, "name": "Task", "subagent_id": spawn})
+        if second:
+            steps += turn(ts + 100, "And the other order?")
+        p = {"id": rid, "project": "inc", "workflow": "support", "steps": steps, "status": "ok", "complete": True}
+        p.update(over)
+        return p
+
+    def check(self, what):
+        inc = snapshot(self.eng)
+        self.eng.refresh(force=True)
+        self.assert_same(inc, snapshot(self.eng), what)
+
+    def test_a_later_task_reuses_the_baseline(self):
+        self.eng.ingest(self.payload("late", self.clock - 10))
+        self.eng.refresh()
+        self.check("a task after the sample")
+
+    def test_a_backfill_into_the_sample(self):
+        # cheaper than every task in the sample, and it pushes out the dearest: the median moves
+        self.eng.ingest(self.payload("early", self.clock - 200000, tokens=100))
+        self.eng.refresh()
+        self.check("a task earlier than the sample")
+
+    def test_a_task_in_the_sample_goes(self):
+        os.remove(os.path.join(self.eng.runs_dir, "r000.json"))
+        self.eng.ingest(self.payload("late", self.clock - 10))      # and one arrives, so the size holds
+        self.eng.refresh()
+        self.check("a sample task deleted")
+
+    def test_a_task_in_the_sample_changes(self):
+        self.eng.ingest(self.payload("r001", self.clock - 90000 + 60, tokens=90000))
+        self.eng.refresh()
+        self.check("a sample task updated")
+
+    def test_a_subagent_changes_a_sample_task_cost(self):
+        self.eng.ingest(self.payload("agent-late", self.clock - 89000, parent_id="r002", tokens=90000))
+        self.eng.refresh()
+        self.check("a subagent of a sample task")
+
+    def test_a_parent_drops_its_spawn(self):
+        self.eng.ingest(self.payload("parent", self.clock - 80000, tokens=4000, second=True))
+        self.eng.refresh()
+        self.check("a spawn step removed")
 
 
 class OnlyNewTrafficIsScoredTest(unittest.TestCase):

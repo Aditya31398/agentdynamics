@@ -659,10 +659,14 @@ class ScoreCache:
     sig[task_id]     the settled fields plus the two baseline numbers scoring reads
     events[task_id]  the health events that signature produced
     changed          task ids scored this time (their rows must be written)
+    baselines[group] the last sample of a baseline group (size, ids, last key) and the figures from it
+    subagent_cost    task id -> the subagent cost it had last time (non-zero only)
+    spawns[run_id]   the (subagent id, task id) pairs a run's tool steps spawned
     """
 
     def __init__(self):
         self.sig, self.events, self.changed = {}, {}, set()
+        self.baselines, self.subagent_cost, self.spawns = {}, {}, {}
 
 
 BASELINE_EXACT_UP_TO = 20      # below this many tasks, a type's baseline uses all of them
@@ -698,6 +702,7 @@ def finalize(runs, tasks_by_run, rules=None, now=None, grades=None, cache=None, 
     """
     rules = rules or DEFAULT_RULES
     now = now or time.time()
+    dirty = set(dirty)
     all_tasks = [t for r in runs for t in tasks_by_run[r["id"]]]
     for t in all_tasks:
         t["subagent_cost"], t["subagents"], t["parent_task_id"] = 0.0, 0, None
@@ -743,9 +748,17 @@ def finalize(runs, tasks_by_run, rules=None, now=None, grades=None, cache=None, 
     for run in runs:
         if run.get("is_subagent"):
             continue
-        for s in run["steps"]:
-            if s["kind"] == "tool" and s.get("subagent_id"):
-                spawn_map[s["subagent_id"]] = s.get("task_id")
+        # a run's spawns change only with the run, so they are read from its steps once, not every pass
+        spawns = cache.spawns.get(run["id"]) if cache is not None and run["id"] not in dirty else None
+        if spawns is None:
+            spawns = [(s["subagent_id"], s.get("task_id")) for s in run["steps"]
+                      if s["kind"] == "tool" and s.get("subagent_id")]
+            if cache is not None:
+                cache.spawns[run["id"]] = spawns
+        spawn_map.update(spawns)
+    if cache is not None and len(cache.spawns) > len(runs):
+        held = {r["id"] for r in runs}
+        cache.spawns = {k: v for k, v in cache.spawns.items() if k in held}
     for run in runs:
         if not run.get("is_subagent"):
             continue
@@ -776,28 +789,58 @@ def finalize(runs, tasks_by_run, rules=None, now=None, grades=None, cache=None, 
     sub = [t for t in all_tasks if t["is_subagent"] and t["llm_calls"] > 0]
     if sub:
         groups["subagent"] = sub
+    # A baseline is re-computed only when its sample could have changed: its size stepped, a task in it
+    # changed or went, or a changed task sorts into it. New traffic is almost always later than a type's
+    # earliest tasks, so this usually skips the sort -- which was 40% of a refresh at 20k tasks.
+    def order(t):
+        return (t["started"] or 0, t["id"])
+    live = {t["id"] for t in all_tasks}
+    touched = earliest = None
+    if cache is not None:
+        subs = {t["id"]: t["subagent_cost"] for t in all_tasks if t["subagent_cost"]}
+        touched = {t["id"] for rid in dirty for t in tasks_by_run.get(rid, ())}
+        touched |= {tid for tid in cache.subagent_cost.keys() | subs.keys() if cache.subagent_cost.get(tid) != subs.get(tid)}
+        touched |= {tid for tid in cache.sig if tid not in live}          # tasks that went
+        cache.subagent_cost = subs
+        earliest = {}                  # group -> the earliest touched task in it
+        for tid in touched:
+            t = task_by_id.get(tid)
+            if t is None or t["llm_calls"] <= 0:
+                continue
+            for k in ((t["task_type"], "__all__") if not t["is_subagent"] else ("subagent",)):
+                if k not in earliest or order(t) < earliest[k]:
+                    earliest[k] = order(t)
     baselines = {}
     for k, g in groups.items():
         if len(g) < 3 and k != "__all__":
             continue
-        n = len(g)
-        g = sorted(g, key=lambda t: (t["started"] or 0, t["id"]))[:baseline_sample_size(n)]
+        n, m = len(g), baseline_sample_size(len(g))
+        prev = cache.baselines.get(k) if cache is not None else None
+        if (prev is not None and prev["m"] == m and not (prev["ids"] & touched)
+                and not (k in earliest and earliest[k] < prev["last"])):
+            baselines[k] = {"n": n, **prev["figures"]}
+            continue
+        g = sorted(g, key=order)[:m]
         costs = [t["cost"] + t["subagent_cost"] for t in g]
         durs = [t["duration_s"] for t in g]
-        baselines[k] = {
-            "n": n, "sample": len(g),
+        figures = {
+            "sample": len(g),
             "cost_p50": pct(costs, 0.5), "cost_p90": pct(costs, 0.9),
             "duration_p50": pct(durs, 0.5), "duration_p90": pct(durs, 0.9),
             "tokens_p50": pct([t["total_tokens"] for t in g], 0.5),
             "tool_calls_p50": pct([t["tool_calls"] for t in g], 0.5),
             "steps_p50": pct([t["steps_total"] for t in g], 0.5),
         }
+        baselines[k] = {"n": n, **figures}
+        if cache is not None:
+            cache.baselines[k] = {"m": m, "ids": {t["id"] for t in g}, "last": order(g[-1]) if g else (0, ""),
+                                  "figures": figures}
+    if cache is not None:
+        cache.baselines = {k: v for k, v in cache.baselines.items() if k in baselines}
 
     events = []
-    dirty = set(dirty)
     if cache is not None:
         cache.changed = set()
-        live = {t["id"] for t in all_tasks}
         for tid in [k for k in cache.sig if k not in live]:     # tasks that no longer exist
             cache.sig.pop(tid, None)
             cache.events.pop(tid, None)

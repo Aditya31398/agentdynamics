@@ -39,6 +39,22 @@ bumps the minor version.
   the console's project filter says whose projects "All" means. Admin keys can't be scoped. Limits, including
   install-wide baselines, are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#project-scoped-keys).
 
+### Changed
+- **An incremental refresh is about twice as fast at scale.** Absorbing 100 new tasks into a 100,000-task
+  store took 2.96 s and now takes 1.32 s; 1% more traffic, 3.43 s and now 1.72 s. Three passes that ran
+  over every task on every refresh no longer do: Process Review insights are computed when the page asks
+  (every filter recomputed them anyway), a baseline is re-computed only when its sample could have
+  changed, and a run's subagent spawns are read once rather than on every pass. Each reuse condition is
+  held to a full rebuild by a new test, and each was checked to fail when removed. On the SDK path,
+  finding which run files changed no longer stats each one: 0.6 s of every refresh at 10,000 runs on
+  Windows, now 0.05 s.
+- **Process Review's unfiltered view computes its insights from the tasks it shows**, as every filtered
+  view already did. It used to show a figure computed over every task, subagents included.
+- **`bench/bench.py` times garbage collection apart.** A full collection scans the whole in-memory store;
+  after a bulk load one could fall inside a timed refresh and add half again to it. Incremental timings now
+  start from a collected heap, and a "full GC" column reports what one costs (0.77 s at 100,000 tasks, an
+  occasional pause rather than a per-refresh cost).
+
 ### Fixed
 - **Retention never deleted SDK run files.** `runs/*.json` older than retention stayed on disk, and every
   restart re-read them. They are now deleted with the rest of the run (Claude Code transcripts, which are

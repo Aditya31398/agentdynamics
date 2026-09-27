@@ -20,8 +20,16 @@ the engine with itself: the time at 4x the size divided by the time at 1x, both 
 on one machine, where machine speed cancels out. Linear growth is ~4x. The O(n^2) trace lookup this
 benchmark found (see store.trace_spans) was ~16x. The gate catches growth, not a constant-factor slowdown;
 that trade is deliberate, since a flat 20% slower is annoying and quadratic is an outage.
+
+Garbage collection is timed apart. Python's cyclic GC runs a full collection -- a scan of every live
+object, which here is the whole in-memory store -- once the objects created since the last one reach a
+quarter of the heap. A bulk load just before a timed refresh makes that happen inside the timing, which
+once added 50% to the "+100" figure at 20k. So each incremental timing starts from a collected heap, and
+"full GC" reports what one full collection costs at that size: in steady state one runs every several
+refreshes, so it is an occasional pause, not a per-refresh cost.
 """
 import argparse
+import gc
 import json
 import os
 import platform
@@ -40,7 +48,7 @@ FIXED_BATCH = 100
 # check: size -> 4x size. Linear is 4.0; the limit leaves room for noise and still fails quadratic (~16).
 # fixed_batch_refresh absorbs the same 100 tasks at both sizes, so its growth is cost against store size.
 # Since #5 only new tasks are scored and written; what still grows is a light pass over every task (settle,
-# change checks, insights, ~30 us each). At 1k-4k the fixed overhead hides it (growth ~1x); at 10k-100k it
+# threads, change checks, ~15 us each). At 1k-4k the fixed overhead hides it (growth ~1x); at 10k-100k it
 # shows (~9x for 10x). Either way it is linear, and the limit fails anything quadratic. Whether scoring is
 # limited to new traffic is asserted exactly, as a count, in tests/test_incremental.py.
 CHECK_SIZES = (1000, 4000)
@@ -166,9 +174,14 @@ def bench_one(source, n, reps=1):
         full_s, full_scan_s = best
         tasks = eng.con.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
 
+        start = time.perf_counter()
+        gc.collect()
+        full_gc_s = time.perf_counter() - start
+
         extra = max(1, n // 100)
         ingest(eng, source, n, extra, rng, t0)
         time.sleep(2.1)          # so the fixed batch below is measured on its own (see the window above)
+        gc.collect()             # not the bulk load's garbage (see the docstring)
         start = time.perf_counter()
         eng.refresh()
         inc_s = time.perf_counter() - start
@@ -181,6 +194,7 @@ def bench_one(source, n, reps=1):
             ingest(eng, source, first, FIXED_BATCH, rng, t0)
             first += FIXED_BATCH
             time.sleep(2.1)      # each batch outside the next one's reassembly window
+            gc.collect()
             start = time.perf_counter()
             eng.refresh()
             dt = time.perf_counter() - start
@@ -195,6 +209,7 @@ def bench_one(source, n, reps=1):
                 "full_refresh": round(full_s, 3), "full_file_scan": round(full_scan_s, 3),
                 "incremental_refresh": round(inc_s, 3), "incremental_rescored": rescored,
                 "fixed_batch_refresh": round(fixed_s, 3), "fixed_batch_rescored": fixed_rescored,
+                "full_gc": round(full_gc_s, 3),
                 "incremental_added": extra, "db_mb": round(size / 1e6, 1)}
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -214,7 +229,7 @@ def main():
     print(f"python {platform.python_version()} on {platform.system()} {platform.machine()}; "
           f"calibration {cal * 1000:.0f} ms (a fixed CPU workload, for comparing machines by eye)")
     print(f"{'source':<6} {'tasks':>8} {'ingest s':>9} {'runs/s':>8} {'full s':>8} {'of which files':>15} "
-          f"{'+1% s':>8} {'rescored':>9} {f'+{FIXED_BATCH} s':>8} {'rescored':>9} {'db MB':>7}")
+          f"{'+1% s':>8} {'rescored':>9} {f'+{FIXED_BATCH} s':>8} {'rescored':>9} {'full GC s':>10} {'db MB':>7}")
     results = []
     for n in sizes:
         for src in a.sources.split(","):
@@ -223,7 +238,7 @@ def main():
             print(f"{src:<6} {r['tasks']:>8} {r['ingest']:>9.2f} {r['ingest_per_s']:>8} "
                   f"{r['full_refresh']:>8.2f} {r['full_file_scan']:>15.2f} {r['incremental_refresh']:>8.3f} "
                   f"{r['incremental_rescored']:>9} {r['fixed_batch_refresh']:>8.3f} {r['fixed_batch_rescored']:>9} "
-                  f"{r['db_mb']:>7.1f}", flush=True)
+                  f"{r['full_gc']:>10.3f} {r['db_mb']:>7.1f}", flush=True)
     if a.json:
         with open(a.json, "w", encoding="utf-8") as f:
             json.dump({"python": platform.python_version(), "platform": f"{platform.system()} {platform.machine()}",

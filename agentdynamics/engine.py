@@ -441,19 +441,22 @@ class Engine:
         """Returns (changed runs, removed run ids) for file-based sources."""
         found = []
         if self.claude_root and os.path.isdir(self.claude_root):
-            found += [("cc", p) for p in claude_code.discover(self.claude_root)]
+            found += [("cc", p, None) for p in claude_code.discover(self.claude_root)]
         try:
-            names, runs_dir_gone = os.listdir(self.runs_dir), False
+            # scandir, not listdir + stat: on Windows the listing already carries each file's size and
+            # mtime, and a stat per file was 0.6 s of every refresh at 10k SDK runs (scandir: 0.03 s)
+            with os.scandir(self.runs_dir) as it:
+                entries, runs_dir_gone = [e for e in it if e.name.endswith(".json")], False
         except FileNotFoundError:
             # The directory is ours and was created at startup. If something removed it, make it
             # again rather than raising out of every refresh from here on.
             os.makedirs(self.runs_dir, exist_ok=True)
-            names, runs_dir_gone = [], True
-        found += [("sdk", os.path.join(self.runs_dir, fn)) for fn in names if fn.endswith(".json")]
+            entries, runs_dir_gone = [], True
+        found += [("sdk", e.path, e) for e in entries]
         changed, seen = [], set()
-        for kind, p in found:
+        for kind, p, entry in found:
             try:
-                st = os.stat(p)
+                st = entry.stat() if entry is not None else os.stat(p)
             except OSError:
                 continue
             seen.add(p)
@@ -482,8 +485,8 @@ class Engine:
         gone = [p for p in list(self._files) if p not in seen
                 and not (runs_dir_gone and os.path.dirname(p) == self.runs_dir)]
         removed = [self._files.pop(p)[2]["id"] for p in gone]
-        if "claude_code" in self.sources and any(k == "cc" for k, _ in found):
-            self.sources["claude_code"].d.update(status="ok", last_ok=time.time(), items=sum(1 for k, _ in found if k == "cc"))
+        if "claude_code" in self.sources and any(k == "cc" for k, _, _ in found):
+            self.sources["claude_code"].d.update(status="ok", last_ok=time.time(), items=sum(1 for k, _, _ in found if k == "cc"))
         return changed, removed
 
     def _assemble_traces(self):
@@ -561,8 +564,9 @@ class Engine:
                                                          grades=store.get_grades(self.con),
                                                          cache=self._cache, dirty=dirty.keys(),
                                                          redact=self.redactor.text)
-            insights = analysis.process_insights(tasks)
-            meta = {"refreshed": time.time(), "runs": len(runs), "tasks": len(tasks), "insights": insights}
+            # Process Review insights are computed when the page asks, over the tasks it shows: every
+            # filter needed that anyway, and computing them here cost 28% of each refresh at 20k tasks.
+            meta = {"refreshed": time.time(), "runs": len(runs), "tasks": len(tasks)}
             store.write_runs(self.con, list(dirty.values()), removed, self.redactor)
             if full:
                 # the first refresh of a process must replace whatever the last process left behind

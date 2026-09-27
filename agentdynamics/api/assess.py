@@ -1,5 +1,4 @@
 """Assess: process review, analytics, compare and SLOs."""
-import json
 import statistics
 import time
 from collections import Counter, defaultdict
@@ -14,10 +13,8 @@ from .base import DAY
 class AssessMixin:
     def process(self, q):
         ts = self.tasks(q)
-        meta = {r["k"]: json.loads(r["v"]) for r in self.con.execute("SELECT k, v FROM meta")}
         from ..analysis import process_insights
-        # the stored insights are install-wide: recompute for any filter, and always for a scoped reader
-        insights = process_insights(ts) if (q.get("project") or q.get("days") or q.get("type") or self.projects is not None) else meta.get("insights", [])
+        insights = process_insights(ts)
         dims = ["efficiency", "focus", "reliability", "verification", "context", "autonomy", "compliance", "overall"]
         avg = {}
         for d in dims:

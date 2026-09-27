@@ -79,6 +79,9 @@ AGENTDYNAMICS_URL=http://127.0.0.1:8790 python examples/governed_agent.py 45   #
   baseline are unchanged, so any field the settle phase writes must be listed there, and must be *assigned*
   on every pass, never only set when a condition holds (a stale `next_prompt` survived exactly that way).
   `tests/test_incremental.py` compares every column against a full rebuild and diffs the settle phase's writes.
+  A baseline is reused unless its sample could have changed (`touched` in `finalize`): a baseline that reads a
+  new task field must add that field's changes to `touched`, and `BaselineReuseTest` must show it failing
+  without. Percentiles hide most changes, so build that test's fixture for the change to move a median.
 - **Project-scoped keys: never filter by project inside an endpoint.** A scoped request's `self.con` already
   shows only the key's projects (TEMP views over `tasks`/`runs`/`steps`/`events`, `store.connect_reader`).
   Anything read from elsewhere (`meta`, config files, `spans_raw`, the engine's in-memory state) is install-wide:
@@ -130,10 +133,12 @@ deploy/               Dockerfile companion: compose, OTel Collector config, exam
 
 ## Known weak areas, ranked
 
-1. **Scale.** An incremental refresh scores and writes only changed tasks (#5), but a light pass still runs over
-   every task each refresh (outcomes, threads, grades, baselines, insights), about 30 µs a task: 4.2 s to absorb
-   1% more at 100k tasks, 2.9 s for a fixed 100 ([docs/BENCHMARKS.md](docs/BENCHMARKS.md)). Next is a store backend (#7); making that
-   pass incremental needs streaming quantiles and incremental aggregates.
+1. **Scale.** An incremental refresh scores and writes only changed tasks (#5) and re-computes a baseline only
+   when its sample could have changed, but a light pass still runs over every task each refresh (outcomes,
+   threads, grades, change checks), about 13 µs a task: 1.7 s to absorb 1% more at 100k tasks, 1.3 s for a
+   fixed 100, plus a full garbage collection (0.8 s at 100k) every several refreshes
+   ([docs/BENCHMARKS.md](docs/BENCHMARKS.md)). Next is a store backend (#7); making the rest of that pass
+   incremental needs dependency tracking for threads and time-dependent outcomes.
 2. **Most outcomes are still inferred.** They *can* be graded now (`agentdynamics.outcome`, `/api/outcomes`)
    and every task says which (`outcome_source`), but nothing grades them automatically.
 3. **Coding-task typing is still keyword rules.** Traced apps use the workflow name; every task records

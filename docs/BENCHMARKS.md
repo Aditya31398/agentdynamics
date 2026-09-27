@@ -23,13 +23,17 @@ Three numbers per size:
 Python 3.12, Windows 11, one laptop CPU. Each request: a prompt, 2–3 model calls and 3–5 tool calls.
 "+1%" absorbs 1% more traffic; "+100" absorbs a fixed 100 tasks, so it shows cost against store size.
 
-| path | tasks | ingest | full refresh | +1% (re-scored) | +100 (re-scored) | on disk |
-|---|---:|---:|---:|---:|---:|---:|
-| span (OTLP) | 1,000 | 0.5 s | 0.6 s | 0.02 s (10) | 0.23 s (1,110) | 8 MB |
-| span (OTLP) | 10,000 | 4.6 s | 6.1 s | 0.40 s (100) | 0.33 s (100) | 72 MB |
-| span (OTLP) | 100,000 | 41 s | 66 s | **4.2 s** (1,000) | **2.9 s** (100) | 716 MB |
-| SDK | 1,000 | 1.2 s | 10 s (10.0 s opening files) | 0.18 s (10) | 1.3 s (1,110) | 3 MB |
-| SDK | 10,000 | 12 s | 101 s (95 s opening files) | 2.0 s (100) | 1.9 s (100) | 28 MB |
+| path | tasks | ingest | full refresh | +1% (re-scored) | +100 (re-scored) | full GC | on disk |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| span (OTLP) | 1,000 | 0.4 s | 0.6 s | 0.01 s (10) | 0.20 s (1,110) | 0.01 s | 8 MB |
+| span (OTLP) | 10,000 | 4.6 s | 5.7 s | 0.16 s (100) | 0.16 s (100) | 0.09 s | 72 MB |
+| span (OTLP) | 100,000 | 42 s | 61 s | **1.7 s** (1,000) | **1.3 s** (100) | 0.77 s | 716 MB |
+| SDK | 1,000 | 1.1 s | 9.2 s (8.8 s opening files) | 0.11 s (10) | 1.1 s (1,110) | 0.02 s | 3 MB |
+| SDK | 10,000 | 11 s | 93 s (88 s opening files) | 1.1 s (100) | 1.1 s (100) | 0.11 s | 28 MB |
+
+The SDK path's incremental figures are mostly opening the new run files (about 9 ms each on this machine,
+see below); finding which files changed takes 0.05 s at 10,000 runs, down from 0.6 s before the scan read
+file sizes and times from the directory listing instead of a stat per file.
 
 At 1,000 tasks, 100 new ones are a 10% jump, past the baseline's 5% step, so the whole type is
 re-scored once; that is the design, and why that row re-scores 1,110.
@@ -39,8 +43,13 @@ What these say:
 - **Everything grows linearly.** Roughly 10× the time for 10× the data in the rebuild columns.
 - **Only new traffic is scored and written.** The re-scored counts are exactly the new tasks at 10k and
   100k. What still grows with the store is a light pass over every task on each refresh — outcomes,
-  conversation threads, grades, baselines, insights — at about 30 µs a task: 2.9 s to absorb 100 tasks
-  at 100,000. Making that pass incremental too needs streaming quantiles and incremental aggregates.
+  conversation threads, grades, change checks — at about 13 µs a task: 1.3 s to absorb 100 tasks at
+  100,000. It was 30 µs (2.96 s) until insights moved out of the refresh and baselines were re-computed
+  only when their sample could change; see [below](#the-light-pass).
+- **A full garbage collection is an occasional pause, not a per-refresh cost.** It scans every live
+  object, so it grows with the store (0.77 s at 100,000 tasks), and Python runs one once the objects
+  created since the last reach a quarter of the heap: every several refreshes in steady state, or right
+  after a bulk load. The incremental columns start from a collected heap so that they measure the engine.
 - **On this machine the SDK path is dominated by the OS, not the engine.** Opening each run file cost
   about 9 ms, most likely real-time antivirus scanning newly written files. The CI runner confirms it
   (Python 3.12, Linux, GitHub's `ubuntu-latest`), with the same code:
@@ -113,3 +122,19 @@ The gate catches cost that grows faster than the data, not a constant-factor slo
 deliberate: a flat 20% slower is annoying, and quadratic is an outage. The +100 figure is flat at these
 sizes because fixed overhead hides the per-task pass; it is linear at scale (see above). Whether scoring
 is limited to new traffic isn't left to timing at all: `tests/test_incremental.py` asserts the count.
+
+## The light pass
+
+Measured on the same machine with the same `bench.py`, OTLP path, before and after the change that moved
+Process Review insights out of the refresh, re-used unchanged baselines and cached each run's subagent
+spawns:
+
+| tasks | +1% before | +1% after | +100 before | +100 after |
+|---:|---:|---:|---:|---:|
+| 10,000 | 0.311 s | 0.165 s | 0.292 s | 0.175 s |
+| 100,000 | 3.425 s | 1.720 s | 2.957 s | 1.320 s |
+
+At 20,000 tasks the pass broke down as baselines 140 ms (re-sorting every type's history each refresh),
+insights about 200 ms, subagent roll-up 66 ms (reading every step of every run). After: baselines 36 ms,
+no insights, roll-up 38 ms. What remains is spread thinly: settling outcomes, conversation threads, grades
+and the per-task change check, 20 to 45 ms each.
