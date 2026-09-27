@@ -215,6 +215,15 @@ class PgConnection:
         else:
             self._raw.close()
 
+    def __del__(self):
+        # one nobody closed (an Api object dropped without close()): end its server session now, rather than
+        # when the driver's own finalizer gets to it (psycopg 3 warns; either way the session lingers)
+        try:
+            if not self._raw.closed:
+                self._raw.close()
+        except Exception:
+            pass
+
     def set_trace_callback(self, fn):
         raise NotImplementedError("statement tracing is SQLite-only")
 

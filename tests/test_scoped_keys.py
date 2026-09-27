@@ -87,7 +87,8 @@ class ScopedKeysTest(unittest.TestCase):
         cls.srv = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
         cls.url = f"http://127.0.0.1:{cls.srv.server_address[1]}"
-        src = open(os.path.join(ROOT, "agentdynamics", "server.py"), encoding="utf-8").read()
+        with open(os.path.join(ROOT, "agentdynamics", "server.py"), encoding="utf-8") as f:
+            src = f.read()
         cls.routes = sorted(set(re.findall(r'"(/api/[a-z/]+|/metrics)"', src)))
 
     @classmethod
