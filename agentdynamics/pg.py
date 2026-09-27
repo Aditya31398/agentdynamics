@@ -349,6 +349,8 @@ def ddl(schema_version, derived):
         f"CREATE TABLE IF NOT EXISTS alert_outbox (id BIGSERIAL PRIMARY KEY, dest TEXT, body TEXT, created {NUM}, "
         f"attempts {NUM} DEFAULT 0, next_try {NUM}, last_error TEXT)",
         f"CREATE TABLE IF NOT EXISTS alert_state (key TEXT PRIMARY KEY, since {NUM}, data TEXT)",
+        "CREATE TABLE IF NOT EXISTS revocations (id TEXT PRIMARY KEY, project TEXT, agent TEXT, reason TEXT, "
+        f"source TEXT, created {NUM}, expires {NUM}, cleared {NUM})",
         f"CREATE TABLE IF NOT EXISTS rollup_daily ({dims}, {', '.join(f'{c} {NUM}' for c in s.ROLLUP_SUMS)}, "
         f"PRIMARY KEY ({', '.join(s.ROLLUP_DIMS)}))",
     ]

@@ -187,6 +187,32 @@ def cmd_alerts(a, data):
     return 1 if failed else 0
 
 
+def cmd_revoke(a, data):
+    from . import config as cfgmod, store
+    con = store.connect(*store.target(cfgmod.load(data), data))
+    now = time.time()
+    if a.clear:
+        n = store.clear_revocation(con, a.clear, now)
+        print("cleared" if n else f"no active directive {a.clear}")
+        return 0 if n else 1
+    if a.list:
+        rows_ = store.revocations(con, now)
+        for d in rows_:
+            status = "cleared" if d["cleared"] else "expired" if d["expires"] <= now else "active"
+            print(f"{d['id']}  {status:<8} {d['project'] or '(all projects)':<18} {d['agent'] or '(all agents)':<18} "
+                  f"until {time.strftime('%Y-%m-%d %H:%M', time.localtime(d['expires']))}  [{d['source']}] {d['reason']}")
+        if not rows_:
+            print("no directives")
+        return 0
+    if not a.reason:
+        print("--reason is required: it goes into the kernel's audit log")
+        return 2
+    rid = store.add_revocation(con, a.project, a.agent, a.reason, "operator", now, now + a.minutes * 60)
+    print(f"{rid}: {'agent ' + a.agent if a.agent else 'every agent'} in {a.project or 'every project'} is revoked "
+          f"for {a.minutes:g} min, in processes using agentdynamics.integrations.aegis.instrument(..., revocations=True)")
+    return 0
+
+
 def cmd_keys(a, data):
     from .config import keys_path, load_keys, save_keys
     keys = load_keys(data)
@@ -373,6 +399,14 @@ def main(argv=None):
     al.add_argument("action", choices=["status", "test"],
                     help="status: destinations, queue and firing SLO alerts; test: send a test alert to each")
     al.add_argument("--to", metavar="NAME", help="test only this destination (its name, as status shows it)")
+    rv = sub.add_parser("revoke", help="revoke an agent's Aegis grants wherever it runs (applied in-process by "
+                                       "agentdynamics.integrations.aegis), or list/clear directives")
+    rv.add_argument("--agent", help="the agent (grant) name; omit to revoke every grant in the project")
+    rv.add_argument("--project", help="omit for every project")
+    rv.add_argument("--reason", help="why (it goes into the kernel's audit log)")
+    rv.add_argument("--minutes", type=float, default=60, help="how long new grants of that agent are refused too")
+    rv.add_argument("--list", action="store_true", help="list directives")
+    rv.add_argument("--clear", metavar="ID", help="stop a directive (grants it revoked stay revoked)")
     sub.add_parser("ingest", help="scan sources once and rebuild the database")
     rp = sub.add_parser("report", help="print a text summary")
     rp.add_argument("--project")
@@ -397,6 +431,8 @@ def main(argv=None):
         return cmd_keys(a, a.data)
     if cmd == "alerts":
         return cmd_alerts(a, a.data)
+    if cmd == "revoke":
+        return cmd_revoke(a, a.data)
 
     from .engine import Engine
     eng = Engine(a.data, a.claude_root or None)

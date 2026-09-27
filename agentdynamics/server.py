@@ -111,15 +111,17 @@ class Handler(BaseHTTPRequestHandler):
         k = self._key()
         return list(k["projects"]) if k and isinstance(k.get("projects"), list) else None
 
-    def _require(self, need):
+    def _require(self, *need):
+        """Whether the key has any of the capabilities in `need`; answers 401/403 if not."""
         k = self._key()
         if k and k.get("invalid"):
             self._send(403, {"error": k["invalid"]})
             return False
         r = self._role()
-        if need in CAN.get(r, set()):
+        if CAN.get(r, set()) & set(need):
             return True
-        self._send(401 if r == 0 else 403, {"error": "unauthorized" if r == 0 else f"requires '{need}' role"},
+        want = " or ".join(f"'{n}'" for n in need)
+        self._send(401 if r == 0 else 403, {"error": "unauthorized" if r == 0 else f"requires {want} role"},
                    extra_headers={"WWW-Authenticate": "Bearer"} if r == 0 else None)
         return False
 
@@ -145,6 +147,7 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("payload too large")
         try:
             body = self.rfile.read(n) if n else b""
+            self._body_read = True
         except CLIENT_GONE as ex:
             self.close_connection = True
             raise ClientGone() from ex
@@ -176,7 +179,8 @@ class Handler(BaseHTTPRequestHandler):
                 from .collectors.langsmith import info
                 return self._send(200, info())
             if p.startswith("/api/") or p == "/metrics":
-                if not self._require("read"):
+                # the in-process Aegis integration polls revocations with the app's (ingest) key
+                if not self._require(*(("read", "ingest") if p == "/api/revocations" else ("read",))):
                     return
                 if self._scope() is not None:
                     if p in self.INSTALL_WIDE:
@@ -191,7 +195,7 @@ class Handler(BaseHTTPRequestHandler):
                       "/api/process": api.process, "/api/analytics": api.analytics, "/api/compare": api.compare,
                       "/api/workflows": api.workflows, "/api/workflow": api.workflow, "/api/slos": api.slos,
                       "/api/sources": api.sources, "/api/config": api.config, "/api/connect": api.connect,
-                      "/api/alerts": api.alerts,
+                      "/api/alerts": api.alerts, "/api/revocations": api.revocations,
                       "/api/governance": api.governance, "/api/governance/policy": api.export_policy}
             if p in routes:
                 r = routes[p](q)
@@ -221,7 +225,28 @@ class Handler(BaseHTTPRequestHandler):
         with open(path, "rb") as f:
             self._send(200, f.read(), mimetypes.guess_type(path)[0] or "application/octet-stream")
 
+    def _unread_body_closes(self, handler):
+        """Run a POST/PATCH handler. A body it didn't read (a route that takes none, or a request refused before
+        reading it) would stay in the socket and become the start of the next request on a keep-alive
+        connection -- "{}GET /api/..." answered 501 -- so that connection is closed after the response."""
+        self._body_read = False
+        try:
+            return handler()
+        finally:
+            n = int(self.headers.get("Content-Length") or 0)
+            if not self._body_read and n > 0:
+                if n <= 1 << 20:             # small (the console's "{}"): read it off, the connection stays usable
+                    try:
+                        self.rfile.read(n)
+                    except CLIENT_GONE:
+                        self.close_connection = True
+                else:                        # not worth reading 64 MB to discard: end the connection
+                    self.close_connection = True
+
     def do_PATCH(self):
+        return self._unread_body_closes(self._patch)
+
+    def _patch(self):
         u = urlparse(self.path)
         try:
             if u.path.startswith("/langsmith/") and "/runs/" in u.path:
@@ -241,6 +266,9 @@ class Handler(BaseHTTPRequestHandler):
         self._send(404, {"error": "not found"})
 
     def do_POST(self):
+        return self._unread_body_closes(self._post)
+
+    def _post(self):
         u = urlparse(self.path)
         p = u.path
         e = self.api.e
@@ -344,6 +372,22 @@ class Handler(BaseHTTPRequestHandler):
                 if self._scope() is None:          # an install-wide count: other projects' activity
                     out["changed"] = changed
                 return self._send(200, out)
+            if p == "/api/revocations":
+                # revoke an agent's grants wherever it runs; applied by the in-process Aegis integration
+                if not self._require("admin"):
+                    return
+                b = json.loads(self._body() or b"{}")
+                if not b.get("reason"):
+                    return self._send(400, {"error": "say why: a reason goes into the kernel's audit log"})
+                rid = e.revoke(agent=b.get("agent") or None, project=b.get("project") or None,
+                               reason=f"{b['reason']} ({self._key_name()})", minutes=float(b.get("minutes") or 60),
+                               source="operator")
+                return self._send(200, {"ok": True, "id": rid})
+            if p.startswith("/api/revocations/") and p.endswith("/clear"):
+                if not self._require("admin"):
+                    return
+                n = e.clear_revocation(unquote(p[len("/api/revocations/"):-len("/clear")]))
+                return self._send(200 if n else 404, {"ok": bool(n)})
             if p == "/api/rules":
                 if not self._require("admin"):
                     return

@@ -53,10 +53,11 @@ for each of these; the work is making that number defensible to someone who will
 
 ## Phase 4 — more than one person using it
 
-- [ ] [#8](https://github.com/Aditya31398/agentdynamics/issues/8) **Server-side enforcement** (weak area 6). The watchdog revokes in-process; a server that
-      sees the same probing across runs can alert but cannot stop anything. Out-of-process
-      revocation needs a channel back to the kernel — the honest version of this is an Aegis-side
-      feature, not something AgentDynamics can bolt on.
+- [x] [#8](https://github.com/Aditya31398/agentdynamics/issues/8) **Server-side enforcement.** Revocation directives, issued by operators or by the server when
+      it sees an agent probing across runs, polled by processes that opt in and applied through Aegis's
+      own `Kernel.revoke` (which enforces and audits). A directive can only take privileges away. An
+      Aegis-side revocation source, checked by the kernel on every call rather than by a poller, would
+      remove the poll interval; this didn't need one.
 - [x] [#9](https://github.com/Aditya31398/agentdynamics/issues/9) **Split `server.py` and `web/app.js`** (weak area 4). Both are large single files. This
       unblocks the two items above it more than it stands on its own.
 - [x] **Teams and projects.** `read` and `ingest` keys can be scoped to projects

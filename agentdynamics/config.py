@@ -24,6 +24,9 @@ Example agentdynamics.toml:
     url = "postgresql://agentdynamics@db.internal/agentdynamics"   # needs pip install "agentdynamics[postgres]"
     schema = "agentdynamics"
 
+    [enforcement]                   # server-side revocation (off unless set): an agent the policy keeps
+    probing = { denials = 10, runs = 3, window_minutes = 30, revoke_minutes = 60 }   # refusing across runs
+
     [retention]
     days = 90                       # spans/runs older than this are purged; daily totals are kept
 
@@ -78,6 +81,7 @@ DEFAULTS = {
     "retention": {"days": 0},
     "alerts": {"webhooks": [], "console_url": "", "slo_min_tasks": 10},
     "store": {"url": "", "schema": "agentdynamics"},
+    "enforcement": {},
     "analysis": {"interval": 15, "idle_cap_seconds": 300},
     "sources": [],
 }

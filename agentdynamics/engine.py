@@ -17,7 +17,7 @@ import sys
 import threading
 import time
 import traceback
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 from . import alerts as alertmod, analysis, config as cfgmod, pricing, slo as slomod, store
 from .collectors import aegis_audit, claude_code, generic, inbox, langfuse, langsmith, otlp, spans as spanmod
@@ -105,6 +105,7 @@ class Engine:
         # ingest (both go through the store), and one of them takes over if the writer goes away.
         self.writer = store.claim_writer(self.con, self.db_schema)
         self._grades_sig = self._rules_sig = None
+        self._revocations_seen = None     # newest directive already alerted on (None: not looked yet)
         self._store_sdk_ids = set()           # ids of SDK runs read from the store, as _files holds file ones
         self._store_sdk_sig = {}              # run id -> hash of the payload last read
         self.lock = threading.RLock()
@@ -449,6 +450,86 @@ class Engine:
         self._wake.set()
         return len(items)
 
+    # ------------------------------------------------------------------ server-side revocation (#8)
+    # A directive says "revoke this agent's grants in this project until then". The in-process Aegis
+    # integration polls for directives and applies them through Kernel.revoke (integrations/aegis.py):
+    # the kernel enforces and audits, and a directive can only take privileges away (invariant 6).
+
+    def revoke(self, agent=None, project=None, reason="operator", minutes=60, source="operator"):
+        """Issue a directive. `agent` None revokes a process's whole grant tree; `project` None, every project."""
+        now = self._clock()
+        with self.lock:
+            rid = store.add_revocation(self.con, project, agent, reason, source, now, now + float(minutes) * 60)
+        self._wake.set()
+        return rid
+
+    def clear_revocation(self, rid):
+        """Stop a directive applying to new grants; ones it revoked stay revoked (Aegis can't un-revoke)."""
+        with self.lock:
+            return store.clear_revocation(self.con, rid, self._clock())
+
+    def _detect_probing(self):
+        """[enforcement] probing: an agent whose calls the policy keeps refusing across several runs is probing
+        it. The in-process Watchdog sees one run; this sees them all, and issues a directive. Off unless
+        configured: it acts on running agents."""
+        p = (self.cfg.get("enforcement") or {}).get("probing")
+        if not p:
+            return []
+        now = self._clock()
+        since = now - float(p.get("window_minutes", 30)) * 60
+        issued = store.revocations(self.con, now, limit=10000)
+        # a directive restarts the count: denials from before it were what it acted on
+        last = {}
+        for d in issued:
+            if d["source"] == "probing":
+                last[(d["project"], d["agent"])] = max(last.get((d["project"], d["agent"]), 0), d["created"])
+        active = {(d["project"], d["agent"]) for d in issued if d["cleared"] is None and d["expires"] > now}
+        seen = defaultdict(lambda: [0, set(), Counter()])
+        for run in self._runs.values():
+            if (run.get("ended") or run.get("started") or 0) < since:
+                continue                   # only recent runs: this runs every refresh
+            project = run.get("project") or "default"
+            for s in run["steps"]:
+                if not (s.get("denied") and s.get("governed") and s.get("agent")):
+                    continue
+                key = (project, s["agent"])
+                if (s.get("ts") or 0) < max(since, last.get(key, 0)):
+                    continue
+                c = seen[key]
+                c[0] += 1
+                c[1].add(run["id"])
+                c[2][s.get("rule") or "denied"] += 1
+        out = []
+        for (project, agent), (n, runs, rules) in seen.items():
+            if n < int(p.get("denials", 10)) or len(runs) < int(p.get("runs", 3)) or (project, agent) in active:
+                continue
+            top = ", ".join(f"{r} x{k}" for r, k in rules.most_common(3))
+            reason = (f"probing: {n} denied calls across {len(runs)} runs in "
+                      f"{float(p.get('window_minutes', 30)):g} min ({top})")
+            out.append(store.add_revocation(self.con, project, agent, reason, "probing", now,
+                                            now + float(p.get("revoke_minutes", 60)) * 60))
+        return out
+
+    def _alert_new_revocations(self):
+        """Alert on directives issued since the last look, from wherever they came (this process, another
+        instance, the CLI): an agent was stopped, and someone should know why. On the alert tick, so a
+        directive issued while no traffic arrives is still announced."""
+        if not self.writer:
+            return 0
+        with self.lock:
+            return self._alert_new_revocations_locked()
+
+    def _alert_new_revocations_locked(self):
+        now = self._clock()
+        recent = store.revocations(self.con, now, limit=500)
+        newest = max((d["created"] for d in recent), default=0)
+        if self._revocations_seen is None:     # a process's first look: that's history
+            self._revocations_seen = newest
+            return 0
+        new = [d for d in recent if d["created"] > self._revocations_seen]
+        self._revocations_seen = max(self._revocations_seen, newest)
+        return self._queue([alertmod.from_revocation(d) for d in reversed(new)], now) if new else 0
+
     # ------------------------------------------------------------------ settings saved from the console
     # Health rules and SLOs. With SQLite they are files in the data directory. On Postgres a saved one goes in
     # the store, where every instance reads it (a file in the data directory still works, as the default).
@@ -668,6 +749,7 @@ class Engine:
                                            gone - changed, events, baselines, meta, self.redactor)
             self.stats["tasks_rescored"] = len(self._cache.changed)
             self._queue_event_alerts(events)
+            self._detect_probing()
             self._first = False
             self.last_refresh = time.time()
             self.last_duration = round(self.last_refresh - t0, 2)
@@ -847,6 +929,7 @@ class Engine:
             self._alert_wake.clear()
             try:
                 self.check_slos()
+                self._alert_new_revocations()
                 self.deliver_alerts()
             except Exception:
                 traceback.print_exc()

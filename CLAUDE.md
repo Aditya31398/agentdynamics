@@ -54,6 +54,7 @@ AGENTDYNAMICS_URL=http://127.0.0.1:8790 python examples/governed_agent.py 45   #
 5. **One canonical model.** Collectors map to canonical spans (`collectors/spans.py`) or the generic run
    format (`collectors/generic.py`). Analysis never sees vendor formats.
 6. **Nothing here can loosen Aegis.** The integration only adds correlation data, reserves budget and revokes.
+   Server revocation directives only revoke; clearing one never un-revokes a grant.
    `govern.synthesize` only ever tightens a base policy, and tests verify it with `aegis ratify` and
    `aegis drift` (no widening).
 7. **Health-rule ids and API field names are a contract** for saved `rules.json`, alert consumers and
@@ -136,7 +137,7 @@ agentdynamics/
   web/                index.html, app.js (helpers, router, boot), pages/<area>.js (each area's pages), charts.js, style.css
 tests/                test_core, test_integrations, test_autotrace, test_aegis_integration, test_ecosystem, test_live_anthropic,
                       test_console_ui, test_outcomes, test_token_accounting, test_policy_coverage, test_incremental,
-                      test_scoped_keys, test_alerts, test_rollups, test_postgres
+                      test_scoped_keys, test_alerts, test_rollups, test_postgres, test_revocations
 bench/                bench.py: ingest / rebuild / incremental timings and the CI scaling gate
 examples/             langgraph_style_app, otel_multiagent, governed_agent, demo_agent
 deploy/               Dockerfile companion: compose, OTel Collector config, example TOML
@@ -157,7 +158,9 @@ deploy/               Dockerfile companion: compose, OTel Collector config, exam
    "continue" after a slash command is typed "slash command".
 4. **UI tests are smoke-level.** `tests/test_console_ui.py` renders every page in headless Chrome and
    checks headings plus the governance table cells. It does not click, filter or navigate.
-5. **Watchdog enforcement is in-process only.** Server-side events can alert but not revoke.
+5. **Server-side enforcement reaches only processes that opt in** (`instrument(..., revocations=True)`), and within
+   one poll interval (10 s). A kernel not wrapped by the integration can't be reached; an Aegis-side revocation
+   source checked on every call would close both gaps.
 6. **Cache accounting for undocumented formats is estimated.** `collectors/spans.uncached_input` applies each
    format's documented rule (GenAI semconv, OpenInference, LangChain: inclusive of reads and writes). Formats
    with no citable rule (older `gen_ai.usage.prompt_tokens`, Langfuse) are estimated and counted as

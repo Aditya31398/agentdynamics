@@ -60,7 +60,9 @@ governance.instrument(kernel, root, watchdog=governance.Watchdog(max_repeated_de
             <td class="small">${esc(r.agent || "–")}</td><td><div class="truncate small" style="max-width:240px">${esc(r.prompt)}</div><span class="tag">${esc(r.workflow || "")}</span></td></tr>`).join("")}</tbody></table></div>`)}
         ${card("Revocations", d.revocations.length ? `<table><tbody>${d.revocations.map((r) => `<tr class="click" data-href="#/task/${encodeURIComponent(r.task_id)}"><td>${pill("critical", "revoked")}</td><td class="small">${esc(r.text)}<div class="muted">${dt(r.ts)}</div></td></tr>`).join("")}</tbody></table>`
           : `<div class="empty">No grants revoked.</div>`, "kill switch")}
-      </div>`;
+      </div>
+      <div style="margin-top:14px" id="gv-directives"></div>`;
+    directives($("#gv-directives"));
     C.hbars($("#gv-rule"), d.by_rule.map((r) => ({ label: esc(r.rule), value: r.n, color: r.rule.startsWith("budget") ? "var(--s4)" : r.rule.startsWith("grant") ? "var(--critical)" : "var(--s2)" })), { fmt: num });
     C.hbars($("#gv-tool"), d.by_tool.map((r) => ({ label: esc(r.tool), value: r.n, color: "var(--s2)" })), { fmt: num });
     C.hbars($("#gv-agent"), d.by_agent.map((r) => ({ label: esc(r.agent), value: r.n, color: "var(--s7)" })), { fmt: num });
@@ -83,5 +85,41 @@ governance.instrument(kernel, root, watchdog=governance.Watchdog(max_repeated_de
     });
     bindRows(host);
   };
+
+  // Server-side revocation (#8): directives the in-process integration applies through Kernel.revoke
+  async function directives(box) {
+    const d = await api("revocations").catch(() => null);
+    if (!d || !box.isConnected) return;
+    const STATUS = { active: "critical", expired: "unknown", cleared: "ok" };
+    const rows = d.revocations.map((r) => `<tr><td>${pill(STATUS[r.status] || "unknown", r.status)}</td>
+      <td><b>${esc(r.agent || "every agent")}</b><div class="small muted">${esc(r.project || "every project")}</div></td>
+      <td class="small">${esc(r.reason)}</td><td class="small muted" style="white-space:nowrap">${ago(r.created)} · ${esc(r.source)}</td>
+      <td class="small muted" style="white-space:nowrap">${r.status === "active" ? "until " + dt(r.expires) : ""}</td>
+      <td>${r.status === "active" ? `<button class="gv-clear" data-id="${esc(r.id)}">Clear</button>` : ""}</td></tr>`).join("");
+    const p = d.probing;
+    box.innerHTML = card("Revocation directives", `<p class="small muted" style="margin:0 0 8px">Revoke an agent wherever it runs. Processes that call
+        <code>instrument(kernel, root, revocations=True)</code> apply a directive through <code>Kernel.revoke</code> within seconds, and revoke new grants of that agent while it lasts.
+        Revocation is permanent in Aegis: clearing a directive stops it applying to new grants, and restores nothing.
+        ${p ? `Probing detection is on: ${p.denials ?? 10} denied calls across ${p.runs ?? 3} runs within ${p.window_minutes ?? 30} min issue one for ${p.revoke_minutes ?? 60} min.`
+            : "Probing detection is off (<code>[enforcement] probing</code> in agentdynamics.toml)."}</p>
+      ${rows ? `<div class="table-wrap"><table><thead><tr><th>Status</th><th>Agent</th><th>Reason</th><th>Issued</th><th>Applies</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`
+             : `<div class="empty">No directives.</div>`}
+      <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:6px"><input id="gv-r-agent" placeholder="agent (blank: every agent)" style="width:190px">
+        <input id="gv-r-project" placeholder="project (blank: all)" style="width:150px"><input id="gv-r-min" type="number" value="60" min="1" style="width:80px" title="minutes">
+        <input id="gv-r-reason" placeholder="reason (goes into the audit log)" style="flex:1;min-width:200px"><button class="primary" id="gv-r-go">Revoke</button></div>`,
+      "server-side · needs an admin key to issue or clear");
+    $("#gv-r-go").onclick = async () => {
+      const reason = $("#gv-r-reason").value.trim();
+      if (!reason) { toast("Say why: the reason goes into the kernel's audit log"); return; }
+      try {
+        await post("revocations", { agent: $("#gv-r-agent").value.trim(), project: $("#gv-r-project").value.trim(), minutes: +$("#gv-r-min").value || 60, reason });
+        toast("Directive issued"); directives(box);
+      } catch (e) { toast("Not issued: " + e.message); }
+    };
+    $$(".gv-clear", box).forEach((b) => b.onclick = async () => {
+      try { await post(`revocations/${encodeURIComponent(b.dataset.id)}/clear`, {}); toast("Cleared"); directives(box); }
+      catch (e) { toast("Not cleared: " + e.message); }
+    });
+  }
 
 })();

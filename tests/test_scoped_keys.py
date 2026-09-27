@@ -69,6 +69,8 @@ class ScopedKeysTest(unittest.TestCase):
                     (old, project, f"{project}_flow", f"{project}_flow"))
             cls.eng.con.execute("INSERT OR REPLACE INTO source_state (name, data) VALUES ('rollups', ?)",
                                 (json.dumps({"through": old, "through_end": T - 39 * 86400}),))
+        # a revocation directive for the other team's agent (server-side revocation, #8)
+        cls.eng.revoke(agent=f"{MARK}_agent", project=MARK, reason=f"{SECRET} probing", minutes=60)
         # install-wide config can name the other project too: an SLO on it, and one on its workflow
         slo.save(cls.eng.data_dir, slo.DEFAULT_SLOS + [
             {"id": "b1", "name": f"{MARK} latency", "metric": "p95_seconds", "op": "<=", "target": 60,

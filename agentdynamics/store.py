@@ -2,7 +2,7 @@
 
 Two kinds of tables:
   * durable  - spans_raw (pushed/pulled telemetry), source_state, alerts_sent, grades, alert_outbox,
-               alert_state, rollup_daily. These are a system of record. grades holds outcomes stated after
+               alert_state, rollup_daily, revocations. These are a system of record. grades holds outcomes stated after
                the fact, so it must survive a schema change; the alert tables hold what was promised to a
                pager; rollup_daily holds the only copy of days that retention has purged.
   * derived  - runs, steps, tasks, events, baselines, meta. Rebuildable from sources; dropped on schema change.
@@ -93,6 +93,8 @@ CREATE TABLE IF NOT EXISTS grades (task_id PRIMARY KEY, outcome, reason, graded_
 CREATE TABLE IF NOT EXISTS alert_outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, dest, body, created REAL,
                                          attempts INTEGER DEFAULT 0, next_try REAL, last_error);
 CREATE TABLE IF NOT EXISTS alert_state (key PRIMARY KEY, since REAL, data);
+CREATE TABLE IF NOT EXISTS revocations (id PRIMARY KEY, project, agent, reason, source, created REAL, expires REAL,
+                                        cleared REAL);
 CREATE TABLE IF NOT EXISTS rollup_daily ({", ".join(ROLLUP_DIMS + ROLLUP_SUMS)}, PRIMARY KEY({", ".join(ROLLUP_DIMS)})) WITHOUT ROWID;
 """
 
@@ -155,6 +157,8 @@ SCOPED_VIEWS = {
     "events": "SELECT * FROM main.events WHERE project IN ({p})",
     "steps": "SELECT * FROM main.steps WHERE run_id IN (SELECT id FROM main.runs WHERE project IN ({p}))",
     "rollup_daily": "SELECT * FROM main.rollup_daily WHERE project IN ({p})",
+    # an install-wide directive (no project) applies to every project, so every scoped key sees it
+    "revocations": "SELECT * FROM main.revocations WHERE project IN ({p}) OR project IS NULL",
 }
 
 
@@ -464,3 +468,37 @@ def rollup_boundary(con):
     """(last frozen day, the time it ends). Tasks from before that time are counted in rollup_daily, not tasks."""
     st = get_state(con, "rollups")
     return st.get("through"), st.get("through_end") or 0
+
+
+# ---------------------------------------------------------------- revocation directives (durable)
+
+def add_revocation(con, project, agent, reason, source, created, expires):
+    """A directive to revoke the grants of `agent` (all of a process's grants when None) in `project` (every
+    project when None) until `expires`. Returns its id. Applied by the in-process Aegis integration."""
+    import uuid
+    rid = uuid.uuid4().hex[:12]
+    with con:
+        con.execute("INSERT INTO revocations (id, project, agent, reason, source, created, expires, cleared) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, NULL)", (rid, project, agent, str(reason)[:500], source, created, expires))
+    return rid
+
+
+def clear_revocation(con, rid, now):
+    """Stop a directive applying to new grants. Grants it already revoked stay revoked: Aegis revocation is
+    permanent, and nothing here can loosen Aegis."""
+    with con:
+        return con.execute("UPDATE revocations SET cleared = ? WHERE id = ? AND cleared IS NULL", (now, rid)).rowcount
+
+
+def revocations(con, now, active=False, project=None, limit=200):
+    """Directives, newest first. `active`: not cleared and not expired. `project`: those for it or for all."""
+    clauses, args = [], []
+    if active:
+        clauses.append("cleared IS NULL AND expires > ?")
+        args.append(now)
+    if project is not None:
+        clauses.append("(project = ? OR project IS NULL)")
+        args.append(project)
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    return [dict(r) for r in con.execute(f"SELECT * FROM revocations{where} ORDER BY created DESC, id LIMIT ?",
+                                         args + [limit])]

@@ -8,6 +8,25 @@ bumps the minor version.
 
 ## [Unreleased]
 
+### Added
+- **Server-side revocation** (#8). A **directive** revokes an agent (or every agent) in a project (or every
+  project) until a given time. Operators issue one with `agentdynamics revoke`, the Revocation directives card
+  on the Governance page, or `POST /api/revocations` (admin). The server can also issue them itself:
+  `[enforcement] probing` revokes an agent whose calls the policy keeps refusing across several runs, which the
+  in-process watchdog, seeing one run, can't. Processes that opt in with
+  `governance.instrument(kernel, root, revocations=True)` poll for directives and apply them through
+  `Kernel.revoke`, in every grant tree they have seen and before any governed call or spawn, so the kernel
+  enforces and audits. A directive can only take privileges away, and clearing one restores nothing (Aegis
+  revocation is permanent). If the server is unreachable nothing is revoked and the agent carries on. New
+  directives are announced to alert destinations with `kinds = ["revocations"]`. See
+  [docs/GOVERNANCE.md](docs/GOVERNANCE.md#3b-enforce-from-the-server-revocation-directives).
+
+### Fixed
+- **A POST whose body the route didn't read broke the next request on the connection.** The console sends `{}`
+  to routes that take no body (Refresh, and now Clear); left in the socket, it prefixed the next request on the
+  keep-alive connection, which the server answered `501 Unsupported method ('{}GET')`. Unread small bodies are
+  now read off, and a large one closes the connection.
+
 ## [0.7.0] - 2026-09-27
 
 For teams and for volume: project-scoped API keys, alert routing with SLO burn-rate pages, daily totals kept past

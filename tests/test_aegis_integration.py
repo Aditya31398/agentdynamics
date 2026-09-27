@@ -13,6 +13,7 @@ import shutil
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.request
 from http.server import ThreadingHTTPServer
@@ -329,6 +330,123 @@ class AegisIntegrationTest(unittest.TestCase):
         self.assertEqual(len(ts), 1)
         self.assertEqual((ts[0]["tool_calls"], ts[0]["policy_denials"]), (3, 2))
         self.assertEqual(ts[0]["source"], "aegis")
+
+
+@unittest.skipUnless(HAS_AEGIS, "aegis-kernel with observe/reserve_spend not installed")
+class ServerRevocationTest(unittest.TestCase):
+    """Server-side revocation (#8), end to end: a directive issued on the server reaches a real Aegis kernel in
+    this process through the poller and Kernel.revoke. The server's half is tested in test_revocations.py."""
+
+    def setUp(self):
+        import agentdynamics as ad
+        from agentdynamics.integrations import aegis as gov
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.eng = Engine(os.path.join(self.tmp, "data"), None)
+        self.addCleanup(self.eng.con.close)
+        self.eng.cfg["auth"] = {"enabled": True, "keys": [{"name": "app", "role": "ingest", "key": "k-app"}]}
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), type("H", (Handler,), {"api": Api(self.eng)}))
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        self.url = f"http://127.0.0.1:{srv.server_address[1]}"
+        ad.init(url=self.url, api_key="k-app", project="shop", otel=False, langchain=False, quiet=True)
+        self.kernel, self.root = build_kernel(parse_policy(POLICY, source="support"), registry())
+        self.rv = gov.Revocations(interval=0)             # polled by hand below
+        self.gov = gov.instrument(self.kernel, self.root, gate_models=False, revocations=self.rv)
+        self.addCleanup(self.gov.uninstall)
+
+    def spawn(self, name):
+        return self.kernel.spawn(self.root, SpawnRequest(name, frozenset({"kb.search"}), budget_fraction=0.1))
+
+    def test_a_directive_revokes_the_agent_now_and_when_it_spawns_again(self):
+        probe, helper = self.spawn("probe"), self.spawn("helper")
+        self.assertEqual(self.kernel.invoke(probe, "kb.search", query="q"), ["doc1", "doc2"])
+        self.eng.revoke(agent="probe", project="shop", reason="probing across runs", minutes=30)
+        self.eng.revoke(agent="helper", project="billing", reason="another project's agent", minutes=30)
+        self.assertEqual(self.rv.poll_once(), 1)
+        self.assertFalse(probe.is_active())
+        self.assertTrue(helper.is_active(), "a directive for another project does nothing here")
+        with self.assertRaises(PolicyViolation):
+            self.kernel.invoke(probe, "kb.search", query="q")
+        again = self.spawn("probe")                        # a new grant while the directive holds
+        self.assertFalse(again.is_active())
+        self.assertEqual(self.rv.poll_once(), 0, "each grant is revoked once")
+        # the kernel audits it like any revocation (the reason is in the hashed arguments), and the chain holds
+        revoked = [r for r in self.kernel.audit.records if r.tool == "agent.revoke"]
+        self.assertEqual({r.grant_id for r in revoked}, {probe.grant_id, again.grant_id})
+        self.assertTrue(self.kernel.audit.verify())
+
+    def test_a_root_per_conversation_is_covered(self):
+        """Apps often make a root grant per conversation, not only the one given to instrument()."""
+        policy = parse_policy(POLICY, source="support")
+        conv = Grant.root(policy)
+        idle = self.kernel.spawn(conv, SpawnRequest("probe", frozenset({"kb.search"}), budget_fraction=0.1))
+        self.eng.revoke(agent="probe", project="shop", reason="probing", minutes=30)
+        self.assertEqual(self.rv.poll_once(), 1, "an idle grant in a tree seen before is revoked at once")
+        self.assertFalse(idle.is_active())
+        fresh = Grant.root(policy)                          # a tree the poller has never seen
+        with self.assertRaises(PolicyViolation):             # its first spawn is of the revoked agent
+            late = self.kernel.spawn(fresh, SpawnRequest("probe", frozenset({"kb.search"}), budget_fraction=0.1))
+            self.kernel.invoke(late, "kb.search", query="q")
+        other = self.kernel.spawn(fresh, SpawnRequest("helper", frozenset({"kb.search"}), budget_fraction=0.1))
+        self.assertEqual(self.kernel.invoke(other, "kb.search", query="q"), ["doc1", "doc2"])
+
+    def test_a_grant_first_seen_at_its_first_call_is_stopped_there(self):
+        """A grant that never passed through spawn (built directly) is caught by the check before each call."""
+        self.eng.revoke(agent="probe", project="shop", reason="probing", minutes=30)
+        self.rv.poll_once()
+        rogue = Grant.root(parse_policy(POLICY, source="support"), agent_name="probe")
+        with self.assertRaises(PolicyViolation):
+            self.kernel.invoke(rogue, "kb.search", query="q")
+        self.assertFalse(rogue.is_active())
+
+    def test_a_directive_that_expires_between_polls_stops_applying(self):
+        self.eng.revoke(agent="probe", project="shop", reason="probing", minutes=30)
+        self.rv.poll_once()
+        for d in self.rv.active.values():
+            d["expires"] = time.time() - 1            # it ran out after the last poll
+        self.assertTrue(self.spawn("probe").is_active())
+
+    def test_another_kernel_in_the_process_is_left_alone(self):
+        from agentdynamics.integrations import aegis as gov
+        other, other_root = build_kernel(parse_policy(POLICY, source="support"), registry())
+        g = gov.instrument(other, other_root, gate_models=False)     # no revocations for this one
+        self.addCleanup(g.uninstall)
+        self.eng.revoke(agent="probe", project="shop", reason="probing", minutes=30)
+        self.rv.poll_once()
+        theirs = other.spawn(other_root, SpawnRequest("probe", frozenset({"kb.search"}), budget_fraction=0.1))
+        self.assertTrue(theirs.is_active(), "a directive applies where revocations=True was asked for")
+        self.assertFalse(self.spawn("probe").is_active())
+
+    def test_clearing_a_directive_restores_nothing(self):
+        probe = self.spawn("probe")
+        rid = self.eng.revoke(agent="probe", project="shop", reason="probing", minutes=30)
+        self.rv.poll_once()
+        self.eng.clear_revocation(rid)
+        self.rv.poll_once()
+        self.assertFalse(probe.is_active(), "Aegis revocation is permanent; a cleared directive loosens nothing")
+        self.assertTrue(self.spawn("probe").is_active(), "but new grants are no longer refused")
+
+    def test_a_directive_for_every_agent_revokes_the_tree(self):
+        a, b = self.spawn("a"), self.spawn("b")
+        self.eng.revoke(agent=None, project="shop", reason="stop everything", minutes=5)
+        self.assertEqual(self.rv.poll_once(), 1)
+        self.assertEqual((self.root.is_active(), a.is_active(), b.is_active()), (False, False, False))
+
+    def test_an_expired_directive_does_nothing(self):
+        probe = self.spawn("probe")
+        self.eng.revoke(agent="probe", project="shop", reason="over", minutes=-1)
+        self.assertEqual(self.rv.poll_once(), 0)
+        self.assertTrue(probe.is_active())
+
+    def test_an_unreachable_server_revokes_nothing_and_raises_nothing(self):
+        import agentdynamics as ad
+        probe = self.spawn("probe")
+        ad.init(url="http://127.0.0.1:9", api_key="k-app", project="shop", otel=False, langchain=False, quiet=True)
+        self.assertEqual(self.rv.poll_once(), 0)
+        self.assertTrue(probe.is_active())
+        self.assertEqual(self.kernel.invoke(probe, "kb.search", query="q"), ["doc1", "doc2"])
 
 
 if __name__ == "__main__":

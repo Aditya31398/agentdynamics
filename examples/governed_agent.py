@@ -104,7 +104,10 @@ TICKETS = ["Where is my order?", "I was double charged", "Cancel my subscription
 
 def main(n=40):
     ad.init(project="helpdesk", environment="production", quiet=True)
-    governance.instrument(kernel, root, watchdog=governance.Watchdog(max_repeated_denials=3, max_run_cost_usd=2.0))
+    # revocations=True: the server can revoke an agent here too (a directive from the console, `agentdynamics
+    # revoke`, or [enforcement] probing across runs), applied through Kernel.revoke
+    governance.instrument(kernel, root, watchdog=governance.Watchdog(max_repeated_denials=3, max_run_cost_usd=2.0),
+                          revocations=True)
     random.seed(4)
     for i in range(n):
         kind = "injection" if i % 9 == 4 else "escalation" if i % 11 == 7 else "research" if i % 13 == 6 else "normal"

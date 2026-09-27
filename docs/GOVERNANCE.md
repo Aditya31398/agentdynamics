@@ -70,6 +70,47 @@ revocation is recorded in both the Aegis audit log and the task.
 The default (same tool refused 3 times in a row) catches the classic prompt-injection pattern: a retrieved
 document tells the agent to read secrets, and the agent keeps trying with different payloads.
 
+### 3b. Enforce from the server: revocation directives
+
+The watchdog sees one run. The server sees them all, so it can spot an agent probing its policy a little in each
+of many runs, and it can act on an operator's decision. It does so with a **directive**: revoke agent *A* in
+project *P* (or every agent, or every project) until a given time.
+
+```python
+governance.instrument(kernel, root, revocations=True)   # opt in: lets the server stop agents in this process
+```
+
+```bash
+agentdynamics revoke --agent researcher --project helpdesk --reason "running up opus spend" --minutes 60
+agentdynamics revoke --list
+agentdynamics revoke --clear <id>
+```
+
+or the **Revocation directives** card on the Governance page (an admin key issues and clears), or
+`POST /api/revocations`. To have the server issue them itself:
+
+```toml
+[enforcement]
+probing = { denials = 10, runs = 3, window_minutes = 30, revoke_minutes = 60 }
+```
+
+That revokes an agent whose calls the policy refused 10 times across 3 or more runs within 30 minutes.
+
+- **How it arrives.** With `revocations=True`, a background thread polls `GET /api/revocations` every 10 seconds,
+  with the key given to `agentdynamics.init()` (the ingest role is enough). It revokes the matching grants through
+  `kernel.revoke`, in every grant tree it has seen (an app often makes a root per conversation). Before every
+  governed call and on every spawn, it checks the grant against the directives too, so a grant it hasn't seen
+  yet is revoked before it acts. The kernel enforces, and records each revocation in its audit log; the task
+  shows it with the directive's id and reason.
+- **It can only take away.** A directive revokes and nothing else, and Aegis revocation is permanent: clearing a
+  directive stops it applying to new grants and restores none. This keeps the promise that nothing here can
+  loosen Aegis.
+- **Failing.** If the server can't be reached, nothing is revoked and the agent carries on, as it would without
+  this; the process warns once. A directive takes effect within one poll interval. Clocks matter: a directive's
+  expiry is compared with the process's clock.
+- **Trust.** The process acts on directives from the server it is configured to send telemetry to. Someone
+  controlling that server could stop agents, but never grant them anything.
+
 ### 4. Observe → govern: least-privilege policy from real behaviour
 
 ```bash

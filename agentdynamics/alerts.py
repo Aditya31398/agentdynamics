@@ -10,7 +10,8 @@ Destinations are `[[alerts.webhooks]]` in agentdynamics.toml:
     format = "pagerduty"                 # json (default) | slack | pagerduty
     routing_key_env = "PD_ROUTING_KEY"   # PagerDuty Events API v2 integration key (or routing_key = "...")
     min_severity = "critical"            # info | warning (default) | critical
-    kinds = ["events", "slos"]           # default ["events"]; "slos" adds SLO burn-rate alerts
+    kinds = ["events", "slos"]           # default ["events"]; "slos" adds SLO burn-rate alerts,
+                                         # "revocations" the directives that stop an agent (server-side #8)
     projects = ["checkout"]              # optional: only these projects
     rules = ["run_failed"]               # optional: only these health rules
 
@@ -37,7 +38,7 @@ from collections import OrderedDict
 from urllib.parse import quote
 
 FORMATS = ("json", "slack", "pagerduty")
-KINDS = ("events", "slos")
+KINDS = ("events", "slos", "revocations")
 SEV = {"info": 1, "warning": 2, "critical": 3}
 # https://raw.githubusercontent.com/PagerDuty/api-schema/main/reference/events-v2/openapiv3.json
 PAGERDUTY_URL = "https://events.pagerduty.com/v2/enqueue"
@@ -135,6 +136,15 @@ def from_slo(key, c, action, now):
             "project": (c.get("scope") or {}).get("project") or None, "slo": c["slo"], "ts": now, "condition": c}
 
 
+def from_revocation(d):
+    who = f"agent {d['agent']}" if d.get("agent") else "every agent"
+    where = f" in project {d['project']}" if d.get("project") else ""
+    until = time.strftime("%Y-%m-%d %H:%M", time.localtime(d["expires"]))
+    return {"kind": "revocation", "action": "trigger", "key": f"revocation/{d['id']}", "severity": "critical",
+            "summary": f"Revoked {who}{where} until {until}: {d['reason']}", "project": d.get("project"),
+            "ts": d["created"], "revocation": d}
+
+
 # ---------------------------------------------------------------- formats
 
 def _dedup_key(key):
@@ -148,6 +158,8 @@ def link(console_url, alert):
     base = console_url.rstrip("/")
     if alert["kind"] == "event":
         return f"{base}/#/task/{quote(alert['event']['task_id'], safe='')}"
+    if alert["kind"] == "revocation":
+        return f"{base}/#/governance"
     return f"{base}/#/slos"
 
 
@@ -172,6 +184,9 @@ def render(dest, alerts, console_url=""):
                  "link": link(console_url, a), **a["condition"]} for a in alerts if a["kind"] == "slo"]
         if slos:
             bodies.append({"source": "agentdynamics", "slo_alerts": slos})
+        revs = [dict(a["revocation"], summary=a["summary"]) for a in alerts if a["kind"] == "revocation"]
+        if revs:
+            bodies.append({"source": "agentdynamics", "revocations": revs})
         return bodies
     # one line (Slack) or one alert (PagerDuty) per dedup key, so a burst of the same violation reads as one
     groups = OrderedDict()
@@ -185,6 +200,9 @@ def render(dest, alerts, console_url=""):
             where = " / ".join(_slack_escape(x) for x in (a.get("project"), a.get("task_type")) if x)
             url = link(console_url, a)
             ref = f" · <{url}|{'latest' if len(g) > 1 else 'open'}>" if url else ""
+            if a["kind"] == "revocation":
+                lines.append(f"*REVOKED* · {_slack_escape(a['summary'])}{ref}")
+                continue
             if a["kind"] == "event":
                 e = a["event"]
                 times = f" ×{len(g)}" if len(g) > 1 else ""
@@ -200,7 +218,10 @@ def render(dest, alerts, console_url=""):
         if a["action"] == "resolve":
             bodies.append({"event_action": "resolve", "dedup_key": _dedup_key(key)})
             continue
-        if a["kind"] == "event":
+        if a["kind"] == "revocation":
+            d = a["revocation"]
+            details, group, klass = dict(d), d.get("agent") or "all agents", "revocation"
+        elif a["kind"] == "event":
             e = a["event"]
             details = {"rule": e["rule"], "rule_id": e["rule_id"], "message": e["message"], "value": e.get("value"),
                        "task_id": e["task_id"], "run_id": e.get("run_id"), "project": e["project"],

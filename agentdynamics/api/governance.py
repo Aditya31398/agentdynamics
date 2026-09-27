@@ -4,7 +4,7 @@ import time
 from collections import Counter, defaultdict
 
 from ..analysis import pct
-from ..store import rows
+from ..store import revocations as list_revocations, rows
 
 
 
@@ -22,6 +22,15 @@ class GovernanceMixin:
             out += rows(self.con, f"SELECT {cols} FROM steps WHERE task_id IN ({','.join('?' * len(chunk))}){extra} "
                                   "ORDER BY task_id, seq", chunk)
         return out
+
+    def revocations(self, q):
+        """Revocation directives (#8), newest first, each with its status. `active=1` and `project=` are what
+        the in-process poller asks for."""
+        now = time.time()
+        out = list_revocations(self.con, now, active=q.get("active") == "1", project=q.get("project"))
+        for d in out:
+            d["status"] = "cleared" if d["cleared"] else "expired" if d["expires"] <= now else "active"
+        return {"revocations": out, "now": now, "probing": (self.e.cfg.get("enforcement") or {}).get("probing")}
 
     def governance(self, q):
         ts = self._governed(q)

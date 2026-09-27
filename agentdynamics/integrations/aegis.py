@@ -29,6 +29,9 @@ import json
 import math
 import threading
 import time
+import urllib.parse
+import urllib.request
+import weakref
 from collections import Counter
 
 from .. import autotrace as at
@@ -115,7 +118,13 @@ def _wrap_kernel(kernel):
         return
     orig_invoke, orig_ainvoke, orig_spawn, orig_revoke = kernel.invoke, kernel.ainvoke, kernel.spawn, kernel.revoke
 
+    def check(grant):
+        rv = getattr(kernel, "_agentdynamics_revocations", None)    # this kernel's, not another's in-process
+        if rv is not None:
+            rv.check_use(grant)
+
     def invoke(grant, tool, /, **args):
+        check(grant)
         t0 = time.time()
         with bind(grant):
             try:
@@ -127,6 +136,7 @@ def _wrap_kernel(kernel):
             return r
 
     async def ainvoke(grant, tool, /, **args):
+        check(grant)
         t0 = time.time()
         tok = _grant.set(grant)
         try:
@@ -140,6 +150,7 @@ def _wrap_kernel(kernel):
         return r
 
     def spawn(parent, req):
+        check(parent)
         t0 = time.time()
         try:
             child = orig_spawn(parent, req)
@@ -151,6 +162,7 @@ def _wrap_kernel(kernel):
                     "start_ts": t0, "end_ts": time.time(), "agent": parent.agent_name, "governed": True,
                     "rule": "spawn.granted", "text": f"spawned {child.agent_name} (depth {child.depth}) "
                                                      f"with {sorted(req.tools)}"}, "aegis.spawn")
+        check(child)                     # a new grant for an agent a directive names is revoked before it acts
         return child
 
     def revoke(grant, reason="operator"):
@@ -292,27 +304,158 @@ class Watchdog:
 
 # ---------------------------------------------------------------- entry point
 
+# ---------------------------------------------------------------- 5. server-side revocation (#8)
+
+class Revocations:
+    """Directives from the AgentDynamics server to revoke an agent's grants, applied through Kernel.revoke.
+
+    The server issues one when an operator asks (`agentdynamics revoke`, POST /api/revocations) or when it sees
+    an agent probing its policy across runs ([enforcement] probing), which no single process can see. This polls
+    for the directives that apply to this process's project and revokes the grants they name: at once in every
+    grant tree it has seen (apps often make a root per conversation, not only the one given to instrument()),
+    and at the point of use -- before any governed call, and on spawn -- for a grant not seen yet. The kernel
+    enforces and audits each revocation.
+    A directive can only take privileges away (invariant 6), and clearing it restores nothing: Aegis revocation
+    is permanent. If the server can't be reached nothing is revoked and the agent carries on, as without this.
+
+    It uses the URL, key and project given to agentdynamics.init(). The key needs the ingest role.
+    """
+
+    def __init__(self, interval=10.0):
+        self.interval = interval
+        self.active = {}                 # directive id -> directive, as of the last successful poll
+        self.applied = []                # {"directive", "agent", "grant_id", "ts"} for each grant revoked here
+        self._done = set()               # (directive id, grant id)
+        self._roots = weakref.WeakValueDictionary()   # grant id -> root, for every tree seen (kept only while alive)
+        self._lock = threading.RLock()
+        self._stop = threading.Event()
+        self.kernel = self.root = None
+
+    def start(self, kernel, root):
+        self.kernel, self.root = kernel, root
+        if self.interval:
+            threading.Thread(target=self._loop, daemon=True, name="agentdynamics-revocations").start()
+
+    def stop(self):
+        self._stop.set()
+
+    def _loop(self):
+        while True:
+            try:
+                self.poll_once()
+            except Exception as ex:      # never into the agent
+                at._warn("revocations-err", f"revocation poll failed: {ex}")
+            if self._stop.wait(self.interval):
+                return
+
+    def poll_once(self):
+        """Fetch the active directives and apply them; returns the number of grants revoked."""
+        url = at._cfg.get("url")
+        if not url:
+            at._warn("revocations-nourl", "revocations=True needs agentdynamics.init(url=...); nothing is polled")
+            return 0
+        q = urllib.parse.urlencode({"active": "1", "project": at._cfg.get("project") or "default"})
+        headers = {"Authorization": f"Bearer {at._cfg['key']}"} if at._cfg.get("key") else {}
+        try:
+            with urllib.request.urlopen(urllib.request.Request(f"{url}/api/revocations?{q}", headers=headers),
+                                        timeout=5) as r:
+                data = json.loads(r.read())
+        except Exception as ex:
+            at._warn("revocations-down", f"could not fetch revocation directives from {url} ({ex}); "
+                                         "nothing is revoked until it answers")
+            return 0
+        with self._lock:
+            self.active = {d["id"]: d for d in data.get("revocations", [])}
+        return self.apply()
+
+    def _live(self):
+        now = time.time()
+        with self._lock:
+            return [d for d in self.active.values() if (d.get("expires") or 0) > now]
+
+    def apply(self):
+        """Revoke every live grant an active directive names; returns how many."""
+        if self.kernel is None or self.root is None:
+            return 0
+        return sum(self._revoke(d, g) for d in self._live() for g in self._targets(d))
+
+    def note(self, grant):
+        root = grant                     # up the parent chain (Grant.root is a constructor, not this)
+        while root.parent is not None:
+            root = root.parent
+        self._roots[root.grant_id] = root
+
+    def _all_roots(self):
+        return [self.root] + [r for r in list(self._roots.values()) if r is not self.root]
+
+    def _targets(self, d):
+        if not d.get("agent"):
+            return self._all_roots()     # every agent: every tree
+        out, stack = [], self._all_roots()
+        while stack:
+            g = stack.pop()
+            if g.agent_name == d["agent"]:
+                out.append(g)            # its subtree goes with it
+            else:
+                stack.extend(g.children)
+        return out
+
+    def _revoke(self, d, grant):
+        key = (d["id"], grant.grant_id)
+        with self._lock:
+            if key in self._done or not grant.is_active():
+                return 0
+            self._done.add(key)
+        self.kernel.revoke(grant, reason=f"agentdynamics directive {d['id']}: {d.get('reason')}")
+        self.applied.append({"directive": d["id"], "agent": grant.agent_name, "grant_id": grant.grant_id,
+                             "ts": time.time()})
+        return 1
+
+    def check_use(self, grant):
+        """Before a grant acts: if an active directive names its agent or an ancestor's (or every agent),
+        revoke first, so the call is refused. Free while no directive is active."""
+        try:
+            self.note(grant)             # so a later directive finds this tree even while it sits idle
+            if not self.active:
+                return
+            chain, g = [], grant
+            while g is not None:
+                chain.append(g)
+                g = g.parent
+            for d in self._live():
+                hit = chain[-1] if not d.get("agent") else next((g for g in chain if g.agent_name == d["agent"]), None)
+                if hit is not None:
+                    self._revoke(d, hit)
+                    return
+        except Exception as ex:          # the check itself must not break the agent
+            at._warn("revocations-check", f"could not check a grant against revocation directives: {ex}")
+
+
 class Governance:
-    def __init__(self, kernel, root, gate, watchdog, unregister):
+    def __init__(self, kernel, root, gate, watchdog, unregister, revocations=None):
         self.kernel, self.root, self.gate, self.watchdog, self._unregister = kernel, root, gate, watchdog, unregister
+        self.revocations = revocations
 
     def uninstall(self):
         self._unregister()
 
 
-def instrument(kernel, root=None, *, gate_models=True, watchdog=None, correlate=True, record_decisions=True):
+def instrument(kernel, root=None, *, gate_models=True, watchdog=None, correlate=True, record_decisions=True,
+               revocations=None):
     """Connect an Aegis kernel to AgentDynamics. Call after `agentdynamics.init()` and `build_kernel()`.
 
     kernel      the Aegis Kernel
     root        the root Grant (model calls outside a bound grant are charged to it)
     gate_models reserve model spend against the Aegis budget before each call
     watchdog    a Watchdog, or None
+    revocations True (or a Revocations) to apply the server's revocation directives: off by default, since it
+                lets the server stop agents in this process. Needs `root`.
     """
     _require_aegis()
     _state.update(kernel=kernel, root=root)
     undo = []
-    if record_decisions:
-        _wrap_kernel(kernel)
+    if record_decisions or revocations:
+        _wrap_kernel(kernel)             # the spawn hook applies directives to new grants
     if correlate:
         try:
             from aegis.observe import register_context_provider
@@ -356,10 +499,20 @@ def instrument(kernel, root=None, *, gate_models=True, watchdog=None, correlate=
     at._hooks["run_meta"].append(meta)
     undo.append(lambda: at._hooks["run_meta"].remove(meta))
 
+    rv = None
+    if revocations:
+        if root is None:
+            at._warn("revocations-noroot", "revocations need the root grant: instrument(kernel, root, revocations=True)")
+        else:
+            rv = revocations if isinstance(revocations, Revocations) else Revocations()
+            kernel._agentdynamics_revocations = rv
+            rv.start(kernel, root)
+            undo += [rv.stop, lambda: setattr(kernel, "_agentdynamics_revocations", None)]
+
     def unregister():
         for u in undo:
             try:
                 u()
             except ValueError:
                 pass
-    return Governance(kernel, root, gate, watchdog, unregister)
+    return Governance(kernel, root, gate, watchdog, unregister, rv)
