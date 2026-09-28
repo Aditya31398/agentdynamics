@@ -19,7 +19,7 @@ import time
 import traceback
 from collections import Counter, defaultdict
 
-from . import alerts as alertmod, analysis, config as cfgmod, pricing, slo as slomod, store
+from . import alerts as alertmod, analysis, config as cfgmod, pricing, slo as slomod, store, tripwires as tripmod
 from .collectors import aegis_audit, claude_code, generic, inbox, langfuse, langsmith, otlp, spans as spanmod
 from .privacy import Redactor
 
@@ -110,6 +110,10 @@ class Engine:
         self._store_sdk_sig = {}              # run id -> hash of the payload last read
         self.lock = threading.RLock()
         self.redactor = Redactor(self.cfg["privacy"])
+        self.tripwires = tripmod.from_config(self.cfg)
+        for name in (self.tripwires.ignored if self.tripwires else ()):
+            print(f"[agentdynamics] tripwire canary {name!r} ignored: shorter than {tripmod.MIN_CANARY} characters "
+                  "would match ordinary text", file=sys.stderr)
         self._files = {}          # path -> (mtime, size, run)
         self._runs = {}           # run id -> run   (trace/SDK/transcript)
         self._tasks = {}          # run id -> [task]
@@ -510,6 +514,46 @@ class Engine:
                                             now + float(p.get("revoke_minutes", 60)) * 60))
         return out
 
+    def _detect_tripwires(self):
+        """[enforcement.tripwires]: an agent that touched a tripwire in `runs` separate runs within the window
+        is revoked wherever it runs. One run is not enough: a single planted document can cause one touch, and
+        a directive stops the agent for every user (tripwires.py). The touching run itself is stopped in
+        process, before the call, by the Aegis integration. Off unless [enforcement.tripwires] is set: it acts on
+        running agents -- touches marked in process are counted too, but only once someone has asked for this."""
+        t = (self.cfg.get("enforcement") or {}).get("tripwires") or {}
+        minutes = float(t.get("revoke_minutes", 60))
+        if not t or minutes <= 0:
+            return []
+        now = self._clock()
+        window = float(t.get("window_minutes", 60)) * 60
+        issued = store.revocations(self.con, now, limit=10000)
+        last = {}                          # a directive restarts the count, as for probing
+        for d in issued:
+            if d["source"] == "tripwire":
+                last[(d["project"], d["agent"])] = max(last.get((d["project"], d["agent"]), 0), d["created"])
+        active = {(d["project"], d["agent"]) for d in issued if d["cleared"] is None and d["expires"] > now}
+        seen = defaultdict(lambda: [set(), Counter()])
+        for run in self._runs.values():
+            if (run.get("ended") or run.get("started") or 0) < now - window:
+                continue
+            project = run.get("project") or "default"
+            for s in run["steps"]:
+                if not (s.get("tripwire") and s.get("agent")):
+                    continue               # a directive names an agent: without one there is nothing to revoke
+                key = (project, s["agent"])
+                if (s.get("ts") or 0) <= max(now - window, last.get(key, 0)):
+                    continue
+                seen[key][0].add(run["id"])
+                seen[key][1][s["tripwire"]] += 1
+        out = []
+        for (project, agent), (runs, what) in seen.items():
+            if len(runs) < int(t.get("runs", 2)) or (project, agent) in active:
+                continue
+            reason = (f"tripwire: touched in {len(runs)} runs within {window / 60:g} min "
+                      f"({', '.join(f'{w} x{n}' for w, n in what.most_common(3))})")
+            out.append(store.add_revocation(self.con, project, agent, reason, "tripwire", now, now + minutes * 60))
+        return out
+
     def _alert_new_revocations(self):
         """Alert on directives issued since the last look, from wherever they came (this process, another
         instance, the CLI): an agent was stopped, and someone should know why. On the alert tick, so a
@@ -709,6 +753,9 @@ class Engine:
                         dirty.pop(rid, None)
                         self._drop_run_file(r)
             dirty = {k: v for k, v in dirty.items() if v["steps"]}
+            if self.tripwires:            # config is read at start, so a new run is the only thing to mark
+                for run in dirty.values():
+                    self.tripwires.mark(run)
             # an "in progress" outcome settles as time passes, with or without new traffic
             settle = self._settle_due is not None and self._clock() >= self._settle_due
             if (not dirty and not removed and not force and not self._first and not self._regrade and not settle
@@ -750,6 +797,7 @@ class Engine:
             self.stats["tasks_rescored"] = len(self._cache.changed)
             self._queue_event_alerts(events)
             self._detect_probing()
+            self._detect_tripwires()
             self._first = False
             self.last_refresh = time.time()
             self.last_duration = round(self.last_refresh - t0, 2)

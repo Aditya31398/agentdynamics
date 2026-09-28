@@ -8,8 +8,10 @@
     const d = await api("governance");
     if (!alive()) return;
     const k = d.kpis;
+    const tw = d.tripwires;
     if (!k.governed_tasks) {
       host.innerHTML = head("Governance", "Policy enforcement from <b>Aegis</b>, seen from the agent's side: what was blocked, why, what it cost, and which grants are never used.") +
+        tripwireCard(tw) +
         `<div class="card"><h2>No governed runs yet</h2><p class="small muted">Wrap your Aegis kernel. Every decision is then recorded here, model spend is charged to the Aegis budget, and a watchdog can revoke misbehaving agents.</p>
         <div class="code-block">pip install aegis-kernel agentdynamics
 
@@ -21,9 +23,11 @@ agentdynamics.init(project="support")
 kernel, root = build_kernel(load_policy("policy.yaml"), registry)
 governance.instrument(kernel, root, watchdog=governance.Watchdog(max_repeated_denials=3))</div>
         <p class="small muted" style="margin-top:10px">Already have Aegis audit logs? Send the JSONL to <code>/api/ingest/records</code> or point an <code>inbox</code> source at it.</p></div>`;
+      bindRows(host);
       return;
     }
     host.innerHTML = head("Governance", "Aegis decides what agents may do; AgentDynamics shows what they tried. Denials, budget stops and watchdog revocations are tied back to the task, workflow and node they happened in. <b>Generate tightened policy</b> turns observed behaviour into a least-privilege Aegis policy.") +
+      tripwireCard(tw) +
       `<div class="kpis">
         ${kpi("Governed tasks", num(k.governed_tasks), `${k.policies} policy version(s)`)}
         ${kpi("Policy decisions", num(k.decisions), "allowed + denied")}
@@ -33,6 +37,7 @@ governance.instrument(kernel, root, watchdog=governance.Watchdog(max_repeated_de
         ${kpi("Boundary probing", num(k.probing_tasks), "tasks where one tool was refused 3+ times in a row")}
         ${kpi("Spend on blocked calls", usd(k.blocked_cost), "tokens used to generate refused calls")}
         ${kpi("Compliance score", k.compliance == null ? "–" : Math.round(k.compliance), "avg over governed tasks")}
+        ${kpi("Tripwires touched", num(tw.tasks), `tasks · ${tw.set.tools + tw.set.canaries ? `${tw.set.tools + tw.set.canaries} set on the server` : "set in process only"}`)}
       </div>
       <div class="grid g2">
         ${card("Denials by rule", `<div id="gv-rule"></div>`, "Aegis rule ids")}
@@ -85,6 +90,25 @@ governance.instrument(kernel, root, watchdog=governance.Watchdog(max_repeated_de
     });
     bindRows(host);
   };
+
+  // Tripwires: decoy tools and canary values no legitimate agent touches. Shown first when touched: each touch
+  // is certain evidence, not a statistic.
+  function tripwireCard(tw) {
+    if (!tw || !tw.recent.length) return "";
+    const r = tw.directives;
+    const policy = (r
+      ? `An agent that touches them in ${r.runs} runs within ${r.window_minutes} min is revoked for ${r.revoke_minutes} min wherever it runs. `
+      : "The server revokes no agent for them (set <code>[enforcement.tripwires]</code> to revoke one that touches them in several runs). ")
+      + "A process using the Aegis integration's tripwires stops the touching run itself, before the call.";
+    return `<div class="card" style="margin-bottom:14px;border-color:var(--critical)"><div class="between"><h2 style="margin:0">Tripwires touched</h2>
+        <span class="small muted">${num(tw.touches)} touch(es) in ${num(tw.tasks)} task(s)</span></div>
+      <p class="small muted" style="margin:6px 0 8px">Decoy tools and planted canary values no legitimate agent uses: each touch means an agent went where it had no reason to. ${policy}</p>
+      <div class="table-wrap"><table id="gv-trips"><thead><tr><th>When</th><th>Touched</th><th>Step</th><th>Agent</th><th>Task</th></tr></thead><tbody>
+      ${tw.recent.map((r) => `<tr class="click" data-href="#/task/${encodeURIComponent(r.task_id)}"><td class="small muted" style="white-space:nowrap">${dt(r.ts)}</td>
+        <td><span class="tag bad">${esc(r.what)}</span></td><td class="small">${esc(r.kind === "llm" ? "model response" : r.step || "–")}</td>
+        <td class="small">${esc(r.agent || "–")}<div class="muted">${esc(r.project || "")}</div></td>
+        <td><div class="truncate small" style="max-width:260px">${esc(r.prompt)}</div><span class="tag">${esc(r.workflow || "")}</span></td></tr>`).join("")}</tbody></table></div></div>`;
+  }
 
   // Server-side revocation (#8): directives the in-process integration applies through Kernel.revoke
   async function directives(box) {

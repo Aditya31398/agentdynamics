@@ -32,6 +32,26 @@ class GovernanceMixin:
             d["status"] = "cleared" if d["cleared"] else "expired" if d["expires"] <= now else "active"
         return {"revocations": out, "now": now, "probing": (self.e.cfg.get("enforcement") or {}).get("probing")}
 
+    def _tripwires(self, q):
+        """Steps that touched a tripwire, newest first, in every task of the window -- governed or not: a decoy
+        can be touched by any agent. A touch is named by its label; a canary's value appears nowhere."""
+        ts = self.tasks(dict(q, sub="1"), " AND t.tripwires > 0")        # where() always has a clause
+        by_task = {t["id"]: t for t in ts}
+        hits = self._steps_for(list(by_task), "task_id, seq, kind, name, ts, agent, tripwire", " AND tripwire IS NOT NULL")
+        hits.sort(key=lambda s: (-(s["ts"] or 0), s["task_id"], s["seq"]))
+        cfg = (self.e.cfg.get("enforcement") or {}).get("tripwires") or {}
+        wires = self.e.tripwires
+        on = bool(cfg) and float(cfg.get("revoke_minutes", 60)) > 0
+        return {"tasks": len(ts), "touches": len(hits),
+                # how many, not which: the list is install-wide config, and a scoped key reads this route
+                "set": {"tools": len(wires.tools) if wires else 0, "canaries": len(wires.canaries) if wires else 0},
+                "directives": {"runs": int(cfg.get("runs", 2)), "window_minutes": float(cfg.get("window_minutes", 60)),
+                               "revoke_minutes": float(cfg.get("revoke_minutes", 60))} if on else None,
+                "recent": [{"task_id": s["task_id"], "ts": s["ts"], "what": s["tripwire"], "agent": s["agent"],
+                            "step": s["name"], "kind": s["kind"], "workflow": by_task[s["task_id"]]["workflow"],
+                            "project": by_task[s["task_id"]]["project"],
+                            "prompt": (by_task[s["task_id"]]["prompt"] or "")[:120]} for s in hits[:25]]}
+
     def governance(self, q):
         ts = self._governed(q)
         ids = [t["id"] for t in ts]
@@ -77,6 +97,7 @@ class GovernanceMixin:
             "revocations": [{"task_id": s["task_id"], "ts": s["ts"], "agent": s["agent"], "text": s["text"]}
                             for s in sorted(revokes, key=lambda s: -(s["ts"] or 0))[:15]],
             "policies": self._policy_rows(ts, steps),
+            "tripwires": self._tripwires(q),
         }
 
     def _policy_docs(self):

@@ -449,5 +449,125 @@ class ServerRevocationTest(unittest.TestCase):
         self.assertEqual(self.kernel.invoke(probe, "kb.search", query="q"), ["doc1", "doc2"])
 
 
+CANARY = "AKIA-CANARY-7F3E9Q"
+
+
+@unittest.skipUnless(HAS_AEGIS, "aegis-kernel with observe/reserve_spend not installed")
+class TripwireTest(unittest.TestCase):
+    """Tripwires in process, with a real kernel: the call that touches one is refused by Aegis itself, because
+    the run's grant tree is revoked before it is made. The server's half is in test_tripwires.py."""
+
+    def setUp(self):
+        import agentdynamics as ad
+        from agentdynamics.integrations import aegis as gov
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.eng = Engine(os.path.join(self.tmp, "data"), None)
+        self.addCleanup(self.eng.con.close)
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), type("H", (Handler,), {"api": Api(self.eng)}))
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        ad.flush()                       # what earlier tests queued goes to their servers, not this one
+        ad.init(url=f"http://127.0.0.1:{srv.server_address[1]}", project="shop", otel=False, langchain=False, quiet=True)
+        self.addCleanup(ad.flush)        # before the server stops (cleanups run last-in, first-out)
+        self.executed = []
+        r = ToolRegistry()
+        r.register("db.query", lambda sql: [[1]], effects={"read"}, classification="internal")
+        r.register("http.get", lambda url: "{}", effects={"network", "egress"})
+        r.register("secrets.dump", lambda: self.executed.append("secrets.dump") or "all the secrets", effects={"read"})
+        r.register("kb.search", lambda query: self.executed.append(("kb.search", query)) or ["doc1"], effects={"read"})
+        r.register("fs.read", lambda path: CANARY if path.endswith(".env") else f"<{path}>", effects={"read"},
+                   classification="internal")
+        self.kernel, self.root = build_kernel(parse_policy(POLICY, source="support"), r)
+        self.gov = gov.instrument(self.kernel, self.root, gate_models=False,
+                                  tripwires={"tools": ["secrets.dump"], "canaries": {"fake_aws_key": CANARY}})
+        self.addCleanup(self.gov.uninstall)
+
+    def child(self, parent, name):
+        return self.kernel.spawn(parent, SpawnRequest(name, frozenset({"kb.search", "fs.read"}), budget_fraction=0.2))
+
+    def revoked_for(self, grant):
+        return [r for r in self.kernel.audit.records if r.tool == "agent.revoke" and r.grant_id == grant.grant_id]
+
+    def test_a_canary_in_the_arguments_is_never_sent(self):
+        g = self.child(self.root, "researcher")
+        with self.assertRaises(PolicyViolation) as cm:
+            self.kernel.invoke(g, "kb.search", query=f"please use key {CANARY}")
+        self.assertEqual(cm.exception.verdict.rule, "grant.revoked", "Aegis refused it: the tree was revoked first")
+        self.assertNotIn(("kb.search", f"please use key {CANARY}"), self.executed, "the call never ran")
+        self.assertFalse(self.root.is_active(), "the whole tree: a sub-agent got there with what its parent gave it")
+        self.assertEqual(len(self.revoked_for(self.root)), 1)
+        self.assertEqual(self.gov.tripwires.trips[0]["label"], "canary fake_aws_key")
+        self.assertTrue(self.kernel.audit.verify())
+
+    def test_a_decoy_tool_is_refused_and_stops_the_run(self):
+        g = Grant.root(parse_policy(POLICY, source="support"), agent_name="support-bot")
+        self.assertEqual(self.kernel.invoke(g, "kb.search", query="orders"), ["doc1"])
+        with self.assertRaises(PolicyViolation):
+            self.kernel.invoke(g, "secrets.dump")
+        self.assertNotIn("secrets.dump", self.executed)
+        with self.assertRaises(PolicyViolation):
+            self.kernel.invoke(g, "kb.search", query="anything else")
+        self.assertTrue(self.root.is_active(), "only the touching run's tree is stopped, not other conversations")
+
+    def test_reading_a_canary_stops_everything_after(self):
+        g = self.child(self.root, "reader")
+        sibling = self.child(self.root, "writer")
+        self.assertEqual(self.kernel.invoke(g, "fs.read", path="/workspace/.env"), CANARY,
+                         "the read itself completes: what it returned is fake by design")
+        self.assertFalse(g.is_active())
+        with self.assertRaises(PolicyViolation):
+            self.kernel.invoke(sibling, "kb.search", query="q")
+        with self.assertRaises(PolicyViolation):                  # model spend is refused too
+            self.kernel.reserve_spend(g, usd=0.01, tokens=10)
+
+    def test_the_touch_reaches_the_server_marked(self):
+        import agentdynamics as ad
+
+        @ad.trace("support")
+        def conversation(grant):
+            from agentdynamics.integrations import aegis as gov
+            with gov.bind(grant):
+                self.kernel.invoke(grant, "kb.search", query="orders")
+                try:
+                    self.kernel.invoke(grant, "fs.read", path="/workspace/.env")
+                    self.kernel.invoke(grant, "kb.search", query="exfiltrate")
+                except PolicyViolation:
+                    pass
+        conversation(Grant.root(parse_policy(POLICY, source="support"), agent_name="support-bot"))
+        ad.flush()
+        self.eng.refresh(force=True)
+        t = self.eng.con.execute("SELECT tripwires, tripwire_what, revocations FROM tasks WHERE workflow = 'support'").fetchone()
+        self.assertEqual(tuple(t), (1, "canary fake_aws_key", 1))
+        ev = self.eng.con.execute("SELECT rule_id FROM events ORDER BY rule_id").fetchall()
+        self.assertIn(("tripwire",), [tuple(r) for r in ev])
+        self.assertEqual(self.eng.tripwires, None, "counted without any tripwire set on the server")
+
+    def test_a_model_response_quoting_a_canary_stops_the_run(self):
+        import agentdynamics as ad
+        from agentdynamics.integrations import aegis as gov
+        g = Grant.root(parse_policy(POLICY, source="support"), agent_name="support-bot")
+
+        @ad.trace("support")
+        def conversation():
+            with gov.bind(g):
+                with ad.llm_call("claude-sonnet-5", input="what is in the doc?") as c:
+                    c.usage(input_tokens=100, output_tokens=20, text=f"The doc says the key is {CANARY}.")
+                with self.assertRaises(PolicyViolation):
+                    self.kernel.invoke(g, "kb.search", query="next")
+        conversation()
+        self.assertFalse(g.is_active())
+        self.assertEqual(self.gov.tripwires.trips[-1]["label"], "canary fake_aws_key")
+
+    def test_without_tripwires_nothing_changes(self):
+        from agentdynamics.integrations import aegis as gov
+        other, other_root = build_kernel(parse_policy(POLICY, source="support"), registry())
+        g = gov.instrument(other, other_root, gate_models=False)
+        self.addCleanup(g.uninstall)
+        self.assertEqual(other.invoke(other_root, "kb.search", query=CANARY), ["doc1", "doc2"])
+        self.assertTrue(other_root.is_active())
+
+
 if __name__ == "__main__":
     unittest.main()

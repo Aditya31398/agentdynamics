@@ -296,6 +296,9 @@ def governance_metrics(t, run, steps, tools):
     t["spend_denials"] = sum(1 for s in denied if s["kind"] == "llm")
     t["budget_denials"] = sum(1 for s in denied if str(s.get("rule") or "").startswith("budget."))
     t["revocations"] = sum(1 for s in steps if s["kind"] == "notice" and s.get("name") == "revoked")
+    hits = [s["tripwire"] for s in steps if s.get("tripwire")]
+    t["tripwires"] = len(hits)
+    t["tripwire_what"] = ", ".join(sorted(set(hits)))[:300] or None
     t["blocked_cost"] = round(sum(s.get("attributed_cost") or 0 for s in tool_denied), 6)
     t["denied_rules"] = dict(Counter(s.get("rule") or "unknown" for s in denied))
     # Probing is "refused again and again without getting anywhere". Counting only repeats of the
@@ -514,6 +517,8 @@ DEFAULT_RULES = [
      "severity": "critical", "message": "Same forbidden call attempted {v} times in a row (prompt injection or stuck agent)"},
     {"id": "revoked", "name": "Grant revoked", "metric": "revocations", "op": ">=", "value": 1, "severity": "critical",
      "message": "The agent's authority was revoked mid-run"},
+    {"id": "tripwire", "name": "Tripwire touched", "metric": "tripwires", "op": ">=", "value": 1, "severity": "critical",
+     "message": "Touched {tripwire_what}: a decoy no legitimate agent uses"},
     {"id": "budget_stop", "name": "Budget stop", "metric": "budget_denials", "op": ">=", "value": 1, "severity": "warning",
      "message": "Budget limit reached {v} time(s); work was stopped"},
     {"id": "slow_ttft", "name": "Slow first token", "metric": "ttft_ms", "op": ">", "value": 8000, "severity": "info",

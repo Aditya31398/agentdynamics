@@ -111,6 +111,54 @@ That revokes an agent whose calls the policy refused 10 times across 3 or more r
 - **Trust.** The process acts on directives from the server it is configured to send telemetry to. Someone
   controlling that server could stop agents, but never grant them anything.
 
+### 3c. Tripwires: decoys no legitimate agent touches
+
+The watchdog and the probing detector judge behaviour against thresholds. A tripwire needs none: it is a decoy tool
+no agent has reason to call, or a **canary** -- a value planted where no agent has reason to look, such as a fake
+credential in a config file or a path in a document. An agent that touches one went somewhere it had no business
+going, whatever the policy allowed, so one touch is certain evidence and there is nothing to tune.
+
+```python
+governance.instrument(kernel, root, tripwires={
+    "tools": ["secrets.vault_export"],                       # registered, never needed
+    "canaries": {"planted_aws_key": "AKIA-CANARY-7F3E9Q"},   # name -> planted value, 8+ characters
+})
+```
+
+In process, every governed call is checked **before** it runs: a decoy tool, or a canary in its arguments, revokes
+the run's whole grant tree through `kernel.revoke` first, so Aegis refuses the call and the canary never leaves.
+A canary in a tool's result (the agent read the planted file) or in a model response revokes the tree at once;
+every later call and model request is refused. The whole tree, because a sub-agent that found a canary got there
+with what its parent gave it. Only that run stops.
+
+On the server, the same tripwires mark every step that touches one, from any source -- OTLP, LangSmith and SDK runs
+included -- and the `tripwire` health rule raises a critical event for each task that did:
+
+```toml
+[enforcement.tripwires]
+tools = ["secrets.vault_export"]
+canaries = { planted_aws_key = "AKIA-CANARY-7F3E9Q" }
+runs = 2                  # an agent that touched them in 2 runs ...
+window_minutes = 60       # ... within 60 minutes is revoked wherever it runs (a directive, 3b)
+revoke_minutes = 60       # 0: mark, raise the event and alert, but issue no directive
+```
+
+Why not revoke the agent everywhere on the first touch? A directive stops that agent for every user, and one touch
+can come from one planted document: revoking on it would let whoever planted the document switch the agent off.
+Touches in several runs mean the cause persists -- a poisoned document every conversation retrieves, a compromised
+model -- and then the agent should stop everywhere. Directives are off unless `[enforcement.tripwires]` is set;
+touches marked in process count towards them once it is.
+
+- **Names, not values.** Events, alerts, directives and the console name a canary (`canary planted_aws_key`),
+  never its value, which would tell whoever reads them what to avoid. A canary shorter than 8 characters is
+  ignored: it would match ordinary text.
+- **Where to plant them.** Somewhere an attacker's instructions would send an agent and a legitimate task never
+  does: a credentials file beside real configuration, a document the policy lets the agent read. The server
+  matches canaries in what a source sends, before redaction, so `store_content = false` doesn't blind it; a
+  source that sends no content (an SDK with content capture off) leaves it only decoy tools to see. The
+  in-process check sees every argument and result either way.
+- **What you see.** The Governance page lists every touch, newest first, and the task's timeline tags the step.
+
 ### 4. Observe → govern: least-privilege policy from real behaviour
 
 ```bash

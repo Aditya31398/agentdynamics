@@ -27,6 +27,13 @@ Example agentdynamics.toml:
     [enforcement]                   # server-side revocation (off unless set): an agent the policy keeps
     probing = { denials = 10, runs = 3, window_minutes = 30, revoke_minutes = 60 }   # refusing across runs
 
+    [enforcement.tripwires]         # decoys no legitimate agent touches: each touch raises a critical event
+    tools = ["secrets.vault_export"]
+    canaries = { planted_aws_key = "AKIA-CANARY-7F3E9Q" }  # name = planted value (8+ characters)
+    runs = 2                        # touched in this many runs within window_minutes: revoke the agent
+    window_minutes = 60
+    revoke_minutes = 60             # 0: events and alerts only
+
     [retention]
     days = 90                       # spans/runs older than this are purged; daily totals are kept
 
@@ -167,4 +174,9 @@ def public_view(cfg):
         w["url"] = (w.get("url") or "")[:28] + "…"     # a Slack webhook URL is itself the secret
         if w.get("routing_key"):
             w["routing_key"] = "…"
+    tw = (v.get("enforcement") or {}).get("tripwires") or {}
+    if isinstance(tw.get("canaries"), dict):       # a canary's value tells whoever sees it what to avoid
+        tw["canaries"] = {name: "…" for name in tw["canaries"]}
+    elif tw.get("canaries"):
+        tw["canaries"] = ["…" for _ in tw["canaries"]]
     return v

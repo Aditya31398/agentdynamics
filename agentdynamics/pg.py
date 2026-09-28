@@ -316,10 +316,11 @@ def ddl(schema_version, derived):
             "tasks": {"id", "run_id", "project", "environment", "source", "framework", "workflow", "parent_task_id",
                       "prompt_kind", "prompt", "task_type", "models", "churn_file", "final_stop", "final_text",
                       "next_prompt", "outcome", "apdex", "outcome_source", "outcome_reason", "task_type_source",
-                      "task_type_match", "loop_node", "critical_node", "root_error", "policy_version", *s.TASK_JSON},
+                      "task_type_match", "loop_node", "critical_node", "root_error", "policy_version", "tripwire_what",
+                      *s.TASK_JSON},
             "steps": {"run_id", "task_id", "kind", "name", "model", "phase", "target", "text", "input_preview", "error",
                       "subagent_id", "stop_reason", "effort", "span_id", "parent_span_id", "node", "agent", "span_kind",
-                      "rule", "guard", "args_json", "flags"},
+                      "rule", "guard", "args_json", "flags", "tripwire"},
             "events": {"id", "rule_id", "rule", "severity", "task_id", "run_id", "project", "task_type", "message"}}
 
     def cols(table, names):

@@ -8,7 +8,22 @@ bumps the minor version.
 
 ## [Unreleased]
 
+**Upgrading.** `SCHEMA_VERSION` 10: tasks and steps record tripwires. The derived tables are rebuilt from the
+sources on first start, as after any schema change; nothing to migrate.
+
 ### Added
+- **Tripwires: decoys no legitimate agent touches.** A decoy tool, or a **canary** -- a value planted where no
+  agent has reason to look, like a fake credential in a config file. Unlike the watchdog and probing detection,
+  there is no threshold: one touch is certain evidence. In process (`instrument(..., tripwires={...})`), every
+  governed call is checked before it runs; a decoy tool or a canary in the arguments revokes the run's grant tree
+  first, so Aegis refuses the call and the canary never leaves, and a canary in a tool's result or a model
+  response stops everything after it. On the server (`[enforcement.tripwires]`), touches are marked on every
+  source, the new `tripwire` health rule raises a critical event, and an agent that touches them in 2 runs within
+  an hour (configurable) is revoked wherever it runs -- not on one touch, since a single planted document would
+  otherwise let an attacker switch an agent off for everyone. Events, alerts and the console name a canary, never
+  its value. The Governance page lists every touch and the task timeline tags the step. The governed demo agent
+  gains an exfiltration scenario: an injected ticket sends it to a planted credentials file the policy lets it
+  read, and the email that would carry the key out is refused.
 - **Moving an install to Postgres keeps its history.** `agentdynamics store copy --to postgresql://...` copies
   a SQLite store into a Postgres schema: every span, the SDK run files, grades, the daily rollups of days
   retention has purged, revocation directives, alert state and the alert queue, pull cursors, and the health

@@ -272,7 +272,8 @@
       const col = s.denied ? "var(--critical)" : s.is_error ? "var(--critical)" : s.kind === "llm" ? "var(--text-3)" : s.kind === "notice" ? "var(--critical)" : s.kind === "span" ? "var(--neutral)" : C.phaseColor(s.phase);
       const base = s.kind === "llm" ? `model · ${s.model || ""}` : s.kind === "notice" ? `⚠ ${s.name}` : s.kind === "span" ? `▸ ${s.name}` : (s.name || "").replace(/^mcp__/, "");
       const name = (s.depth ? "\u2002".repeat(Math.min(s.depth, 8)) : "") + base + (s.node && s.kind !== "span" ? ` · ${s.node}` : "");
-      const flags = (s.flags || []).map((f) => `<span class="tag warn">${f.replace(/_/g, " ")}</span>`).join("");
+      const flags = (s.tripwire ? `<span class="tag bad" title="a decoy no legitimate agent uses">tripwire · ${esc(s.tripwire)}</span>` : "")
+        + (s.flags || []).map((f) => `<span class="tag warn">${f.replace(/_/g, " ")}</span>`).join("");
       const val = s.denied ? `<span style="color:var(--critical-text)">⛔ denied</span>` : s.kind === "llm" ? usd(s.cost) : s.kind === "tool" ? (s.is_error ? `<span style="color:var(--critical-text)">error</span>` : tok((s.output_chars || 0) / 4) + " tok") : "";
       return `<div class="wf-row" data-i="${i}"><span class="muted">${s.seq}</span><span class="wf-name" title="${esc(s.target || "")}">${esc(name)} ${flags}</span>
         <div class="wf-track"><div class="wf-bar" style="left:${left}%;width:${width}%;background:${col}"></div></div><span class="num small">${ms(s.duration_ms)}</span><span class="num small">${val}</span></div>`;
@@ -292,6 +293,7 @@
         lines.push(`tool: ${s.name}   phase: ${s.phase}   duration: ${ms(s.duration_ms)}   output: ${num(s.output_chars)} chars   attributed cost: ${usd(s.attributed_cost)}`);
         if ((s.flags || []).length) lines.push(`flags: ${s.flags.join(", ")}`);
         if (s.rule) lines.push(`policy: ${s.denied ? "DENIED" : "allowed"} · rule ${s.rule}${s.guard ? " · guard " + s.guard : ""}${s.agent ? " · agent " + s.agent : ""}`);
+        if (s.tripwire) lines.push(`TRIPWIRE: ${s.tripwire} (a decoy no legitimate agent uses)`);
         lines.push("\ninput: " + (s.input_preview || ""));
         if (s.error) lines.push("\nERROR: " + s.error);
       } else if (s.kind === "span") {

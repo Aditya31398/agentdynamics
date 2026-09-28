@@ -17,6 +17,8 @@ One call wires four flows:
    An exhausted budget or a revoked grant stops the request; it is never made.
 3. Detect -> enforce. A watchdog evaluates each run as it happens (repeated denials, loops, runaway
    cost, too many model calls) and revokes the grant through Aegis, which disables the whole agent tree.
+   Tripwires (decoy tools, planted canary values) revoke the run's grant tree before the call that touches
+   one is made, so the kernel refuses it.
 4. Observe -> govern. Runs carry the policy name, version and digest, so the console can compare
    policy versions, find unused grants, and generate a tightened policy (`agentdynamics policy export`).
 
@@ -36,6 +38,7 @@ from collections import Counter
 
 from .. import autotrace as at
 from .. import pricing
+from .. import tripwires as tripmod
 
 _grant = contextvars.ContextVar("agentdynamics_aegis_grant", default=None)
 _state = {"kernel": None, "root": None, "installed": False}
@@ -118,35 +121,50 @@ def _wrap_kernel(kernel):
         return
     orig_invoke, orig_ainvoke, orig_spawn, orig_revoke = kernel.invoke, kernel.ainvoke, kernel.spawn, kernel.revoke
 
-    def check(grant):
+    def check(grant, tool=None, args=None):
+        """Directives and tripwires, before a grant acts; returns the tripwire the call touches, if any."""
         rv = getattr(kernel, "_agentdynamics_revocations", None)    # this kernel's, not another's in-process
         if rv is not None:
             rv.check_use(grant)
+        tw = getattr(kernel, "_agentdynamics_tripwires", None)
+        return tw.before_call(grant, tool, args) if tw is not None and tool is not None else None
+
+    def after(grant, result):
+        tw = getattr(kernel, "_agentdynamics_tripwires", None)
+        return tw.after_call(grant, result) if tw is not None else None
+
+    def step(grant, tool, args, t0, hit, result=None, exc=None):
+        s = _step_from_call(grant, tool, args, t0, result=result, exc=exc)
+        if hit:
+            s["tripwire"] = hit
+        return s
 
     def invoke(grant, tool, /, **args):
-        check(grant)
+        hit = check(grant, tool, args)
         t0 = time.time()
         with bind(grant):
             try:
                 r = orig_invoke(grant, tool, **args)
             except Exception as ex:
-                _emit_step(_step_from_call(grant, tool, args, t0, exc=ex), f"aegis.{tool}")
+                _emit_step(step(grant, tool, args, t0, hit, exc=ex), f"aegis.{tool}")
                 raise
-            _emit_step(_step_from_call(grant, tool, args, t0, result=r), f"aegis.{tool}")
+            hit = hit or after(grant, r)
+            _emit_step(step(grant, tool, args, t0, hit, result=r), f"aegis.{tool}")
             return r
 
     async def ainvoke(grant, tool, /, **args):
-        check(grant)
+        hit = check(grant, tool, args)
         t0 = time.time()
         tok = _grant.set(grant)
         try:
             r = await orig_ainvoke(grant, tool, **args)
         except Exception as ex:
-            _emit_step(_step_from_call(grant, tool, args, t0, exc=ex), f"aegis.{tool}")
+            _emit_step(step(grant, tool, args, t0, hit, exc=ex), f"aegis.{tool}")
             raise
         finally:
             _grant.reset(tok)
-        _emit_step(_step_from_call(grant, tool, args, t0, result=r), f"aegis.{tool}")
+        hit = hit or after(grant, r)
+        _emit_step(step(grant, tool, args, t0, hit, result=r), f"aegis.{tool}")
         return r
 
     def spawn(parent, req):
@@ -302,6 +320,63 @@ class Watchdog:
             self.kernel.revoke(grant, reason=f"agentdynamics.watchdog: {reason}")
 
 
+class TripwireGuard:
+    """Decoy tools and canary values (agentdynamics.tripwires), checked in process on every governed call.
+
+    Before a call: a decoy tool, or a canary in the arguments, revokes the run's whole grant tree through
+    Aegis first -- the kernel then refuses the call, so a canary is never sent anywhere. After a call: a canary
+    in the result (the agent read a planted file) revokes the tree, and every later call and model request is
+    refused. A model response quoting a canary does the same. The whole tree, not only the touching grant: a
+    sub-agent that found a canary got there with what its parent gave it.
+
+    Only this run is stopped. The server revokes the agent everywhere only when it touches tripwires in
+    several runs (tripwires.py says why).
+    """
+
+    def __init__(self, tools=(), canaries=None):
+        self.wires = tools if isinstance(tools, tripmod.Tripwires) else tripmod.Tripwires(tools, canaries)
+        self.kernel = None
+        self.trips = []                  # {"label", "agent", "grant_id", "ts"}
+
+    def _trip(self, grant, label):
+        root = grant
+        while root.parent is not None:
+            root = root.parent
+        self.trips.append({"label": label, "agent": grant.agent_name, "grant_id": grant.grant_id, "ts": time.time()})
+        if root.is_active() and self.kernel is not None:
+            self.kernel.revoke(root, reason=f"agentdynamics tripwire: {label}")
+
+    def before_call(self, grant, tool, args):
+        try:
+            label = self.wires.match_call(tool, args)
+            if label:
+                self._trip(grant, label)
+            return label
+        except Exception as ex:          # a fault here must not break the agent
+            at._warn("tripwire-check", f"could not check a call against tripwires: {ex}")
+            return None
+
+    def after_call(self, grant, result):
+        try:
+            label = self.wires.match_text(result) if self.wires.canaries else None     # whatever content is sent
+            if label:
+                self._trip(grant, label)
+            return label
+        except Exception as ex:
+            at._warn("tripwire-check", f"could not check a result against tripwires: {ex}")
+            return None
+
+    def __call__(self, run, step):
+        """Step hook: a model response quoting a canary."""
+        if step.get("kind") != "llm" or step.get("tripwire") or not self.wires.canaries:
+            return
+        label = self.wires.match_text(step.get("text"))
+        grant = current_grant()
+        if label and grant is not None:
+            step["tripwire"] = label
+            self._trip(grant, label)
+
+
 # ---------------------------------------------------------------- entry point
 
 # ---------------------------------------------------------------- 5. server-side revocation (#8)
@@ -432,16 +507,17 @@ class Revocations:
 
 
 class Governance:
-    def __init__(self, kernel, root, gate, watchdog, unregister, revocations=None):
+    def __init__(self, kernel, root, gate, watchdog, unregister, revocations=None, tripwires=None):
         self.kernel, self.root, self.gate, self.watchdog, self._unregister = kernel, root, gate, watchdog, unregister
         self.revocations = revocations
+        self.tripwires = tripwires
 
     def uninstall(self):
         self._unregister()
 
 
 def instrument(kernel, root=None, *, gate_models=True, watchdog=None, correlate=True, record_decisions=True,
-               revocations=None):
+               revocations=None, tripwires=None):
     """Connect an Aegis kernel to AgentDynamics. Call after `agentdynamics.init()` and `build_kernel()`.
 
     kernel      the Aegis Kernel
@@ -450,11 +526,14 @@ def instrument(kernel, root=None, *, gate_models=True, watchdog=None, correlate=
     watchdog    a Watchdog, or None
     revocations True (or a Revocations) to apply the server's revocation directives: off by default, since it
                 lets the server stop agents in this process. Needs `root`.
+    tripwires   decoy tools and canary values -- {"tools": [...], "canaries": {name: value}}, an
+                agentdynamics.tripwires.Tripwires, or a TripwireGuard. Touching one revokes the run's grant tree
+                before the call is made.
     """
     _require_aegis()
     _state.update(kernel=kernel, root=root)
     undo = []
-    if record_decisions or revocations:
+    if record_decisions or revocations or tripwires:
         _wrap_kernel(kernel)             # the spawn hook applies directives to new grants
     if correlate:
         try:
@@ -499,6 +578,22 @@ def instrument(kernel, root=None, *, gate_models=True, watchdog=None, correlate=
     at._hooks["run_meta"].append(meta)
     undo.append(lambda: at._hooks["run_meta"].remove(meta))
 
+    tw = None
+    if tripwires:
+        if isinstance(tripwires, TripwireGuard):
+            tw = tripwires
+        elif isinstance(tripwires, tripmod.Tripwires):
+            tw = TripwireGuard(tripwires)
+        else:
+            tw = TripwireGuard(tripwires.get("tools"), tripwires.get("canaries"))
+        for name in tw.wires.ignored:
+            at._warn(f"tripwire-short-{name}", f"tripwire canary {name!r} ignored: shorter than "
+                                               f"{tripmod.MIN_CANARY} characters would match ordinary text")
+        tw.kernel = kernel
+        kernel._agentdynamics_tripwires = tw
+        at._hooks["step"].append(tw)
+        undo += [lambda: at._hooks["step"].remove(tw), lambda: setattr(kernel, "_agentdynamics_tripwires", None)]
+
     rv = None
     if revocations:
         if root is None:
@@ -515,4 +610,4 @@ def instrument(kernel, root=None, *, gate_models=True, watchdog=None, correlate=
                 u()
             except ValueError:
                 pass
-    return Governance(kernel, root, gate, watchdog, unregister, rv)
+    return Governance(kernel, root, gate, watchdog, unregister, rv, tw)

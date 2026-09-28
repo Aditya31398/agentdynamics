@@ -17,10 +17,11 @@ import time
 
 from .privacy import TASK_TEXT_FIELDS
 
-SCHEMA_VERSION = 9   # 6: outcome_source / outcome_reason (graded outcomes)
+SCHEMA_VERSION = 10   # 6: outcome_source / outcome_reason (graded outcomes)
                      # 7: tokens_unverified (cache accounting that rests on a guess)
                      # 8: steps.governed (did this call go through an Aegis kernel)
                      # 9: task_type_source / task_type_match (how a task type was decided)
+                     # 10: tasks.tripwires / tripwire_what, steps.tripwire (decoys touched)
 
 RUN_COLS = ["id", "source", "project", "environment", "framework", "workflow", "cwd", "title", "agent_name", "parent_id",
             "parent_task_id", "is_subagent", "thread_id", "user_id", "tags", "root_status", "complete", "version", "git_branch",
@@ -43,14 +44,14 @@ TASK_COLS = ["id", "run_id", "idx", "project", "environment", "source", "framewo
              "unpriced", "tokens_unverified", "critical_node", "critical_share", "root_error",
              # governance (Aegis)
              "governed", "policy_version", "policy_denials", "spend_denials", "budget_denials", "repeated_denials",
-             "revocations", "blocked_cost"]
+             "revocations", "blocked_cost", "tripwires", "tripwire_what"]
 TASK_JSON = ["phase_calls", "phase_cost", "scores", "path", "denied_rules"]
 STEP_COLS = ["run_id", "seq", "task_id", "kind", "name", "model", "phase", "target", "ts", "start_ts", "end_ts",
              "duration_ms", "cost", "attributed_cost", "input_tokens", "output_tokens", "cache_read", "cache_write",
              "context_tokens", "thinking_tokens", "is_error", "output_chars", "text", "input_preview", "error",
              "subagent_id", "stop_reason", "tool_calls", "effort",
              "span_id", "parent_span_id", "depth", "node", "agent", "span_kind", "ttft_ms", "docs", "hitl", "rate_limited",
-             "denied", "rule", "guard", "grant_depth", "args_json", "governed"]
+             "denied", "rule", "guard", "grant_depth", "args_json", "governed", "tripwire"]
 EVENT_COLS = ["id", "ts", "rule_id", "rule", "severity", "task_id", "run_id", "project", "task_type", "message", "value"]
 
 DERIVED = ["runs", "tasks", "steps", "events", "baselines", "meta"]

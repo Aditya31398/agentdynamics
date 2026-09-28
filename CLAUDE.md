@@ -45,7 +45,8 @@ AGENTDYNAMICS_URL=http://127.0.0.1:8790 python examples/governed_agent.py 45   #
    warning. `dependencies = []` in pyproject is a feature.
 2. **Telemetry never breaks the agent.** SDK code runs hooks and sends from a background thread with a bounded
    queue. Hooks are wrapped, failures warn once and are dropped. The only exception is by design: an Aegis gate
-   may raise `PolicyViolation` to block a model call. That is enforcement, not telemetry.
+   may raise `PolicyViolation` to block a model call, and the watchdog and tripwires revoke grants. That is
+   enforcement, not telemetry.
 3. **Sources are the system of record; the DB is derived.** `runs/steps/tasks/events/baselines/meta` can be
    rebuilt from `spans_raw`, transcript files and `runs/*.json`. Changing a derived schema means bumping
    `store.SCHEMA_VERSION`, which drops and rebuilds derived tables. Never put data only in a derived table.
@@ -130,7 +131,8 @@ AGENTDYNAMICS_URL=http://127.0.0.1:8790 python examples/governed_agent.py 45   #
 ```
 agentdynamics/
   autotrace.py        SDK: init/trace/span/tool/llm_call, Anthropic+OpenAI patches, hook points (_hooks)
-  integrations/aegis.py  instrument(): decisions -> steps, ModelSpendGate, Watchdog, policy identity
+  integrations/aegis.py  instrument(): decisions -> steps, ModelSpendGate, Watchdog, TripwireGuard, policy identity
+  tripwires.py        decoy tools and canary values: matching and step marks, shared by the server and the SDK
   govern.py           observed behaviour -> tightened Aegis policy (+ minimal YAML emitter)
   collectors/         claude_code, spans (canonical assembler), otlp, langsmith, langfuse, inbox, generic, aegis_audit
   analysis.py         segment -> task_metrics -> flow_metrics / governance_metrics -> finalize (baselines, scores, events)
@@ -145,7 +147,7 @@ agentdynamics/
   web/                index.html, app.js (helpers, router, boot), pages/<area>.js (each area's pages), charts.js, style.css
 tests/                test_core, test_integrations, test_autotrace, test_aegis_integration, test_ecosystem, test_live_anthropic,
                       test_console_ui, test_outcomes, test_token_accounting, test_policy_coverage, test_incremental,
-                      test_scoped_keys, test_alerts, test_rollups, test_postgres, test_revocations,
+                      test_scoped_keys, test_alerts, test_rollups, test_postgres, test_revocations, test_tripwires,
                       test_console_interaction (+ cdp.py, its Chrome DevTools driver)
 bench/                bench.py: ingest / rebuild / incremental timings and the CI scaling gate
 examples/             langgraph_style_app, otel_multiagent, governed_agent, demo_agent

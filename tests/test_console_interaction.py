@@ -71,7 +71,10 @@ class ConsoleInteractionTest(unittest.TestCase):
         eng = Engine(data, None)
         for project, rows in AGES.items():
             for i, (age, failed) in enumerate(rows):
-                eng.ingest(run(f"{project}-{i}", project, age, failed))
+                p = run(f"{project}-{i}", project, age, failed)
+                if p["id"] == "shop-1":      # its refused call carried a canary, as the Aegis integration marks it
+                    p["steps"][-1]["tripwire"] = "canary vault_token"
+                eng.ingest(p)
         eng.refresh(force=True)
         eng.con.close()
         cls.srv, cls.url = cdp.serve(data)
@@ -226,6 +229,17 @@ class ConsoleInteractionTest(unittest.TestCase):
         self.page.wait("!document.querySelector('.gv-clear') && document.querySelector('#gv-directives').innerText.includes('cleared')",
                        what="the directive to show as cleared")
         self.assertEqual([d["status"] for d in self.api("/api/revocations")["revocations"]], ["cleared"])
+        self.assertNothingWentWrong()
+
+    def test_a_tripwire_row_opens_the_task_that_touched_it(self):
+        self.open("governance", days="")
+        self.page.wait("!!document.querySelector('#gv-trips tr.click')", what="the tripwires card")
+        self.assertIn("canary vault_token", self.page.text("#gv-trips"))
+        self.page.click("#gv-trips tr.click")
+        self.page.wait("location.hash === '#/task/shop-1%230'", what="the task that touched it")
+        self.page.settle()
+        self.page.wait("!!document.querySelector('#wf .tag.bad')", what="the touching step tagged in the timeline")
+        self.assertIn("tripwire · canary vault_token", self.page.text("#wf"))
         self.assertNothingWentWrong()
 
     def test_switching_a_rule_off_takes_its_events_away(self):
