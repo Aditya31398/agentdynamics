@@ -195,13 +195,16 @@ class Handler(BaseHTTPRequestHandler):
                       "/api/process": api.process, "/api/analytics": api.analytics, "/api/compare": api.compare,
                       "/api/workflows": api.workflows, "/api/workflow": api.workflow, "/api/slos": api.slos,
                       "/api/sources": api.sources, "/api/config": api.config, "/api/connect": api.connect,
-                      "/api/alerts": api.alerts, "/api/revocations": api.revocations,
+                      "/api/alerts": api.alerts, "/api/revocations": api.revocations, "/api/incidents": api.incidents,
                       "/api/governance": api.governance, "/api/governance/policy": api.export_policy}
             if p in routes:
                 r = routes[p](q)
                 return self._send(200 if r is not None else 404, r if r is not None else {"error": "not found"})
             if p.startswith("/api/task/"):
                 r = api.task(unquote(p[len("/api/task/"):]))
+                return self._send(200 if r else 404, r or {"error": "not found"})
+            if p.startswith("/api/incident/"):
+                r = api.incident(unquote(p[len("/api/incident/"):]))
                 return self._send(200 if r else 404, r or {"error": "not found"})
             if p == "/api/rules":
                 return self._send(200, {"rules": api.e.rules()})
@@ -383,6 +386,14 @@ class Handler(BaseHTTPRequestHandler):
                                reason=f"{b['reason']} ({self._key_name()})", minutes=float(b.get("minutes") or 60),
                                source="operator")
                 return self._send(200, {"ok": True, "id": rid})
+            if p.startswith("/api/incidents/") and p.endswith("/verdict"):
+                # a verdict is a security judgement (the trust score will read it): admin, like a directive
+                if not self._require("admin"):
+                    return
+                iid = unquote(p[len("/api/incidents/"):-len("/verdict")])   # admin keys are never scoped
+                b = json.loads(self._body() or b"{}")
+                inc = e.incident_verdict(iid, b.get("verdict"), b.get("note"), self._key_name() or "local")
+                return self._send(200 if inc else 404, {"ok": True, "incident": inc} if inc else {"error": "not found"})
             if p.startswith("/api/revocations/") and p.endswith("/clear"):
                 if not self._require("admin"):
                     return

@@ -159,6 +159,40 @@ touches marked in process count towards them once it is.
   in-process check sees every argument and result either way.
 - **What you see.** The Governance page lists every touch, newest first, and the task's timeline tags the step.
 
+### 3d. Incidents: one thing to judge per agent
+
+A tripwire touched in one task, probing in the next, the directive that stopped the agent: three health-rule
+events and a directive, one story. The **Incidents** page tells it once. An incident gathers the security
+signals about one agent in one project -- or, for agents without an Aegis name (OTLP, LangSmith), one
+workflow -- from its first signal until it has been quiet for `gap_hours`, and stays open until someone
+resolves it as **real** or a **false alarm**, with a note.
+
+```toml
+[incidents]
+rules = ["tripwire", "repeated_denials", "revoked", "policy_denials"]   # the health rules that are signals
+gap_hours = 24
+```
+
+Every directive is a signal too, of the agent it names. The incident page shows the signals task by task,
+the steps that are the evidence (the touching, refused and revoked calls), and what to do: revoke the agent
+(recommended when the evidence is of intent -- a tripwire, probing -- and not for a few refused calls),
+tighten the policy it ran under, or give the verdict.
+
+- **New evidence after a verdict is news.** A signal about an agent whose incident was resolved opens a new
+  incident, even one from before the verdict that arrived late: nobody has judged it. A directive issued
+  before the verdict is the exception -- it is what was done about the incident (revoke, then resolve), and
+  joins it.
+- **Alerts.** A destination with `kinds = ["incidents"]` is told when an incident opens, when it escalates
+  (warning to critical), and when it is resolved -- once each, however many signals it gathers, so it can
+  take incidents in place of `events`. PagerDuty gets one alert per incident, resolved with the verdict.
+  History is never announced: nothing on a process's first refresh, nothing more than an hour old.
+- **Durable.** Incidents and their signals are kept in the store like grades: a verdict is something a
+  person said. Each signal joins one incident once, and an incident's id is a hash of the agent and its
+  first signal, so a rebuild -- or a second store fed the same traffic -- derives the same incidents.
+  `agentdynamics store copy` copies them.
+- **Who.** Anyone who can read a project sees its incidents. A verdict needs an admin key: the trust score
+  will read verdicts, and marking real incidents false alarms would weaken it.
+
 ### 4. Observe → govern: least-privilege policy from real behaviour
 
 ```bash

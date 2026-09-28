@@ -354,6 +354,12 @@ def ddl(schema_version, derived):
         f"source TEXT, created {NUM}, expires {NUM}, cleared {NUM})",
         f"CREATE TABLE IF NOT EXISTS rollup_daily ({dims}, {', '.join(f'{c} {NUM}' for c in s.ROLLUP_SUMS)}, "
         f"PRIMARY KEY ({', '.join(s.ROLLUP_DIMS)}))",
+        "CREATE TABLE IF NOT EXISTS incidents (" + ", ".join(
+            f"{c} {NUM if c in ('opened', 'updated', 'signals', 'resolved_at') else 'TEXT'}" for c in s.INCIDENT_COLS)
+        + ", PRIMARY KEY (id))",
+        "CREATE TABLE IF NOT EXISTS incident_signals (" + ", ".join(
+            f"{c} {NUM if c == 'ts' else 'TEXT'}" for c in s.SIGNAL_COLS) + ", PRIMARY KEY (ref))",
+        "CREATE INDEX IF NOT EXISTS incident_signals_incident ON incident_signals (incident_id)",
     ]
 
 
@@ -380,7 +386,8 @@ def connect_store(url, schema, schema_version, derived):
 # the primary key of every table an INSERT OR REPLACE writes, for its ON CONFLICT clause
 PRIMARY_KEYS = {"runs": ("id",), "tasks": ("id",), "baselines": ("task_type",), "meta": ("k",),
                 "spans_raw": ("source", "span_id"), "source_state": ("name",), "alerts_sent": ("event_id",),
-                "grades": ("task_id",), "alert_state": ("key",), "revocations": ("id",), "alert_outbox": ("id",)}
+                "grades": ("task_id",), "alert_state": ("key",), "revocations": ("id",), "alert_outbox": ("id",),
+                "incidents": ("id",), "incident_signals": ("ref",)}
 
 _WEEK = ("(to_char({d}, 'YYYY') || '-W' || "
          "lpad(floor((extract(doy from {d}) + 7 - extract(isodow from {d})) / 7)::int::text, 2, '0'))")

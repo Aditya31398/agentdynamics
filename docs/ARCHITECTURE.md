@@ -52,6 +52,9 @@ kinds = ["slos"]
 min_severity = "critical"
 ```
 
+- **Incidents** (`kinds = ["incidents"]`) gather the security signals about one agent -- tripwires, probing,
+  refused calls, revocations, directives -- into one alert when it opens, one when it escalates and one when
+  someone resolves it (`agentdynamics/incidents.py`, docs/GOVERNANCE.md 3d).
 - **Health-rule events** are points in time. Each new one is sent once. Nothing is sent for history on a
   process's first start, or for tasks that ended more than an hour ago (a backfill does not page).
   PagerDuty and Slack group a burst by rule, project and task type: fifty runaway-cost tasks are one

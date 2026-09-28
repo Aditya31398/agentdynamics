@@ -133,6 +133,7 @@ agentdynamics/
   autotrace.py        SDK: init/trace/span/tool/llm_call, Anthropic+OpenAI patches, hook points (_hooks)
   integrations/aegis.py  instrument(): decisions -> steps, ModelSpendGate, Watchdog, TripwireGuard, policy identity
   tripwires.py        decoy tools and canary values: matching and step marks, shared by the server and the SDK
+  incidents.py        security signals about one agent grouped into incidents (durable, with verdicts)
   govern.py           observed behaviour -> tightened Aegis policy (+ minimal YAML emitter)
   collectors/         claude_code, spans (canonical assembler), otlp, langsmith, langfuse, inbox, generic, aegis_audit
   analysis.py         segment -> task_metrics -> flow_metrics / governance_metrics -> finalize (baselines, scores, events)
@@ -148,6 +149,7 @@ agentdynamics/
 tests/                test_core, test_integrations, test_autotrace, test_aegis_integration, test_ecosystem, test_live_anthropic,
                       test_console_ui, test_outcomes, test_token_accounting, test_policy_coverage, test_incremental,
                       test_scoped_keys, test_alerts, test_rollups, test_postgres, test_revocations, test_tripwires,
+                      test_incidents,
                       test_console_interaction (+ cdp.py, its Chrome DevTools driver)
 bench/                bench.py: ingest / rebuild / incremental timings and the CI scaling gate
 examples/             langgraph_style_app, otel_multiagent, governed_agent, demo_agent

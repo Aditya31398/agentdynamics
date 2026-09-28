@@ -27,6 +27,10 @@ Example agentdynamics.toml:
     [enforcement]                   # server-side revocation (off unless set): an agent the policy keeps
     probing = { denials = 10, runs = 3, window_minutes = 30, revoke_minutes = 60 }   # refusing across runs
 
+    [incidents]                     # security signals about one agent, grouped into one thing to judge
+    rules = ["tripwire", "repeated_denials", "revoked", "policy_denials"]
+    gap_hours = 24                  # quiet this long, and the agent's next signal opens a new incident
+
     [enforcement.tripwires]         # decoys no legitimate agent touches: each touch raises a critical event
     tools = ["secrets.vault_export"]
     canaries = { planted_aws_key = "AKIA-CANARY-7F3E9Q" }  # name = planted value (8+ characters)
@@ -45,7 +49,8 @@ Example agentdynamics.toml:
     url = "https://hooks.slack.com/services/..."
     min_severity = "warning"
     format = "slack"                # slack | pagerduty | json (see agentdynamics/alerts.py)
-    kinds = ["events", "slos"]      # health-rule events (default) and SLO burn-rate alerts
+    kinds = ["events", "slos"]      # health-rule events (default), SLO burn-rate alerts, and "incidents":
+                                    # security signals about one agent, alerted once (incidents.py)
     projects = ["checkout"]         # optional routing: only these projects / health rules
     [[alerts.webhooks]]
     name = "pager"

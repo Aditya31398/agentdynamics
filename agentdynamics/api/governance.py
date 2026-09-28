@@ -3,8 +3,11 @@ import statistics
 import time
 from collections import Counter, defaultdict
 
+from .. import incidents as incmod
 from ..analysis import pct
-from ..store import revocations as list_revocations, rows
+from ..store import incident_signals, incidents as list_incidents, revocations as list_revocations, rows
+
+DAY = 86400
 
 
 
@@ -51,6 +54,69 @@ class GovernanceMixin:
                             "step": s["name"], "kind": s["kind"], "workflow": by_task[s["task_id"]]["workflow"],
                             "project": by_task[s["task_id"]]["project"],
                             "prompt": (by_task[s["task_id"]]["prompt"] or "")[:120]} for s in hits[:25]]}
+
+    # ------------------------------------------------------------------ incidents (incidents.py)
+    @staticmethod
+    def _incident_row(r, signals):
+        return dict(r, subject=incmod.subject(r), title=incmod.title(r, signals), counts=incmod.counts(signals),
+                    tasks=len({s["task_id"] for s in signals if s["task_id"]}),
+                    what=sorted({s["detail"].get("what") for s in signals if s["detail"].get("what")}),
+                    workflows=sorted({s["detail"].get("workflow") for s in signals if s["detail"].get("workflow")}))
+
+    def incidents(self, q):
+        """Security incidents, most recently active first. Every open one, whatever `days` says -- an incident
+        waiting for a verdict doesn't expire -- and resolved ones last active within `days`."""
+        since = time.time() - float(q["days"]) * DAY if q.get("days") else None
+        status = q.get("status")
+        found = []
+        if status in (None, "open"):
+            found += list_incidents(self.con, status="open", project=q.get("project"))
+        if status in (None, "resolved"):
+            found += list_incidents(self.con, status="resolved", since=since, project=q.get("project"))
+        found.sort(key=lambda r: (r["status"] != "open", -(r["updated"] or 0), r["id"]))
+        sig = incident_signals(self.con, [r["id"] for r in found])
+        out = [self._incident_row(r, sig[r["id"]]) for r in found]
+        return {"incidents": out, "open": sum(1 for r in out if r["status"] == "open"),
+                "critical_open": sum(1 for r in out if r["status"] == "open" and r["severity"] == "critical")}
+
+    def incident(self, iid):
+        """One incident: its signals, the steps that are its evidence, and what can be done about it."""
+        found = rows(self.con, "SELECT * FROM incidents WHERE id = ?", (iid,))
+        if not found:
+            return None
+        sig = incident_signals(self.con, [iid])[iid]
+        inc = self._incident_row(found[0], sig)
+        ids = sorted({s["task_id"] for s in sig if s["task_id"]})
+        tasks = {}
+        for i in range(0, len(ids), 400):
+            chunk = ids[i:i + 400]
+            tasks.update({t["id"]: t for t in rows(
+                self.con, f"SELECT id, prompt, workflow, outcome, policy_version, started FROM tasks "
+                          f"WHERE id IN ({','.join('?' * len(chunk))})", chunk)})
+        for s in sig:
+            t = tasks.get(s["task_id"]) or {}
+            s["label"] = incmod.LABELS.get(s["rule"], s["rule"])
+            s["prompt"] = (t.get("prompt") or "")[:160]
+            s["held"] = bool(t) or not s["task_id"]       # a task past retention is gone; its signal stays
+        evidence = self._steps_for(list(tasks), "task_id, seq, kind, name, ts, agent, rule, denied, tripwire, error, text",
+                                   " AND (tripwire IS NOT NULL OR denied = 1 OR (kind = 'notice' AND name = 'revoked'))")
+        evidence.sort(key=lambda s: (s["ts"] or 0, s["task_id"], s["seq"]))
+        now = time.time()
+        active = [d for d in list_revocations(self.con, now, active=True, project=inc["project"])
+                  if d["agent"] in (inc["agent"], None)] if inc["agent"] else []
+        actions = []
+        if inc["agent"]:
+            if active:
+                actions.append({"kind": "revoked", "directive": active[0]["id"], "until": active[0]["expires"]})
+            else:
+                # recommended when the evidence is of intent -- a tripwire, probing -- not a few refused calls
+                actions.append({"kind": "revoke", "agent": inc["agent"], "project": inc["project"], "minutes": 60,
+                                "recommended": any(s["rule"] in ("tripwire", "repeated_denials") or s["kind"] == "directive"
+                                                   for s in sig)})
+        for pv in sorted({t["policy_version"] for t in tasks.values() if t.get("policy_version")}):
+            actions.append({"kind": "tighten", "policy": pv})
+        return {"incident": inc, "signals": sig, "evidence": [{k: s[k] for k in s} for s in evidence[:100]],
+                "evidence_total": len(evidence), "actions": actions}
 
     def governance(self, q):
         ts = self._governed(q)

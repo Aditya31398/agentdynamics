@@ -156,6 +156,9 @@ def traffic(e, now):
     for i in range(6):
         e.ingest(gov_run(f"gov-{i}", "shop", "refund_flow", f"refund {i}", "issue_refund", error=i == 0))
     e.ingest_otlp(bench.otlp_batch(0, 30, random.Random(3), t0 + 50000), "application/json")
+    from test_revocations import probing_run
+    for i in range(3):                   # an agent probing its policy: incidents
+        e.ingest(probing_run(f"probe-{i}", now - 7200 + i * 600, agent="probe-bot", project=["shop", "billing"][i % 2]))
     e.refresh(force=True)
     e.grade("bench-3#0", "failed", "graded in the test")
     e.grade("bench-4#0", "completed")
@@ -194,7 +197,10 @@ class SameAnswersTest(unittest.TestCase):
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
     def test_every_route_answers_the_same(self):
-        diffs, compared = route_diffs(self.urls[0], self.urls[1], route_paths(server_routes()))
+        incidents = json.loads(get(self.urls[0], "/api/incidents")[1])["incidents"]
+        self.assertGreater(len(incidents), 1)
+        paths = list(route_paths(server_routes())) + [f"/api/incident/{i['id']}" for i in incidents]
+        diffs, compared = route_diffs(self.urls[0], self.urls[1], paths)
         self.assertGreater(compared, 200)
         self.assertEqual(diffs, [], f"{len(diffs)} of {compared} responses differ between SQLite and Postgres:\n"
                          + "\n".join(diffs))

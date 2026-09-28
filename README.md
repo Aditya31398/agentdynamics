@@ -127,6 +127,7 @@ AGENTDYNAMICS_URL=http://127.0.0.1:8790 python examples/governed_agent.py 40
 | **Tools & Models** | Error rate and p95 per tool; per model TTFT, tokens/s, truncation rate, cache hit rate and spend |
 | **SLOs** | Success rate, Apdex, latency and cost objectives with error budgets and burn rates |
 | **Governance** | Aegis policy enforcement per task: denials by rule, budget stops, kill-switch revocations, unused grants, policy export, and what a policy change would refuse |
+| **Incidents** | Tripwires, probing, refused calls and revocations about one agent, grouped into one incident with its evidence; revoke the agent or resolve it as real or a false alarm, and alert once per incident |
 | **Process Review** | Scores how well the agent works (efficiency, focus, reliability, verification, context, autonomy, compliance) and suggests fixes |
 | **Analytics & Compare** | Any metric by any dimension; compare models, prompts or releases side by side |
 

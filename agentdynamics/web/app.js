@@ -53,10 +53,10 @@
     ["Start", [["start", "Get started", "Connect an agent"]]],
     ["Monitor", [["overview", "Overview", "Dashboard"], ["flow", "Flow Map", "Topology"], ["workflows", "Workflows", "Agent graphs & paths"], ["types", "Task Types", "Business txns"], ["tasks", "Tasks", "Snapshots"], ["sessions", "Sessions", ""]]],
     ["Diagnose", [["tools", "Tools", "Backends"], ["models", "Models", "Infrastructure"], ["events", "Events", "Health violations"]]],
-    ["Assess", [["governance", "Governance", "Aegis policy enforcement"], ["process", "Process Review", "How the agent works"], ["slos", "SLOs", "Objectives & error budgets"], ["analytics", "Analytics", "Query"], ["compare", "Compare", ""]]],
+    ["Assess", [["governance", "Governance", "Aegis policy enforcement"], ["incidents", "Incidents", "Rogue agents, grouped"], ["process", "Process Review", "How the agent works"], ["slos", "SLOs", "Objectives & error budgets"], ["analytics", "Analytics", "Query"], ["compare", "Compare", ""]]],
     ["Configure", [["integrations", "Integrations", "Sources & setup"], ["rules", "Health Rules", ""], ["settings", "Settings", ""]]],
   ];
-  const ALIAS = { task: "tasks", workflow: "workflows", integrate: "integrations" };
+  const ALIAS = { task: "tasks", workflow: "workflows", integrate: "integrations", incident: "incidents" };
   function renderNav(route) {
     $("#nav").innerHTML = NAV.map(([g, items]) => `<div class="nav-group"><div>${g}</div>${items.map(([id, label, sub]) =>
       `<a href="#/${id}" class="${route === id || ALIAS[route] === id ? "active" : ""}" title="${esc(sub)}">${label}</a>`).join("")}</div>`).join("");

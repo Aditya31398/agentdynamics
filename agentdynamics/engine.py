@@ -19,7 +19,8 @@ import time
 import traceback
 from collections import Counter, defaultdict
 
-from . import alerts as alertmod, analysis, config as cfgmod, pricing, slo as slomod, store, tripwires as tripmod
+from . import alerts as alertmod, analysis, config as cfgmod, incidents as incmod, pricing, slo as slomod, store
+from . import tripwires as tripmod
 from .collectors import aegis_audit, claude_code, generic, inbox, langfuse, langsmith, otlp, spans as spanmod
 from .privacy import Redactor
 
@@ -464,6 +465,8 @@ class Engine:
         now = self._clock()
         with self.lock:
             rid = store.add_revocation(self.con, project, agent, reason, source, now, now + float(minutes) * 60)
+            if self.writer:              # into the agent's incident now, not at the next alert tick
+                self._update_incidents(())
         self._wake.set()
         return rid
 
@@ -553,6 +556,60 @@ class Engine:
                       f"({', '.join(f'{w} x{n}' for w, n in what.most_common(3))})")
             out.append(store.add_revocation(self.con, project, agent, reason, "tripwire", now, now + minutes * 60))
         return out
+
+    # ------------------------------------------------------------------ incidents (incidents.py)
+    def update_incidents(self):
+        """Attach directives issued since the last look (by the CLI, another instance, the console) to their
+        agents' incidents. On the alert tick, so one issued while no traffic arrives still counts; health-rule
+        events are attached as each refresh produces them."""
+        if not self.writer:
+            return []
+        with self.lock:
+            return self._update_incidents(())
+
+    def _update_incidents(self, events):
+        """Under the lock, on the writer. Each signal joins an incident once; an incident that opens or
+        becomes critical is alerted, unless it is history (the process's first refresh, or over an hour old)."""
+        conf = self.cfg.get("incidents") or {}
+        rules = set(conf.get("rules", incmod.RULES))
+        now = self._clock()
+        mine = [e for e in events if e["rule_id"] in rules]
+        tasks = {t["id"]: t for e in mine for t in self._tasks.get(e["run_id"], ())}
+        sigs = incmod.from_events(mine, self._runs, tasks, rules) + \
+            incmod.from_directives(store.revocations(self.con, now, limit=500))
+        known = store.known_signals(self.con, [s["ref"] for s in sigs])
+        new = [s for s in sigs if s["ref"] not in known]
+        if not new:
+            return []
+        touched = incmod.group(new, store.open_incidents(self.con), float(conf.get("gap_hours", 24)) * 3600,
+                               store.open_incidents(self.con, "resolved"))
+        alerts = []
+        for inc in touched.values():
+            if incmod.SEV.get(inc["severity"], 1) <= incmod.SEV.get(inc["alerted"], 0):
+                continue
+            # a resolved incident a directive joined (incidents.group) is not paged again
+            if inc["status"] == "open" and not self._first and inc["updated"] > now - 3600:
+                action = "escalate" if inc["alerted"] else "trigger"
+                alerts.append((inc, action))
+            inc["alerted"] = inc["severity"]          # announced, or history that never will be
+        store.write_incidents(self.con, touched.values(), new)
+        if alerts:
+            sig = store.incident_signals(self.con, [i["id"] for i, _ in alerts])
+            self._queue([alertmod.from_incident(i, incmod.title(i, sig[i["id"]]), a) for i, a in alerts], now)
+        return list(touched.values())
+
+    def incident_verdict(self, iid, verdict, note=None, who=None):
+        """Resolve an incident as real or a false alarm (`verdict`), or reopen it (None). A resolved incident
+        that was alerted is resolved at the destinations too. Works on any instance: the store is shared."""
+        if verdict is not None and verdict not in incmod.VERDICTS:
+            raise ValueError(f"verdict must be one of {', '.join(incmod.VERDICTS)}, or null to reopen")
+        with self.lock:
+            now = self._clock()
+            inc = store.set_incident_verdict(self.con, iid, verdict, (note or "")[:2000] or None, who, now)
+            if inc and verdict and inc["alerted"]:
+                sig = store.incident_signals(self.con, [iid])[iid]
+                self._queue([alertmod.from_incident(inc, incmod.title(inc, sig), "resolve")], now)
+            return inc
 
     def _alert_new_revocations(self):
         """Alert on directives issued since the last look, from wherever they came (this process, another
@@ -798,6 +855,7 @@ class Engine:
             self._queue_event_alerts(events)
             self._detect_probing()
             self._detect_tripwires()
+            self._update_incidents(events)
             self._first = False
             self.last_refresh = time.time()
             self.last_duration = round(self.last_refresh - t0, 2)
@@ -978,6 +1036,7 @@ class Engine:
             try:
                 self.check_slos()
                 self._alert_new_revocations()
+                self.update_incidents()
                 self.deliver_alerts()
             except Exception:
                 traceback.print_exc()

@@ -71,6 +71,8 @@ class ScopedKeysTest(unittest.TestCase):
                                 (json.dumps({"through": old, "through_end": T - 39 * 86400}),))
         # a revocation directive for the other team's agent (server-side revocation, #8)
         cls.eng.revoke(agent=f"{MARK}_agent", project=MARK, reason=f"{SECRET} probing", minutes=60)
+        # ... which opens an incident about that agent (incidents.py)
+        cls.bravo_incident = cls.eng.con.execute("SELECT id FROM incidents WHERE project = ?", (MARK,)).fetchone()[0]
         # install-wide config can name the other project too: an SLO on it, and one on its workflow
         slo.save(cls.eng.data_dir, slo.DEFAULT_SLOS + [
             {"id": "b1", "name": f"{MARK} latency", "metric": "p95_seconds", "op": "<=", "target": 60,
@@ -121,6 +123,7 @@ class ScopedKeysTest(unittest.TestCase):
                 yield r + qs
         yield f"/api/task/{bravo_task}"
         yield f"/api/workflow?name={MARK}_flow"
+        yield f"/api/incident/{self.bravo_incident}"
 
     def test_a_scoped_key_never_sees_another_projects_data(self):
         leaks, admin_saw = [], 0

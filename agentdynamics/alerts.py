@@ -11,7 +11,8 @@ Destinations are `[[alerts.webhooks]]` in agentdynamics.toml:
     routing_key_env = "PD_ROUTING_KEY"   # PagerDuty Events API v2 integration key (or routing_key = "...")
     min_severity = "critical"            # info | warning (default) | critical
     kinds = ["events", "slos"]           # default ["events"]; "slos" adds SLO burn-rate alerts,
-                                         # "revocations" the directives that stop an agent (server-side #8)
+                                         # "revocations" the directives that stop an agent (server-side #8),
+                                         # "incidents" one alert per security incident (incidents.py)
     projects = ["checkout"]              # optional: only these projects
     rules = ["run_failed"]               # optional: only these health rules
 
@@ -19,6 +20,9 @@ What is sent:
 - A health-rule event is a point in time. Slack and JSON get each one (JSON in the original
   `{"source": "agentdynamics", "events": [...]}` shape, a contract). PagerDuty gets one alert per rule,
   project and task type (the dedup key), so a burst of runaway-cost tasks is one incident, not fifty.
+- An incident is several security signals about one agent: a trigger when it opens, another when it
+  escalates (warning to critical), a resolve when a person gives it a verdict. A destination that takes
+  incidents instead of events hears once about an agent tripping five health rules, not five times.
 - An SLO alert has a start and an end: a trigger when a burn-rate policy starts firing and a resolve when
   it stops (slo.alert_conditions). What is firing is kept in the durable `alert_state` table, so a restart
   neither repeats a trigger nor forgets to resolve.
@@ -38,7 +42,7 @@ from collections import OrderedDict
 from urllib.parse import quote
 
 FORMATS = ("json", "slack", "pagerduty")
-KINDS = ("events", "slos", "revocations")
+KINDS = ("events", "slos", "revocations", "incidents")
 SEV = {"info": 1, "warning": 2, "critical": 3}
 # https://raw.githubusercontent.com/PagerDuty/api-schema/main/reference/events-v2/openapiv3.json
 PAGERDUTY_URL = "https://events.pagerduty.com/v2/enqueue"
@@ -145,6 +149,14 @@ def from_revocation(d):
             "ts": d["created"], "revocation": d}
 
 
+def from_incident(inc, summary, action="trigger"):
+    """`action`: trigger (opened), escalate (now more severe) or resolve (a person gave a verdict)."""
+    return {"kind": "incident", "action": action, "key": f"incident/{inc['id']}", "severity": inc["severity"],
+            "summary": summary, "project": inc["project"], "ts": inc["resolved_at"] if action == "resolve" else inc["updated"],
+            "incident": {k: inc[k] for k in ("id", "project", "agent", "workflow", "opened", "updated", "status",
+                                               "severity", "signals", "verdict", "note")}}
+
+
 # ---------------------------------------------------------------- formats
 
 def _dedup_key(key):
@@ -160,6 +172,8 @@ def link(console_url, alert):
         return f"{base}/#/task/{quote(alert['event']['task_id'], safe='')}"
     if alert["kind"] == "revocation":
         return f"{base}/#/governance"
+    if alert["kind"] == "incident":
+        return f"{base}/#/incident/{quote(alert['incident']['id'], safe='')}"
     return f"{base}/#/slos"
 
 
@@ -187,6 +201,10 @@ def render(dest, alerts, console_url=""):
         revs = [dict(a["revocation"], summary=a["summary"]) for a in alerts if a["kind"] == "revocation"]
         if revs:
             bodies.append({"source": "agentdynamics", "revocations": revs})
+        incs = [dict(a["incident"], action=a["action"], summary=a["summary"], link=link(console_url, a))
+                for a in alerts if a["kind"] == "incident"]
+        if incs:
+            bodies.append({"source": "agentdynamics", "incidents": incs})
         return bodies
     # one line (Slack) or one alert (PagerDuty) per dedup key, so a burst of the same violation reads as one
     groups = OrderedDict()
@@ -202,6 +220,11 @@ def render(dest, alerts, console_url=""):
             ref = f" · <{url}|{'latest' if len(g) > 1 else 'open'}>" if url else ""
             if a["kind"] == "revocation":
                 lines.append(f"*REVOKED* · {_slack_escape(a['summary'])}{ref}")
+                continue
+            if a["kind"] == "incident":
+                head = {"trigger": "INCIDENT", "escalate": "ESCALATED", "resolve": "RESOLVED"}[a["action"]]
+                verdict = f" ({a['incident']['verdict'].replace('_', ' ')})" if a["action"] == "resolve" else ""
+                lines.append(f"*{head}*{verdict} · {_slack_escape(a['summary'])}{ref}")
                 continue
             if a["kind"] == "event":
                 e = a["event"]
@@ -221,6 +244,9 @@ def render(dest, alerts, console_url=""):
         if a["kind"] == "revocation":
             d = a["revocation"]
             details, group, klass = dict(d), d.get("agent") or "all agents", "revocation"
+        elif a["kind"] == "incident":
+            i = a["incident"]
+            details, group, klass = dict(i), i.get("agent") or i.get("workflow") or "all agents", "incident"
         elif a["kind"] == "event":
             e = a["event"]
             details = {"rule": e["rule"], "rule_id": e["rule_id"], "message": e["message"], "value": e.get("value"),

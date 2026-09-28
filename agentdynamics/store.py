@@ -2,9 +2,10 @@
 
 Two kinds of tables:
   * durable  - spans_raw (pushed/pulled telemetry), source_state, alerts_sent, grades, alert_outbox,
-               alert_state, rollup_daily, revocations. These are a system of record. grades holds outcomes stated after
-               the fact, so it must survive a schema change; the alert tables hold what was promised to a
-               pager; rollup_daily holds the only copy of days that retention has purged.
+               alert_state, rollup_daily, revocations, incidents, incident_signals. These are a system of record.
+               grades holds outcomes stated after the fact, so it must survive a schema change; the alert tables
+               hold what was promised to a pager; rollup_daily holds the only copy of days that retention has
+               purged; incidents hold the verdicts people gave, and what was alerted.
   * derived  - runs, steps, tasks, events, baselines, meta. Rebuildable from sources; dropped on schema change.
 
 Where it lives: a SQLite file in the data directory (the default, and the zero-dependency path), or a
@@ -46,6 +47,10 @@ TASK_COLS = ["id", "run_id", "idx", "project", "environment", "source", "framewo
              "governed", "policy_version", "policy_denials", "spend_denials", "budget_denials", "repeated_denials",
              "revocations", "blocked_cost", "tripwires", "tripwire_what"]
 TASK_JSON = ["phase_calls", "phase_cost", "scores", "path", "denied_rules"]
+# an incident: security signals about one agent (or, without an agent name, one workflow) in one project
+INCIDENT_COLS = ["id", "project", "agent", "workflow", "opened", "updated", "status", "severity", "signals",
+                 "verdict", "note", "resolved_by", "resolved_at", "alerted"]
+SIGNAL_COLS = ["ref", "incident_id", "kind", "ts", "rule", "severity", "task_id", "run_id", "detail"]
 STEP_COLS = ["run_id", "seq", "task_id", "kind", "name", "model", "phase", "target", "ts", "start_ts", "end_ts",
              "duration_ms", "cost", "attributed_cost", "input_tokens", "output_tokens", "cache_read", "cache_write",
              "context_tokens", "thinking_tokens", "is_error", "output_chars", "text", "input_preview", "error",
@@ -97,6 +102,9 @@ CREATE TABLE IF NOT EXISTS alert_state (key PRIMARY KEY, since REAL, data);
 CREATE TABLE IF NOT EXISTS revocations (id PRIMARY KEY, project, agent, reason, source, created REAL, expires REAL,
                                         cleared REAL);
 CREATE TABLE IF NOT EXISTS rollup_daily ({", ".join(ROLLUP_DIMS + ROLLUP_SUMS)}, PRIMARY KEY({", ".join(ROLLUP_DIMS)})) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS incidents ({", ".join(INCIDENT_COLS)}, PRIMARY KEY(id));
+CREATE TABLE IF NOT EXISTS incident_signals ({", ".join(SIGNAL_COLS)}, PRIMARY KEY(ref));
+CREATE INDEX IF NOT EXISTS incident_signals_incident ON incident_signals(incident_id);
 """
 
 
@@ -160,6 +168,10 @@ SCOPED_VIEWS = {
     "rollup_daily": "SELECT * FROM main.rollup_daily WHERE project IN ({p})",
     # an install-wide directive (no project) applies to every project, so every scoped key sees it
     "revocations": "SELECT * FROM main.revocations WHERE project IN ({p}) OR project IS NULL",
+    # an incident about such a directive, likewise
+    "incidents": "SELECT * FROM main.incidents WHERE project IN ({p}) OR project IS NULL",
+    "incident_signals": "SELECT * FROM main.incident_signals WHERE incident_id IN "
+                        "(SELECT id FROM main.incidents WHERE project IN ({p}) OR project IS NULL)",
 }
 
 
@@ -489,6 +501,80 @@ def clear_revocation(con, rid, now):
     permanent, and nothing here can loosen Aegis."""
     with con:
         return con.execute("UPDATE revocations SET cleared = ? WHERE id = ? AND cleared IS NULL", (now, rid)).rowcount
+
+
+# ---------------------------------------------------------------- incidents (durable)
+
+def known_signals(con, refs):
+    """Which of `refs` are already part of an incident."""
+    out = set()
+    for i in range(0, len(refs), 500):
+        chunk = refs[i:i + 500]
+        out |= {r[0] for r in con.execute(f"SELECT ref FROM incident_signals WHERE ref IN ({','.join('?' * len(chunk))})",
+                                          chunk)}
+    return out
+
+
+def open_incidents(con, status="open"):
+    """The latest incident with `status` for each (project, agent, workflow): open ones by last activity,
+    resolved ones by when they were resolved."""
+    out = {}
+    order = "updated" if status == "open" else "resolved_at"
+    for r in con.execute(f"SELECT * FROM incidents WHERE status = ? ORDER BY {order}, id", (status,)):
+        out[(r["project"], r["agent"], r["workflow"])] = dict(r)
+    return out
+
+
+def write_incidents(con, incidents, signals):
+    """Insert or update `incidents` and add `signals` to them, in one transaction."""
+    with con:
+        con.executemany(f"INSERT OR REPLACE INTO incidents ({', '.join(INCIDENT_COLS)}) "
+                        f"VALUES ({', '.join('?' * len(INCIDENT_COLS))})",
+                        [[i.get(c) for c in INCIDENT_COLS] for i in incidents])
+        con.executemany(f"INSERT OR IGNORE INTO incident_signals ({', '.join(SIGNAL_COLS)}) "
+                        f"VALUES ({', '.join('?' * len(SIGNAL_COLS))})",
+                        [[json.dumps(s["detail"], default=str) if c == "detail" else s.get(c) for c in SIGNAL_COLS]
+                         for s in signals])
+
+
+def incidents(con, status=None, since=None, project=None, limit=500):
+    clauses, args = [], []
+    if status:
+        clauses.append("status = ?")
+        args.append(status)
+    if since:
+        clauses.append("updated >= ?")
+        args.append(since)
+    if project:
+        clauses.append("(project = ? OR project IS NULL)")
+        args.append(project)
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    return [dict(r) for r in con.execute(f"SELECT * FROM incidents{where} ORDER BY updated DESC, id LIMIT ?",
+                                         args + [limit])]
+
+
+def incident_signals(con, ids):
+    """{incident id: [signal, oldest first]} with `detail` decoded."""
+    out = {i: [] for i in ids}
+    for i in range(0, len(ids), 500):
+        chunk = ids[i:i + 500]
+        for r in con.execute(f"SELECT * FROM incident_signals WHERE incident_id IN ({','.join('?' * len(chunk))}) "
+                             "ORDER BY ts, ref", chunk):
+            s = dict(r)
+            s["detail"] = json.loads(s["detail"]) if s["detail"] else {}
+            out[s["incident_id"]].append(s)
+    return out
+
+
+def set_incident_verdict(con, iid, verdict, note, who, now):
+    """Resolve an incident as `real` or `false_alarm`, or reopen it (`verdict` None). Returns the row, or None."""
+    with con:
+        n = con.execute("UPDATE incidents SET status = ?, verdict = ?, note = ?, resolved_by = ?, resolved_at = ? "
+                        "WHERE id = ?", ("resolved" if verdict else "open", verdict, note, who if verdict else None,
+                                         now if verdict else None, iid)).rowcount
+    if not n:
+        return None
+    return dict(con.execute("SELECT * FROM incidents WHERE id = ?", (iid,)).fetchone())
 
 
 def revocations(con, now, active=False, project=None, limit=200):

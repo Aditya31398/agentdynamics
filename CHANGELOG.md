@@ -9,9 +9,21 @@ bumps the minor version.
 ## [Unreleased]
 
 **Upgrading.** `SCHEMA_VERSION` 10: tasks and steps record tripwires. The derived tables are rebuilt from the
-sources on first start, as after any schema change; nothing to migrate.
+sources on first start, as after any schema change; nothing to migrate. The new durable `incidents` tables are
+created then too, and the first refresh opens incidents from the security events already held -- without
+alerting, as history never is.
 
 ### Added
+- **Incidents: one thing to judge per agent.** The security signals about one agent in one project -- a
+  tripwire touched, probing, refused calls, a grant revoked mid-run, a directive -- are grouped into an
+  incident, which gathers them until the agent has been quiet for a day (`[incidents] gap_hours`) and stays
+  open until someone resolves it as real or a false alarm. The new **Incidents** page shows each one's
+  signals task by task, the steps that are its evidence, and what to do: revoke the agent (recommended when
+  the evidence is of intent), tighten its policy, or give the verdict (an admin key). Alert destinations can
+  take `incidents` instead of `events`: one alert when an incident opens, one when it escalates, one when it
+  is resolved. Incidents are durable, like grades, and derived the same way by every store fed the same
+  traffic; new evidence after a verdict opens a new incident. `GET /api/incidents`, `GET /api/incident/<id>`,
+  `POST /api/incidents/<id>/verdict`.
 - **Tripwires: decoys no legitimate agent touches.** A decoy tool, or a **canary** -- a value planted where no
   agent has reason to look, like a fake credential in a config file. Unlike the watchdog and probing detection,
   there is no threshold: one touch is certain evidence. In process (`instrument(..., tripwires={...})`), every

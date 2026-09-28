@@ -8,6 +8,7 @@ events and baselines from these sources, as any process's first refresh does.
   grades          outcomes stated after the fact
   rollup_daily    the only copy of days retention has purged
   revocations     server-side revocation directives
+  incidents, incident_signals   security incidents, and the verdicts people gave them
   alerts_sent, alert_state, alert_outbox   what was alerted, what is firing, what is waiting to be sent
   source_state    pull cursors (LangSmith, Langfuse) and other saved state
   rules.json, slos.json in the data directory -> the store, where every instance reads them
@@ -30,7 +31,7 @@ import time
 from . import store
 
 DURABLE = ["spans_raw", "source_state", "alerts_sent", "grades", "alert_outbox", "alert_state", "rollup_daily",
-           "revocations"]
+           "revocations", "incidents", "incident_signals"]
 MARKER = "copied_from"
 
 

@@ -242,6 +242,31 @@ class ConsoleInteractionTest(unittest.TestCase):
         self.assertIn("tripwire · canary vault_token", self.page.text("#wf"))
         self.assertNothingWentWrong()
 
+    def test_resolve_an_incident_then_reopen_it(self):
+        self.open("incidents", days="")
+        self.page.wait("!!document.querySelector('#inc-list tr.click')", what="the incident list")
+        self.assertIn("tripwire", self.page.text("#inc-list"))
+        self.page.click("#inc-list tr.click")
+        self.page.wait("location.hash.startsWith('#/incident/')", what="the incident page")
+        self.page.settle()
+        self.page.wait("!!document.querySelector('[data-verdict=\"false_alarm\"]')", what="the verdict buttons")
+        self.page.fill("#inc-note", "a test script hit the decoy")
+        self.page.click('[data-verdict="false_alarm"]')
+        self.page.wait("document.querySelector('#inc-summary') && document.querySelector('#inc-summary').innerText.includes('false alarm')",
+                       what="the incident shown as a false alarm")
+        self.assertIn("a test script hit the decoy", self.page.text("#inc-summary"))
+        iid = self.page.eval("location.hash").split("/")[-1]
+        self.assertEqual(self.api(f"/api/incident/{iid}")["incident"]["verdict"], "false_alarm")
+        self.page.click('[data-verdict=""]')                       # reopen
+        self.page.wait("!!document.querySelector('[data-verdict=\"real\"]')", what="the incident reopened")
+        self.page.goto(f"{self.url}/#/incidents?status=resolved")
+        self.page.settle()
+        self.page.wait("!!document.querySelector('#inc-tabs button.on[data-status=\"resolved\"]')", what="the Resolved tab")
+        self.assertIn("No resolved incidents", self.page.text())
+        self.page.click("#inc-tabs button[data-status='open']")
+        self.page.wait("!!document.querySelector('#inc-list tr.click')", what="the open incident again")
+        self.assertNothingWentWrong()
+
     def test_switching_a_rule_off_takes_its_events_away(self):
         self.open("rules")
         before = self.api("/api/events?days=")["events"]

@@ -91,6 +91,97 @@ governance.instrument(kernel, root, watchdog=governance.Watchdog(max_repeated_de
     bindRows(host);
   };
 
+  // ------------------------------------------------------------------ incidents (incidents.py)
+  const SEVERITY = { critical: "critical", warning: "warning", info: "unknown" };
+  const incStatus = (i) => i.status === "open" ? pill("warning", "open")
+    : pill(i.verdict === "real" ? "critical" : "ok", i.verdict === "real" ? "real" : "false alarm");
+
+  PAGES.incidents = async (host, _a, p, alive) => {
+    const status = p.status || "";
+    const d = await api("incidents", status ? { status } : {});
+    if (!alive()) return;
+    const tabs = [["", "All"], ["open", `Open (${d.open})`], ["resolved", "Resolved"]].map(([v, l]) =>
+      `<button class="${v === status ? "on" : ""}" data-status="${v}">${l}</button>`).join("");
+    const rows = d.incidents.map((i) => `<tr class="click" data-href="#/incident/${encodeURIComponent(i.id)}">
+        <td>${pill(SEVERITY[i.severity] || "unknown", i.severity)}</td>
+        <td><b>${esc(i.subject)}</b><div class="small muted">${esc(i.project || "every project")}${i.workflows.length ? " · " + esc(i.workflows.join(", ")) : ""}</div></td>
+        <td>${Object.entries(i.counts).map(([k, n]) => `<span class="tag ${k === "tripwire" || k === "probing" ? "bad" : ""}">${esc(k)}${n > 1 ? " ×" + n : ""}</span>`).join("")}
+          ${i.what.length ? `<div class="small muted">${esc(i.what.join(", "))}</div>` : ""}</td>
+        <td class="num">${num(i.tasks)}</td><td class="small muted" style="white-space:nowrap">${dt(i.opened)}</td>
+        <td class="small muted" style="white-space:nowrap">${ago(i.updated)}</td><td>${incStatus(i)}</td></tr>`).join("");
+    host.innerHTML = head("Incidents", "Security signals about one agent -- a tripwire touched, probing, refused calls, a revocation -- grouped into one thing to judge. Resolve each as <b>real</b> or a <b>false alarm</b>: the verdict is kept, and alert destinations that take <code>incidents</code> are resolved too.") +
+      `<div class="seg" id="inc-tabs" style="margin-bottom:12px">${tabs}</div>` +
+      (rows ? `<div class="card"><div class="table-wrap"><table id="inc-list"><thead><tr><th>Severity</th><th>Agent</th><th>Signals</th><th class="num">Tasks</th><th>Opened</th><th>Last</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></div>
+          <p class="small muted" style="margin:8px 0 0">Open incidents are listed whatever the time window; resolved ones within it.</p></div>`
+        : `<div class="card empty">${status === "resolved" ? "No resolved incidents in this window." : "No incidents. One opens when an agent touches a tripwire, probes its policy, has calls refused or its grant revoked, or a directive stops it."}</div>`);
+    $$("#inc-tabs button", host).forEach((b) => b.onclick = () => { location.hash = "#/incidents" + (b.dataset.status ? "?status=" + b.dataset.status : ""); });
+    bindRows(host);
+  };
+
+  PAGES.incident = async (host, id, _p, alive) => {
+    const d = await api(`incident/${encodeURIComponent(id)}`);
+    if (!alive()) return;
+    const i = d.incident;
+    const resolved = i.status === "resolved"
+      ? `${i.verdict === "real" ? "Real" : "False alarm"} · ${esc(i.resolved_by || "")} · ${dt(i.resolved_at)}${i.note ? `<div class="small">${esc(i.note)}</div>` : ""}` : "";
+    const acts = d.actions.map((a) => {
+      if (a.kind === "revoked") return `<div class="small">${pill("critical", "revoked")} until ${dt(a.until)} · <a href="#/governance">directives</a></div>`;
+      if (a.kind === "revoke") return `<button class="${a.recommended ? "primary" : ""}" id="inc-revoke">Revoke ${esc(a.agent)} for ${a.minutes} min</button>
+        <span class="small muted">${a.recommended ? "recommended: the evidence is of intent" : "optional: refused calls alone may be a policy the agent doesn't know"}</span>`;
+      if (a.kind === "tighten") return `<a class="btn" href="#/governance" title="Generate tightened policy">Tighten ${esc(a.policy)}</a>`;
+      return "";
+    }).join("");
+    const verdict = i.status === "open"
+      ? `<textarea id="inc-note" rows="2" placeholder="note (optional): what it was, what was done" style="width:100%;margin:8px 0"></textarea>
+         <div class="row"><button class="primary" data-verdict="real">Real</button><button data-verdict="false_alarm">False alarm</button></div>`
+      : `<div class="row" style="margin-top:8px"><button data-verdict="">Reopen</button></div>`;
+    // one row per task (a probing task is also "refused calls" and "revoked"), one per directive
+    const groups = [];
+    const byTask = {};
+    for (const s of d.signals) {
+      if (!s.task_id) { groups.push({ ts: s.ts, sigs: [s] }); continue; }
+      if (!byTask[s.task_id]) groups.push(byTask[s.task_id] = { ts: s.ts, task_id: s.task_id, held: s.held, prompt: s.prompt, sigs: [] });
+      byTask[s.task_id].sigs.push(s);
+    }
+    const sigs = groups.map((g) => `<tr ${g.task_id && g.held ? `class="click" data-href="#/task/${encodeURIComponent(g.task_id)}"` : ""}>
+        <td class="small muted" style="white-space:nowrap">${dt(g.ts)}</td>
+        <td>${g.sigs.map((s) => `<span class="tag ${s.severity === "critical" ? "bad" : ""}" title="${esc(s.detail.message || "")}">${esc(s.label)}</span>`).join("")}</td>
+        <td class="small">${g.task_id ? (g.held ? `<div class="truncate" style="max-width:340px">${esc(g.prompt)}</div>` : `<span class="muted">task no longer held</span>`)
+          : esc(`${g.sigs[0].detail.reason || ""} (${g.sigs[0].detail.source})`)}</td></tr>`).join("");
+    const ev = d.evidence.map((s) => `<tr class="click" data-href="#/task/${encodeURIComponent(s.task_id)}">
+        <td class="small muted" style="white-space:nowrap">${dt(s.ts)}</td>
+        <td><b>${esc(s.kind === "notice" ? "revoked" : s.kind === "llm" ? "model response" : s.name || "")}</b></td>
+        <td class="small">${esc(s.agent || "–")}</td>
+        <td>${s.tripwire ? `<span class="tag bad">${esc(s.tripwire)}</span>` : ""}${s.denied ? `<span class="tag bad">${esc(s.rule || "denied")}</span>` : ""}
+          <div class="small muted">${esc((s.error || (s.kind === "notice" ? s.text : "") || "").slice(0, 200))}</div></td></tr>`).join("");
+    host.innerHTML = head(`Incident · ${esc(i.subject)}`, esc(i.title)) +
+      `<div class="grid g-2-1"><div class="card" id="inc-summary"><div class="between"><div class="row">${pill(SEVERITY[i.severity] || "unknown", i.severity)} ${incStatus(i)}</div>
+          <span class="small muted">${esc(i.project || "every project")}</span></div>
+        <p class="small" style="margin:10px 0 4px">${num(i.signals)} signal(s) in ${num(i.tasks)} task(s), ${dt(i.opened)} – ${dt(i.updated)}${i.workflows.length ? " · " + esc(i.workflows.join(", ")) : ""}</p>
+        ${i.what.length ? `<div>${i.what.map((w) => `<span class="tag bad">${esc(w)}</span>`).join("")}</div>` : ""}
+        ${resolved ? `<p class="small" style="margin-top:8px">${resolved}</p>` : ""}</div>
+      ${card("What to do", `<div id="inc-actions" style="display:flex;flex-direction:column;gap:8px">${acts || `<span class="small muted">No agent name to act on: the signals came from ${esc(i.subject)}.</span>`}</div>${verdict}`, "needs an admin key")}</div>
+      <div style="margin-top:14px">${card("Signals", `<div class="table-wrap"><table id="inc-signals"><thead><tr><th>When</th><th>Signals</th><th>Task, or directive</th></tr></thead><tbody>${sigs}</tbody></table></div>`, "by task, oldest first")}</div>
+      <div style="margin-top:14px">${card("Evidence", ev ? `<div class="table-wrap"><table><thead><tr><th>When</th><th>Step</th><th>Agent</th><th>Why</th></tr></thead><tbody>${ev}</tbody></table></div>
+          ${d.evidence_total > d.evidence.length ? `<p class="small muted">${d.evidence.length} of ${d.evidence_total} steps shown.</p>` : ""}`
+        : `<div class="empty">No steps: the tasks are past retention, or the signals are directives.</div>`, "the touching, refused and revoked steps")}</div>`;
+    const rv = $("#inc-revoke", host);
+    const act = d.actions.find((a) => a.kind === "revoke");
+    if (rv) rv.onclick = async () => {
+      try {
+        await post("revocations", { agent: act.agent, project: act.project || "", minutes: act.minutes, reason: `incident ${i.id}: ${i.title}` });
+        toast("Directive issued"); route();
+      } catch (e) { toast("Not issued: " + e.message); }
+    };
+    $$("[data-verdict]", host).forEach((b) => b.onclick = async () => {
+      try {
+        await post(`incidents/${encodeURIComponent(i.id)}/verdict`, { verdict: b.dataset.verdict || null, note: ($("#inc-note", host) || {}).value || "" });
+        toast(b.dataset.verdict ? "Resolved" : "Reopened"); route();
+      } catch (e) { toast("Not saved: " + e.message); }
+    });
+    bindRows(host);
+  };
+
   // Tripwires: decoy tools and canary values no legitimate agent touches. Shown first when touched: each touch
   // is certain evidence, not a statistic.
   function tripwireCard(tw) {
