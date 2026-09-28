@@ -187,6 +187,33 @@ def cmd_alerts(a, data):
     return 1 if failed else 0
 
 
+def cmd_store(a, data):
+    from . import config as cfgmod, migrate
+    from .pg import redact_url, schema_name
+    cfg = cfgmod.load(data)
+    url = a.to or (cfg.get("store") or {}).get("url")
+    if not url:
+        print("say where to: --to postgresql://... (or set [store] url / AGENTDYNAMICS_DB_URL)")
+        return 2
+    schema = schema_name(a.schema or (cfg.get("store") or {}).get("schema") or "agentdynamics", data)
+    if a.action == "verify":
+        ok = True
+        for what, (lite, pg) in migrate.verify(data, url, schema).items():
+            same = lite == pg
+            ok &= same
+            print(f"  {what:<14} SQLite {lite:>10}  Postgres {pg:>10}  {'ok' if same else 'DIFFERENT'}")
+        return 0 if ok else 1
+    print(f"copying {os.path.join(data, 'agentdynamics.db')} -> {redact_url(url)} (schema {schema})")
+    try:
+        migrate.copy(data, url, schema, force=a.force)
+    except migrate.CopyError as ex:
+        print(f"not copied: {ex}")
+        return 1
+    print("done. Point the servers at it ([store] url or AGENTDYNAMICS_DB_URL); their first refresh rebuilds the "
+          "analysis from what was copied. API keys and pricing.json are configuration: copy them yourself.")
+    return 0
+
+
 def cmd_revoke(a, data):
     from . import config as cfgmod, store
     con = store.connect(*store.target(cfgmod.load(data), data))
@@ -399,6 +426,11 @@ def main(argv=None):
     al.add_argument("action", choices=["status", "test"],
                     help="status: destinations, queue and firing SLO alerts; test: send a test alert to each")
     al.add_argument("--to", metavar="NAME", help="test only this destination (its name, as status shows it)")
+    st = sub.add_parser("store", help="copy a SQLite store into Postgres (copy), or compare the two (verify)")
+    st.add_argument("action", choices=["copy", "verify"])
+    st.add_argument("--to", metavar="URL", help="the Postgres URL (default: [store] url / AGENTDYNAMICS_DB_URL)")
+    st.add_argument("--schema", help="the Postgres schema (default: [store] schema, else agentdynamics)")
+    st.add_argument("--force", action="store_true", help="merge into a schema that already holds another store's data")
     rv = sub.add_parser("revoke", help="revoke an agent's Aegis grants wherever it runs (applied in-process by "
                                        "agentdynamics.integrations.aegis), or list/clear directives")
     rv.add_argument("--agent", help="the agent (grant) name; omit to revoke every grant in the project")
@@ -433,6 +465,8 @@ def main(argv=None):
         return cmd_alerts(a, a.data)
     if cmd == "revoke":
         return cmd_revoke(a, a.data)
+    if cmd == "store":
+        return cmd_store(a, a.data)
 
     from .engine import Engine
     eng = Engine(a.data, a.claude_root or None)

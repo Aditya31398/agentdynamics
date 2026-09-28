@@ -108,6 +108,9 @@ AGENTDYNAMICS_URL=http://127.0.0.1:8790 python examples/governed_agent.py 45   #
   rely on row order without one (`ApiBase.tasks()` orders by start and id for this). `tests/test_postgres.py`
   compares every route across the two; run the suite on Postgres with
   `AGENTDYNAMICS_DB_URL=<url> AGENTDYNAMICS_DB_SCHEMA="t_{data_dir}" AGENTDYNAMICS_TEST_PG_URL=<url>` (CI does).
+- **A new durable table goes in `migrate.DURABLE`** too, or moving an install to Postgres
+  (`agentdynamics store copy`) leaves it behind; `CopyCoversTheStoreTest` fails until it is. If the source
+  deletes rows from it, a re-copy deletes them as well (it replaces each table), or they come back.
 - **On Postgres, several instances share a schema; only the writer analyses** (`engine.writer`, an advisory
   lock). Anything a reader instance does that the writer must see goes through the store: ingest, grades,
   rules and SLOs (`Engine._setting`). Work that uses the in-memory analysis (SLO checks, alert delivery,
@@ -136,6 +139,7 @@ agentdynamics/
   engine.py           sources, spans_raw assembly, incremental refresh, alerts, pullers
   store.py            SQLite (WAL) or Postgres; durable vs derived tables
   pg.py               the Postgres store: sqlite3-like connection adapter, SQL translation, typed schema, reader pool
+  migrate.py          `store copy|verify`: a SQLite store's durable tables, run files and settings into Postgres
   server.py           HTTP handler: receivers (/v1/traces, /langsmith/*, /api/ingest*), auth roles, routing
   api/                the read API as mixins, one per console area: base, monitor, diagnose, assess, governance, ops
   web/                index.html, app.js (helpers, router, boot), pages/<area>.js (each area's pages), charts.js, style.css

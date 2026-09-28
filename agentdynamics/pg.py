@@ -379,7 +379,7 @@ def connect_store(url, schema, schema_version, derived):
 # the primary key of every table an INSERT OR REPLACE writes, for its ON CONFLICT clause
 PRIMARY_KEYS = {"runs": ("id",), "tasks": ("id",), "baselines": ("task_type",), "meta": ("k",),
                 "spans_raw": ("source", "span_id"), "source_state": ("name",), "alerts_sent": ("event_id",),
-                "grades": ("task_id",), "alert_state": ("key",)}
+                "grades": ("task_id",), "alert_state": ("key",), "revocations": ("id",), "alert_outbox": ("id",)}
 
 _WEEK = ("(to_char({d}, 'YYYY') || '-W' || "
          "lpad(floor((extract(doy from {d}) + 7 - extract(isodow from {d})) / 7)::int::text, 2, '0'))")

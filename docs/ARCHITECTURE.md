@@ -102,10 +102,17 @@ dependencies: the driver is the optional extra `agentdynamics[postgres]` (psycop
   console from what it wrote, and the first to find the lock free takes over. Grades, health rules and
   SLOs saved on any instance are stored in the database and reach the writer, which re-scores every task
   when the rules change. `/healthz` says which role an instance has.
+- **Moving an install.** `agentdynamics store copy` (`migrate.py`) copies what can't be rebuilt from a SQLite
+  store into Postgres -- the durable tables, SDK run files as `sdk` documents, and rules and SLOs saved as
+  files -- and the first refresh on Postgres derives the rest, as after any schema change. It reads one
+  snapshot of the file, so the old server can keep running; a second copy after stopping it makes the schema
+  equal to the source again, deletions included (an alert delivered in between must not be queued twice).
+  Once a Postgres instance has refreshed on the schema, or into a schema holding another store, it only
+  merges, and only when asked. `tests/test_postgres.py` moves a store and compares every route before and
+  after; a durable table added to `store.py` must be added to `migrate.DURABLE`, which a test checks.
 - **Limits.** The writer holds the analysis in memory, as a single instance does, so the analysis scales up,
   not out: adding instances adds read and ingest capacity, not analysis capacity. Instances share one
-  configuration (keys by environment, not `keys create`, which writes a local file). Switching an existing
-  SQLite install to Postgres starts from an empty store: nothing imports the SQLite file yet. Local dates follow
+  configuration (keys by environment, not `keys create`, which writes a local file). Local dates follow
   `TZ`, else the system zone where the OS names it, else today's UTC offset.
 
 ## Retention and rollups

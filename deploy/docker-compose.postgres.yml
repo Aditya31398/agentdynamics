@@ -7,6 +7,13 @@
 #
 # With more than one instance, put a load balancer in front of port 8787 instead of publishing it per
 # instance, and give every instance the same configuration (keys by environment, not `keys create`).
+#
+# Moving an install that has been running on the SQLite file: stop it, copy the store, check, start.
+#
+#   docker compose -f deploy/docker-compose.yml stop agentdynamics
+#   docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.postgres.yml run --rm agentdynamics store copy
+#   docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.postgres.yml run --rm agentdynamics store verify
+#   docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.postgres.yml up -d
 services:
   agentdynamics:
     ports: !reset []

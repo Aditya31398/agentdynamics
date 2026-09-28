@@ -81,6 +81,64 @@ def same(a, b, path=""):
     return None if a == b else f"{path}: {a!r} != {b!r}"
 
 
+def server_routes():
+    """Every route server.py names: a route added later is covered without editing a test."""
+    with open(os.path.join(ROOT, "agentdynamics", "server.py"), encoding="utf-8") as f:
+        return sorted(set(re.findall(r'"(/api/[a-z/]+|/metrics)"', f.read())))
+
+
+def get(base, path):
+    try:
+        with urllib.request.urlopen(base + path, timeout=60) as r:
+            return r.status, r.read().decode()
+    except urllib.error.HTTPError as ex:
+        return ex.code, ex.read().decode()
+
+
+INSTALL_FACTS = ("/api/config", "/api/sources", "/api/alerts")     # where the store is, process stats
+
+
+def route_paths(routes, skip=INSTALL_FACTS):
+    for r in routes:
+        if r.endswith("/") or r in skip:
+            continue
+        for qs in ("", "?days=", "?project=shop", "?days=2&sub=1", "?type=support", "?group=project&metrics="
+                   "tasks,cost,avg_cost,avg_score,error_rate,rework_rate,verification_rate,avg_context,cache_hit",
+                   "?group=day", "?group=week", "?group=hour", "?group=models", "?sort=score", "?sort=baseline",
+                   "?dim=project&a=shop&b=billing", "?name=support"):
+            yield r + qs
+    for tid in ("bench-3#0", "bench-10#0", "otlp:" + f"{5:032x}" + "#0", "gov-0#0"):
+        yield "/api/task/" + quote(tid, safe="")
+
+
+def route_diffs(url_a, url_b, paths, process=("refresh", "alerts_")):
+    """(where the two servers' answers differ, how many answers were compared). Metrics naming one of
+    `process` count what a process did, not what the store holds."""
+    diffs, compared = [], 0
+    for p in paths:
+        (sa, a), (sb, b) = get(url_a, p), get(url_b, p)
+        if sa != sb:
+            diffs.append(f"{p}: status {sa} != {sb}: {b[:200]}")
+            continue
+        if p.startswith("/metrics"):
+            a = {ln.rsplit(" ", 1)[0]: float(ln.rsplit(" ", 1)[1]) for ln in a.splitlines() if ln and ln[0] != "#"}
+            b = {ln.rsplit(" ", 1)[0]: float(ln.rsplit(" ", 1)[1]) for ln in b.splitlines() if ln and ln[0] != "#"}
+            d = same({k: v for k, v in a.items() if not any(x in k for x in process)},
+                     {k: v for k, v in b.items() if not any(x in k for x in process)}, p)
+        else:
+            d = same(json.loads(a), json.loads(b), p)
+        compared += 1
+        if d:
+            diffs.append(d[:300])
+    return diffs, compared
+
+
+def serve(e):
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), type("H", (Handler,), {"api": Api(e)}))
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, f"http://127.0.0.1:{srv.server_address[1]}"
+
+
 def traffic(e, now):
     """A varied store: workflows, models, tools, errors, subagents, conversations, governance, OTLP, grades."""
     import bench
@@ -121,14 +179,10 @@ class SameAnswersTest(unittest.TestCase):
             e = Engine(d, None, cfg=cfg)
             e._clock = lambda: now
             traffic(e, now)
-            srv = ThreadingHTTPServer(("127.0.0.1", 0), type(f"H{kind}", (Handler,), {"api": Api(e)}))
-            threading.Thread(target=srv.serve_forever, daemon=True).start()
+            srv, url = serve(e)
             cls.engines.append(e)
             cls.servers.append(srv)
-            cls.urls.append(f"http://127.0.0.1:{srv.server_address[1]}")
-        with open(os.path.join(ROOT, "agentdynamics", "server.py"), encoding="utf-8") as f:
-            src = f.read()
-        cls.routes = sorted(set(re.findall(r'"(/api/[a-z/]+|/metrics)"', src)))
+            cls.urls.append(url)
 
     @classmethod
     def tearDownClass(cls):
@@ -139,42 +193,8 @@ class SameAnswersTest(unittest.TestCase):
             e.con.close()
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
-    def get(self, base, path):
-        try:
-            with urllib.request.urlopen(base + path, timeout=60) as r:
-                return r.status, r.read().decode()
-        except urllib.error.HTTPError as ex:
-            return ex.code, ex.read().decode()
-
-    def paths(self):
-        for r in self.routes:
-            if r.endswith("/") or r in ("/api/config", "/api/sources", "/api/alerts"):
-                continue                              # install facts: where the store is, process stats
-            for qs in ("", "?days=", "?project=shop", "?days=2&sub=1", "?type=support", "?group=project&metrics="
-                       "tasks,cost,avg_cost,avg_score,error_rate,rework_rate,verification_rate,avg_context,cache_hit",
-                       "?group=day", "?group=week", "?group=hour", "?group=models", "?sort=score", "?sort=baseline",
-                       "?dim=project&a=shop&b=billing", "?name=support"):
-                yield r + qs
-        for tid in ("bench-3#0", "bench-10#0", "otlp:" + f"{5:032x}" + "#0", "gov-0#0"):
-            yield "/api/task/" + quote(tid, safe="")
-
     def test_every_route_answers_the_same(self):
-        diffs, compared = [], 0
-        for p in self.paths():
-            (sa, a), (sb, b) = self.get(self.urls[0], p), self.get(self.urls[1], p)
-            if sa != sb:
-                diffs.append(f"{p}: status {sa} != {sb}: {b[:200]}")
-                continue
-            if p.startswith("/metrics"):
-                a = {ln.rsplit(" ", 1)[0]: float(ln.rsplit(" ", 1)[1]) for ln in a.splitlines() if ln and ln[0] != "#"}
-                b = {ln.rsplit(" ", 1)[0]: float(ln.rsplit(" ", 1)[1]) for ln in b.splitlines() if ln and ln[0] != "#"}
-                d = same({k: v for k, v in a.items() if "refresh" not in k and "alerts_" not in k},
-                         {k: v for k, v in b.items() if "refresh" not in k and "alerts_" not in k}, p)
-            else:
-                d = same(json.loads(a), json.loads(b), p)
-            compared += 1
-            if d:
-                diffs.append(d[:300])
+        diffs, compared = route_diffs(self.urls[0], self.urls[1], route_paths(server_routes()))
         self.assertGreater(compared, 200)
         self.assertEqual(diffs, [], f"{len(diffs)} of {compared} responses differ between SQLite and Postgres:\n"
                          + "\n".join(diffs))
@@ -185,7 +205,7 @@ class SameAnswersTest(unittest.TestCase):
         if not password:
             self.skipTest("the test database URL has no password")
         for path in ("/api/config", "/metrics", "/healthz", "/api/sources"):
-            self.assertNotIn(password, self.get(self.urls[1], path)[1], path)
+            self.assertNotIn(password, get(self.urls[1], path)[1], path)
 
     def test_the_stores_really_differ(self):
         """So the comparison can't pass by both servers reading one store."""
@@ -367,6 +387,217 @@ class FleetTest(unittest.TestCase):
         self.assertTrue(r.refresh())
         self.assertTrue(r.writer)
         self.assertEqual(self.tasks(r), 2)
+
+
+def quiet(*a, **k):
+    pass
+
+
+class CopyCoversTheStoreTest(unittest.TestCase):
+    def test_every_durable_table_is_copied(self):
+        """A durable table added later and not copied would be left behind by every move to Postgres."""
+        from agentdynamics import migrate, store
+        tables = set(re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)", store.SCHEMA))
+        self.assertEqual(tables - set(store.DERIVED), set(migrate.DURABLE))
+
+
+@unittest.skipUnless(PG_URL and has_driver(), "set AGENTDYNAMICS_TEST_PG_URL and install psycopg to run")
+class CopyTest(unittest.TestCase):
+    """An install moved with `agentdynamics store copy` answers as it did before the move.
+
+    The SQLite store holds what only it has: days retention purged (rollups), SDK run files, grades, rules and
+    SLOs saved to files, revocation directives, queued and firing alerts, pull cursors. It is copied, changed
+    (a grade taken back, an alert delivered, a run added) and copied again, as a move with the old server
+    still running would be. The Postgres instance then starts from an empty data directory, so nothing can
+    come from files, and every route must answer as the SQLite instance does."""
+
+    @classmethod
+    def setUpClass(cls):
+        from agentdynamics import alerts as alertmod, migrate, store
+        from test_rollups import run as dated_run
+        cls.tmp = tempfile.mkdtemp()
+        cls.now = now = time.time()
+        cls.src, cls.dst = os.path.join(cls.tmp, "sqlite"), os.path.join(cls.tmp, "postgres")
+        cls.schema = "copy_" + os.urandom(4).hex()
+        os.makedirs(cls.src)
+        os.makedirs(cls.dst)
+        alerting = {"webhooks": [{"name": "hook", "url": "http://127.0.0.1:9/", "kinds": ["slos"]}]}
+
+        def cfg_for(d, url):
+            cfg = config.load(d)
+            cfg["store"] = {"url": url, "schema": cls.schema}
+            cfg["retention"]["days"] = 30
+            cfg["alerts"] = alerting
+            return cfg
+
+        slo.save(cls.src, [{"id": "shop", "name": "Shop success", "metric": "success_rate", "op": ">=",
+                            "target": 0.97, "window_days": 7, "scope": {"project": "shop"}}])
+        e = cls.lite = Engine(cls.src, None, cfg=cfg_for(cls.src, ""))
+        e._clock = lambda: now
+        for d in range(35, 45):              # older than retention: after the purge, only rollups hold them
+            e.ingest(dated_run(f"old-{d}", now - d * 86400, ["shop", "billing"][d % 2], failed=d % 3 == 0))
+        traffic(e, now)                      # its second refresh rolls up and purges the old days
+        e.save_rules([dict(r, enabled=False) if r["id"] == "run_failed" else r for r in e.rules()])
+        e.revoke(agent="refund-bot", project="shop", reason="probing issue_refund", minutes=90)
+        store.clear_revocation(e.con, e.revoke(reason="all agents, briefly"), now)
+        hook = alertmod.destinations(alerting)[0][0]["id"]
+        store.outbox_add(e.con, [(hook, {"n": i}) for i in range(4)], now)
+        cls.delivered = store.outbox_pending(e.con)[0]["id"]
+        store.outbox_done(e.con, cls.delivered)                       # ids now start after 1
+        store.set_alert_state(e.con, {"slo:shop:page": {"slo": "shop", "severity": "page"},
+                                      "slo:shop:ticket": {"slo": "shop", "severity": "ticket"}}, [], now)
+        with e.con:
+            e.con.execute("INSERT INTO alerts_sent (event_id, ts) VALUES (?, ?)", ("ev-1", now))
+        store.set_state(e.con, "langsmith_pull", {"cursor": "2026-09-01T00:00:00Z"})
+        cls.first = migrate.copy(cls.src, PG_URL, cls.schema, log=quiet)
+        # the old server keeps running: a grade is taken back, an alert delivered, one resolved, a run arrives,
+        # a run's file goes (as retention removes them)
+        e.ungrade("bench-4#0")
+        cls.delivered_later = store.outbox_pending(e.con)[0]["id"]
+        store.outbox_done(e.con, cls.delivered_later)
+        store.set_alert_state(e.con, {}, ["slo:shop:ticket"], now)
+        e.ingest(dated_run("late-1", now - 300, "shop"))
+        os.remove(os.path.join(e.runs_dir, "bench-8.json"))
+        e.refresh()
+        cls.ingested = now - 3 * 86400        # when bench-5 arrived, as its file says
+        os.utime(os.path.join(e.runs_dir, "bench-5.json"), (cls.ingested, cls.ingested))
+        cls.second = migrate.copy(cls.src, PG_URL, cls.schema, log=quiet)
+        # the move: a Postgres instance with nothing on disk
+        p = cls.pg = Engine(cls.dst, None, cfg=cfg_for(cls.dst, PG_URL))
+        p._clock = lambda: now
+        p.refresh(force=True)
+        p.refresh()                          # its first retention pass: nothing may be rolled up twice
+        cls.servers, cls.urls = [], []
+        for x in (cls.lite, cls.pg):
+            srv, url = serve(x)
+            cls.servers.append(srv)
+            cls.urls.append(url)
+
+    @classmethod
+    def tearDownClass(cls):
+        for srv in cls.servers:
+            srv.shutdown()
+            srv.server_close()
+        cls.lite.con.close()
+        cls.pg.con.close()
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def test_every_route_answers_as_before_the_move(self):
+        paths = list(route_paths(server_routes(), skip=("/api/config", "/api/sources")))
+        diffs, compared = route_diffs(self.urls[0], self.urls[1], paths + ["/api/task/late-1%230"],
+                                      process=("refresh", "alerts_", "spans_ingested"))
+        self.assertGreater(compared, 200)
+        self.assertEqual(diffs, [], f"{len(diffs)} of {compared} responses differ after the move:\n" + "\n".join(diffs))
+
+    def test_the_moved_store_holds_its_history(self):
+        """So the comparison can't pass on a store with nothing in it."""
+        from agentdynamics import store
+        lite, pg = self.lite.con, self.pg.con
+        self.assertGreater(pg.execute("SELECT COUNT(DISTINCT day) FROM rollup_daily").fetchone()[0], 9)
+        self.assertEqual(pg.execute("SELECT COUNT(*) FROM tasks WHERE id LIKE 'old-%'").fetchone()[0], 0)
+        self.assertEqual(pg.execute("SELECT COUNT(*) FROM events WHERE rule_id = 'run_failed'").fetchone()[0], 0)
+        self.assertGreater(lite.execute("SELECT COUNT(*) FROM tasks WHERE outcome = 'failed'").fetchone()[0], 0)
+        self.assertEqual([s["id"] for s in self.pg.slos()], ["shop"])
+        self.assertEqual(len(store.revocations(pg, self.now)), 2)
+        self.assertEqual(store.get_state(pg, "langsmith_pull"), {"cursor": "2026-09-01T00:00:00Z"})
+        self.assertEqual(pg.execute("SELECT outcome FROM tasks WHERE id = 'bench-3#0'").fetchone()[0], "failed")
+        self.assertEqual(os.listdir(self.pg.runs_dir), [])
+        # an SDK run is stored as if ingested when its file was written, so retention ages it from then
+        self.assertAlmostEqual(pg.execute("SELECT updated FROM spans_raw WHERE source = 'sdk' AND span_id = 'bench-5'")
+                               .fetchone()[0], self.ingested, delta=1)
+
+    def test_what_the_source_deleted_is_gone(self):
+        from agentdynamics import store
+        pg = self.pg.con
+        self.assertEqual(pg.execute("SELECT COUNT(*) FROM grades WHERE task_id = 'bench-4#0'").fetchone()[0], 0)
+        ids = [r["id"] for r in store.outbox_pending(pg)]
+        self.assertEqual(ids, [r["id"] for r in store.outbox_pending(self.lite.con)])
+        self.assertNotIn(self.delivered_later, ids, "an alert delivered before the move would be sent again")
+        self.assertEqual(sorted(store.alert_state(pg)), ["slo:shop:page"])
+        self.assertEqual(pg.execute("SELECT COUNT(*) FROM spans_raw WHERE span_id = 'bench-8'").fetchone()[0], 0)
+        self.assertEqual(self.first["sdk runs"], self.second["sdk runs"])       # one came, one went
+
+    def test_counts_match(self):
+        from agentdynamics import migrate
+        for what, (lite, pg) in migrate.verify(self.src, PG_URL, self.schema).items():
+            self.assertEqual(lite, pg, what)
+
+    def test_new_alerts_queue_after_the_copied_ones(self):
+        from agentdynamics import store
+        pg = self.pg.con
+        top = pg.execute("SELECT MAX(id) FROM alert_outbox").fetchone()[0]
+        self.assertGreater(top, 1)
+        store.outbox_add(pg, [("x", {"new": True})], self.now)
+        row = pg.execute("SELECT id FROM alert_outbox WHERE dest = 'x'").fetchone()
+        self.assertGreater(row[0], top)
+        store.outbox_done(pg, row[0])
+
+    def test_a_schema_in_use_is_not_copied_over(self):
+        from agentdynamics import migrate
+        with self.assertRaisesRegex(migrate.CopyError, "already run"):
+            migrate.copy(self.src, PG_URL, self.schema, log=quiet)
+
+    def test_another_store_merges_only_when_asked(self):
+        from agentdynamics import migrate, store
+        from test_rollups import run as dated_run
+        schema = "copy_" + os.urandom(4).hex()
+        migrate.copy(self.src, PG_URL, schema, log=quiet)
+        other = os.path.join(self.tmp, "other")
+        os.makedirs(other)
+        cfg = config.load(other)
+        cfg["store"] = {"url": ""}
+        o = Engine(other, None, cfg=cfg)
+        self.addCleanup(o.con.close)
+        o.ingest(dated_run("other-1", self.now - 100, "shop"))
+        o.ingest_otlp(bench_otlp(), "application/json")
+        store.outbox_add(o.con, [("hook", {"from": "other"})], self.now)
+        with self.assertRaisesRegex(migrate.CopyError, "already holds"):
+            migrate.copy(other, PG_URL, schema, log=quiet)
+        dst = store.connect(PG_URL, schema)
+        self.addCleanup(dst.close)
+        before = dst.execute("SELECT COUNT(*) FROM spans_raw").fetchone()[0]
+        queued = [r["id"] for r in store.outbox_pending(dst)]
+        migrate.copy(other, PG_URL, schema, force=True, log=quiet)
+        self.assertGreater(dst.execute("SELECT COUNT(*) FROM spans_raw").fetchone()[0], before + 1)
+        pending = store.outbox_pending(dst)
+        self.assertEqual([r["id"] for r in pending][:len(queued)], queued, "the first store's alerts were overwritten")
+        self.assertEqual(json.loads(pending[-1]["body"]), {"from": "other"})
+        self.assertGreater(pending[-1]["id"], max(queued))
+        self.assertEqual(store.get_state(dst, "copied_from")["sqlite"],
+                         os.path.abspath(os.path.join(self.src, "agentdynamics.db")))
+
+    def test_the_command(self):
+        import subprocess
+        from urllib.parse import urlsplit
+        from agentdynamics import store
+        schema = "copy_" + os.urandom(4).hex()
+        env = {k: v for k, v in os.environ.items() if not k.startswith("AGENTDYNAMICS_DB")}
+
+        def cli(*args):
+            return subprocess.run([sys.executable, "-m", "agentdynamics", "--data", self.src, "--claude-root", "",
+                                   "store", *args, "--to", PG_URL, "--schema", schema],
+                                  capture_output=True, text=True, cwd=ROOT, env=env, timeout=300)
+        r = cli("copy")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("rollup_daily", r.stdout)
+        r = cli("verify")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("DIFFERENT", r.stdout)
+        password = urlsplit(PG_URL).password
+        if password:
+            self.assertNotIn(password, r.stdout + cli("copy").stdout)
+        dst = store.connect(PG_URL, schema)
+        self.addCleanup(dst.close)
+        with dst:
+            dst.execute("DELETE FROM grades WHERE task_id = 'bench-3#0'")
+        r = cli("verify")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertRegex(r.stdout, r"grades .* DIFFERENT")
+
+
+def bench_otlp():
+    import bench
+    return bench.otlp_batch(900, 2, random.Random(5), time.time() - 200)
 
 
 if __name__ == "__main__":

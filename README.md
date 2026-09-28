@@ -188,6 +188,8 @@ The store is a SQLite file by default. For several instances behind a load balan
 and operate like any other, use Postgres: `pip install "agentdynamics[postgres]"` and set
 `AGENTDYNAMICS_DB_URL=postgresql://...` (or `deploy/docker-compose.postgres.yml`). One instance is elected to
 write the analysis; the others serve the console and take ingest, and one takes over if the writer goes away.
+An existing install moves with its history: `agentdynamics store copy --to postgresql://...`, then
+`agentdynamics store verify`.
 
 - **Security:** role-based API keys, optionally scoped to projects. A scoped key reads only its projects' tasks,
   runs, steps and events, on every endpoint, and can't write into or over another project's traces.

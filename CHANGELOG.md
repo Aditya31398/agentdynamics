@@ -8,6 +8,19 @@ bumps the minor version.
 
 ## [Unreleased]
 
+### Added
+- **Moving an install to Postgres keeps its history.** `agentdynamics store copy --to postgresql://...` copies
+  a SQLite store into a Postgres schema: every span, the SDK run files, grades, the daily rollups of days
+  retention has purged, revocation directives, alert state and the alert queue, pull cursors, and the health
+  rules and SLOs saved in the data directory. The Postgres instances rebuild the analysis from it on their
+  first refresh. It reads one consistent snapshot, so it can run while the old server is up; copy again after
+  stopping it to pick up the rest -- the second copy also drops what the source dropped meanwhile, so an
+  alert delivered in between is not sent twice. It refuses a schema holding another store's data, or one a
+  Postgres instance has already run on, unless told to merge (`--force`). `agentdynamics store verify` compares
+  the two table by table. A test moves a store with purged history, grades, directives and queued alerts,
+  starts Postgres from an empty data directory, and checks that every console route answers as it did before
+  the move.
+
 ### Changed
 - **The console is tested by using it.** A new test drives headless Chrome through the console as a person
   would -- every sidebar link, the time-window and project filters (and that they survive a reload), opening a
