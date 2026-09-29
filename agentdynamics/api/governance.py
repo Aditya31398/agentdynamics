@@ -240,7 +240,9 @@ class GovernanceMixin:
             ts = [t for t in ts if t["policy_version"] == q["policy"]]
         if not ts:
             return {"error": "no governed runs match (need runs recorded with agentdynamics.integrations.aegis)"}
-        label = q.get("policy") or Counter(t["policy_version"] for t in ts if t["policy_version"]).most_common(1)[0][0]
+        # governed runs need not name their policy (an audit log, an older integration): then there is no base
+        labels = Counter(t["policy_version"] for t in ts if t["policy_version"])
+        label = q.get("policy") or (labels.most_common(1)[0][0] if labels else None)
         base = (self._policy_docs().get(label) or {}).get("doc") if label else None
         if q.get("base_doc"):
             base = q["base_doc"]

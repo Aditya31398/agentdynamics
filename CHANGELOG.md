@@ -8,7 +8,8 @@ bumps the minor version.
 
 ## [Unreleased]
 
-**Upgrading.** `SCHEMA_VERSION` 11: tasks and steps record tripwires, and what each agent did in a task. The derived tables are rebuilt from the
+**Upgrading.** `SCHEMA_VERSION` 12: tasks and steps record tripwires and what each agent did in a task, and tool
+arguments are stored redacted. The derived tables are rebuilt from the
 sources on first start, as after any schema change; nothing to migrate. The new durable `incidents` tables are
 created then too, and the first refresh opens incidents from the security events already held -- without
 alerting, as history never is.
@@ -64,6 +65,16 @@ alerting, as history never is.
   uncaught exception or HTTP error along the way. It drives Chrome over the DevTools protocol with the standard
   library alone (`tests/cdp.py`). Eleven breakages, from the 501 after a body-less POST to a filter that stops
   filtering, were each checked to fail it.
+
+### Fixed
+- **Tool-call arguments were stored unredacted.** A tool's input preview was redacted, but its full arguments
+  (`args_json`, which policy export learns from) kept emails, card numbers and keys verbatim, and were kept even
+  with `store_content = false`. They are now redacted like the rest of a step, and not stored at all with content
+  off; `SCHEMA_VERSION` 12 rebuilds existing stores without the old values. Policy export treats a redacted
+  value as unknowable: it no longer learns `one_of: ["[REDACTED]"]` (which would refuse every real address), and
+  its coverage check no longer counts a call as refused on the strength of a placeholder.
+- **Policy export answered 500** when the governed runs in view named no policy (an Aegis audit log, an older
+  integration). It now builds a policy from scratch, as it does with no base.
 
 ## [0.8.0] - 2026-09-27
 

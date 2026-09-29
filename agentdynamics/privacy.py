@@ -9,6 +9,7 @@ PATTERNS = {
     "credit_card": r"\b(?:\d[ -]?){13,16}\b",
 }
 TEXT_FIELDS = ("text", "input_preview", "error", "target")
+REDACTED = "[REDACTED]"
 TASK_TEXT_FIELDS = ("prompt", "final_text", "next_prompt", "root_error")   # what a user or model wrote
 
 
@@ -24,7 +25,16 @@ class Redactor:
             return s
         if not self.store_content:
             return f"[content not stored · {len(s)} chars]"
-        return self.rx.sub("[REDACTED]", s) if self.rx else s
+        return self.rx.sub(REDACTED, s) if self.rx else s
+
+    def args(self, s):
+        """A tool call's arguments as JSON (`args_json`): nothing at all with content storage off, else the
+        patterns replaced in place. The replacement has no quote or backslash, so valid JSON stays valid."""
+        if not s or not isinstance(s, str):
+            return s
+        if not self.store_content:
+            return None
+        return self.rx.sub(REDACTED, s) if self.rx else s
 
     def run(self, run):
         """Redact in place. Structural fields (names, timings, tokens) are kept."""

@@ -25,6 +25,7 @@ import os
 from collections import Counter, defaultdict
 
 from .analysis import pct
+from .privacy import REDACTED
 
 INTERNAL_TOOLS = {"model.spend", "agent.spawn", "agent.revoke"}
 OUTWARD_HINTS = ("http", "post", "send", "email", "mail", "slack", "webhook", "upload", "write", "publish", "notify")
@@ -66,6 +67,11 @@ def _numeric_constraints(name, values, c, changes, tool, headroom):
     c["max_value"] = cap
     changes.append(f"{tool}.{name}: max_value {base_cap} -> {cap} (largest observed {max(values)})")
     return c
+
+
+def _redacted(v):
+    """A value redaction changed (privacy.REDACTED): its real shape and length are unknowable."""
+    return REDACTED in (v if isinstance(v, str) else json.dumps(v, default=str))
 
 
 def _arg_constraints(name, values, base_c, n_calls, changes, tool, headroom=1.5):
@@ -154,6 +160,9 @@ def coverage(policy_doc, steps):
                 continue
             verdict_rule, arg, reason = v.rule, v.details.get("arg"), v.reason
             value = args.get(arg) if arg else None
+            if arg and _redacted(value):
+                unrecorded += 1                            # judged on "[REDACTED]", not on what was sent
+                continue
         denied += 1
         row["denied"] += 1
         row["rules"][verdict_rule] += 1
@@ -218,6 +227,12 @@ def synthesize(base_doc, tasks, steps, headroom=1.5, name=None):
         args = dict(entry.get("args") or {})
         for a in arg_names:
             vals = [o[a] for o in observed if a in o and o[a] is not None]
+            if any(_redacted(v) for v in vals):
+                # "[REDACTED]" is not what was sent: learning from it would refuse every real value
+                changes.append(f"{tool}.{a}: values redacted in storage; constraint left as the base has it")
+                if args.get(a) is None:
+                    args.pop(a, None)
+                continue
             args[a] = _arg_constraints(a, vals, args.get(a), len(observed), changes, tool, headroom)
         if args:
             entry["args"] = args

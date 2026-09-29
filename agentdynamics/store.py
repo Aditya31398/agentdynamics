@@ -18,12 +18,13 @@ import time
 
 from .privacy import TASK_TEXT_FIELDS
 
-SCHEMA_VERSION = 11   # 6: outcome_source / outcome_reason (graded outcomes)
+SCHEMA_VERSION = 12   # 6: outcome_source / outcome_reason (graded outcomes)
                      # 7: tokens_unverified (cache accounting that rests on a guess)
                      # 8: steps.governed (did this call go through an Aegis kernel)
                      # 9: task_type_source / task_type_match (how a task type was decided)
                      # 10: tasks.tripwires / tripwire_what, steps.tripwire (decoys touched)
                      # 11: tasks.agents (what each agent did: trust.py)
+                     # 12: steps.args_json redacted (a rebuild drops arguments stored before)
 
 RUN_COLS = ["id", "source", "project", "environment", "framework", "workflow", "cwd", "title", "agent_name", "parent_id",
             "parent_task_id", "is_subagent", "thread_id", "user_id", "tags", "root_status", "complete", "version", "git_branch",
@@ -216,6 +217,8 @@ def _redact_step(s, red):
             s[f] = red.text(s[f])
     if s.get("target") and red.rx is not None:
         s["target"] = red.rx.sub("[REDACTED]", s["target"]) if red.store_content else red.text(s["target"])
+    if s.get("args_json"):                 # a tool's arguments carry what its input preview does, and more
+        s["args_json"] = red.args(s["args_json"])
     return s
 
 

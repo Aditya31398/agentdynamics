@@ -65,6 +65,72 @@ def governed_steps(calls=CALLS, task="t#0"):
              "args_json": json.dumps(a)} for n, a in calls]
 
 
+class RedactedArgumentsTest(unittest.TestCase):
+    """A tool's arguments are stored as redacted as its input preview -- and policy export, which learns from
+    them, must not learn "[REDACTED]" as if it were what the agent sent."""
+
+    def engine(self, store_content=True):
+        from agentdynamics import config
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        cfg = config.load(d)
+        cfg["privacy"]["store_content"] = store_content
+        e = Engine(d, None, cfg=cfg)
+        self.addCleanup(e.con.close)
+        e.ingest({"id": "r1", "steps": [
+            {"kind": "prompt", "ts": T, "text": "refund jane"},
+            {"kind": "tool", "ts": T + 1, "end_ts": T + 2, "name": "email.send", "governed": True,
+             "input": {"to": "jane.doe@example.com", "card": "4111 1111 1111 1111", "subject": "your refund"}}]})
+        e.refresh(force=True)
+        return e.con.execute("SELECT args_json, input_preview FROM steps WHERE kind = 'tool'").fetchone()
+
+    def test_arguments_are_stored_redacted(self):
+        args, _ = self.engine()
+        self.assertEqual(json.loads(args), {"to": "[REDACTED]", "card": "[REDACTED]", "subject": "your refund"})
+
+    def test_no_arguments_at_all_with_content_off(self):
+        args, preview = self.engine(store_content=False)
+        self.assertIsNone(args)
+        self.assertTrue(preview.startswith("[content not stored"))
+
+    def test_synthesis_learns_nothing_from_a_redacted_value(self):
+        from agentdynamics.govern import synthesize
+        steps = [{"kind": "tool", "name": "email.send", "governed": 1,
+                  "args_json": json.dumps({"to": "[REDACTED]", "subject": s})} for s in ("a", "b", "a", "b", "a")]
+        doc, changes, _ = synthesize(None, [{"cost": 0.01, "total_tokens": 100, "wall_s": 5, "tool_calls": 1}], steps)
+        entry = [t for t in doc["tools"]["allow"] if t["name"] == "email.send"][0]
+        self.assertNotIn("to", entry.get("args", {}), "a one_of ['[REDACTED]'] would refuse every real address")
+        self.assertEqual(entry["args"]["subject"]["one_of"], ["a", "b"])
+        self.assertTrue(any("email.send.to: values redacted" in c for c in changes))
+
+    @unittest.skipUnless(HAS_AEGIS, "aegis-kernel not installed")
+    def test_coverage_doesnt_count_a_redacted_value_as_refused(self):
+        candidate = {"name": "support", "version": 2, "tools": {"allow": [
+            {"name": "email.send", "args": {"to": {"matches": "^[a-z.]+@shop\\.example$"}}}]}}
+        steps = [{"kind": "tool", "name": "email.send", "denied": 0, "governed": 1,
+                  "args_json": json.dumps({"to": to})} for to in ("[REDACTED]", "bob@shop.example", "x@elsewhere.example")]
+        cov = coverage(candidate, steps)
+        self.assertEqual((cov["denied"], cov["args_unrecorded"]), (1, 1), "only the real outsider is refused")
+
+
+class UnlabelledPolicyTest(unittest.TestCase):
+    def test_governed_runs_without_a_policy_label_export_without_a_base(self):
+        """They answered 500 (an IndexError on an empty Counter) instead of a policy built from scratch."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        e = Engine(d, None)
+        self.addCleanup(e.con.close)
+        e.ingest({"id": "r1", "steps": [{"kind": "prompt", "ts": T, "text": "hi"}] + [
+            {"kind": "tool", "ts": T + i, "end_ts": T + i + 1, "name": "kb.search", "governed": True,
+             "rule": "kernel.admitted", "input": {"query": f"q{i}"}} for i in range(3)]})
+        e.refresh(force=True)
+        r = Api(e).export_policy({})
+        self.assertNotIn("error", r)
+        self.assertIsNone(r["base"])
+        self.assertEqual([t["name"] for t in r["policy"]["tools"]["allow"]], ["kb.search"])
+        self.assertIn("error", Api(e).export_policy({"project": "nowhere"}), "no governed runs: still a clear answer")
+
+
 @unittest.skipUnless(HAS_AEGIS, "aegis-kernel not installed")
 class CoverageTest(unittest.TestCase):
     def test_counts_per_tool_and_per_rule(self):
