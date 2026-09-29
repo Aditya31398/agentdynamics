@@ -31,6 +31,13 @@ Example agentdynamics.toml:
     rules = ["tripwire", "repeated_denials", "revoked", "policy_denials"]
     gap_hours = 24                  # quiet this long, and the agent's next signal opens a new incident
 
+    [trust]                         # each agent's trust score (trust.py): points for evidence, halved weekly
+    half_life_days = 7
+    tripwire = 40                   # a task in which the agent touched a tripwire
+    probing = 15                    # a task in which it had 3+ calls refused in a row
+    denial_rate = 20                # at a 100% refusal rate, pro rata below
+    confirmed = 1.5                 # evidence in an incident confirmed as real counts this much more
+
     [enforcement.tripwires]         # decoys no legitimate agent touches: each touch raises a critical event
     tools = ["secrets.vault_export"]
     canaries = { planted_aws_key = "AKIA-CANARY-7F3E9Q" }  # name = planted value (8+ characters)

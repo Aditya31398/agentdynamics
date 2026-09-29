@@ -41,7 +41,10 @@ def run(rid, project, workflow, prompt, tool, error=False):
              {"kind": "llm", "ts": T, "end_ts": T + 1, "model": "claude-sonnet-5", "input_tokens": 900,
               "output_tokens": 120, "stop_reason": "end_turn"},
              {"kind": "tool", "ts": T + 1, "end_ts": T + 2, "name": tool, "is_error": error, "governed": True,
-              "grant_depth": 0, "input": {"q": prompt}, "error": f"{prompt} failed" if error else None}]
+              "grant_depth": 0, "input": {"q": prompt}, "error": f"{prompt} failed" if error else None,
+              "agent": f"{project}_agent"},        # a named agent: it has a trust score
+             {"kind": "tool", "ts": T + 3, "end_ts": T + 3.1, "name": f"{tool}_admin", "governed": True,
+              "agent": f"{project}_agent", "denied": True, "rule": "capability.not_granted"}]
     return {"id": rid, "project": project, "workflow": workflow, "thread_id": f"{project}-thread",
             "steps": steps, "status": "error" if error else "ok", "error": f"{prompt} crashed" if error else None,
             "policy_version": f"{project}-policy@v1#abc", "policy": {"name": f"{project}-policy", "doc": {

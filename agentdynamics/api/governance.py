@@ -3,7 +3,7 @@ import statistics
 import time
 from collections import Counter, defaultdict
 
-from .. import incidents as incmod
+from .. import incidents as incmod, trust as trustmod
 from ..analysis import pct
 from ..store import incident_signals, incidents as list_incidents, revocations as list_revocations, rows
 
@@ -54,6 +54,26 @@ class GovernanceMixin:
                             "step": s["name"], "kind": s["kind"], "workflow": by_task[s["task_id"]]["workflow"],
                             "project": by_task[s["task_id"]]["project"],
                             "prompt": (by_task[s["task_id"]]["prompt"] or "")[:120]} for s in hits[:25]]}
+
+    # ------------------------------------------------------------------ trust (trust.py)
+    def _trust(self, project=None):
+        where, args = "agents <> '{}'", []
+        if project:
+            where += " AND project = ?"
+            args.append(project)
+        tasks = rows(self.con, f"SELECT id, project, started, ended, outcome, agents FROM tasks WHERE {where} "
+                               "ORDER BY started, id", args)
+        judged = trustmod.verdicts(rows(
+            self.con, "SELECT i.project, i.agent, s.task_id, i.verdict FROM incident_signals s "
+                      "JOIN incidents i ON i.id = s.incident_id WHERE i.verdict IS NOT NULL AND i.agent IS NOT NULL "
+                      "AND s.task_id IS NOT NULL ORDER BY s.ref"))
+        # the engine's clock: decay depends on now, and two instances (or a test) must agree on it
+        return trustmod.score(tasks, judged, self.e._clock(), trustmod.settings(self.e.cfg))
+
+    def trust(self, q):
+        """Trust per agent, lowest first, over every task still held: `days` doesn't apply -- the half-life
+        already weighs old evidence down. `project` narrows it."""
+        return {"agents": self._trust(q.get("project")), "settings": trustmod.settings(self.e.cfg)}
 
     # ------------------------------------------------------------------ incidents (incidents.py)
     @staticmethod
@@ -115,8 +135,10 @@ class GovernanceMixin:
                                                    for s in sig)})
         for pv in sorted({t["policy_version"] for t in tasks.values() if t.get("policy_version")}):
             actions.append({"kind": "tighten", "policy": pv})
+        trust = next((a for a in self._trust(inc["project"]) if a["agent"] == inc["agent"]), None) \
+            if inc["agent"] and inc["project"] else None
         return {"incident": inc, "signals": sig, "evidence": [{k: s[k] for k in s} for s in evidence[:100]],
-                "evidence_total": len(evidence), "actions": actions}
+                "evidence_total": len(evidence), "actions": actions, "trust": trust}
 
     def governance(self, q):
         ts = self._governed(q)

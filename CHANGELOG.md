@@ -8,12 +8,20 @@ bumps the minor version.
 
 ## [Unreleased]
 
-**Upgrading.** `SCHEMA_VERSION` 10: tasks and steps record tripwires. The derived tables are rebuilt from the
+**Upgrading.** `SCHEMA_VERSION` 11: tasks and steps record tripwires, and what each agent did in a task. The derived tables are rebuilt from the
 sources on first start, as after any schema change; nothing to migrate. The new durable `incidents` tables are
 created then too, and the first refresh opens incidents from the security events already held -- without
 alerting, as history never is.
 
 ### Added
+- **Trust: what each agent's own behaviour says about it.** A score from 0 to 100 per agent, on the Incidents
+  page, on each incident, and in Prometheus (`agentdynamics_agent_trust`). It loses points for tasks in which
+  the agent touched a tripwire (40) or probed its policy (15) and for the share of its calls the policy refused
+  (up to 20); evidence counts half as much a week on, so trust comes back with good behaviour. It is about
+  behaviour, not competence: failed tasks and tool errors don't lower it (success rate is shown beside it).
+  Each agent is scored on its own steps, even when a root and its sub-agents share a task. A person's verdict
+  wins: evidence in an incident resolved as a false alarm stops counting, and in one confirmed as real counts
+  1.5 times. Weights and bands are `[trust]` settings. `GET /api/trust`.
 - **Incidents: one thing to judge per agent.** The security signals about one agent in one project -- a
   tripwire touched, probing, refused calls, a grant revoked mid-run, a directive -- are grouped into an
   incident, which gathers them until the agent has been quiet for a day (`[incidents] gap_hours`) and stays

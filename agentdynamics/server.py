@@ -196,6 +196,7 @@ class Handler(BaseHTTPRequestHandler):
                       "/api/workflows": api.workflows, "/api/workflow": api.workflow, "/api/slos": api.slos,
                       "/api/sources": api.sources, "/api/config": api.config, "/api/connect": api.connect,
                       "/api/alerts": api.alerts, "/api/revocations": api.revocations, "/api/incidents": api.incidents,
+                      "/api/trust": api.trust,
                       "/api/governance": api.governance, "/api/governance/policy": api.export_policy}
             if p in routes:
                 r = routes[p](q)

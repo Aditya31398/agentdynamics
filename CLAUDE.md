@@ -77,7 +77,9 @@ AGENTDYNAMICS_URL=http://127.0.0.1:8790 python examples/governed_agent.py 45   #
   501 after a body-less POST was invisible on screen and plain in that list.
 - Tests that set `os.environ` must restore it (`addCleanup`); later tests spawn subprocesses that inherit it.
 - **Check that a new test can fail.** Reintroduce the bug and watch it go red before trusting it green.
-  The first version of the grants-used UI test passed against the broken code.
+  The first version of the grants-used UI test passed against the broken code. When scripting it, run the
+  tests with `PYTHONDONTWRITEBYTECODE=1` and clear `__pycache__`: a same-size change restored within a second
+  leaves the mutated `.pyc` in use, and the next check goes red for the wrong reason.
 - UI tests run `agentdynamics serve` as a subprocess. On a thread inside the test process the page
   raced Chrome's DOM dump and was captured mid-boot, intermittently. Fixture timestamps must be
   recent: the console defaults to the last 30 days, and an empty window looks like a failed load.
@@ -134,6 +136,7 @@ agentdynamics/
   integrations/aegis.py  instrument(): decisions -> steps, ModelSpendGate, Watchdog, TripwireGuard, policy identity
   tripwires.py        decoy tools and canary values: matching and step marks, shared by the server and the SDK
   incidents.py        security signals about one agent grouped into incidents (durable, with verdicts)
+  trust.py            each agent's trust score from its evidence (tasks.agents), decayed, verdicts applied
   govern.py           observed behaviour -> tightened Aegis policy (+ minimal YAML emitter)
   collectors/         claude_code, spans (canonical assembler), otlp, langsmith, langfuse, inbox, generic, aegis_audit
   analysis.py         segment -> task_metrics -> flow_metrics / governance_metrics -> finalize (baselines, scores, events)
@@ -149,7 +152,7 @@ agentdynamics/
 tests/                test_core, test_integrations, test_autotrace, test_aegis_integration, test_ecosystem, test_live_anthropic,
                       test_console_ui, test_outcomes, test_token_accounting, test_policy_coverage, test_incremental,
                       test_scoped_keys, test_alerts, test_rollups, test_postgres, test_revocations, test_tripwires,
-                      test_incidents,
+                      test_incidents, test_trust,
                       test_console_interaction (+ cdp.py, its Chrome DevTools driver)
 bench/                bench.py: ingest / rebuild / incremental timings and the CI scaling gate
 examples/             langgraph_style_app, otel_multiagent, governed_agent, demo_agent

@@ -317,6 +317,36 @@ def governance_metrics(t, run, steps, tools):
             streak, run_, last = 0, 0, None
         best = max(best, streak, run_)
     t["repeated_denials"] = best
+    t["agents"] = agent_evidence(steps)
+
+
+def agent_evidence(steps):
+    """What each agent (Aegis grant name) did in a task, for its trust score (trust.py): governed tool calls,
+    how many were refused, the longest run of refusals (the same two counters as `repeated_denials`), and
+    tripwires touched. A task where several agents act -- a root and the sub-agents it spawned -- says who
+    did what, so one agent's probing is never another's."""
+    per = {}
+    for s in steps:
+        a = s.get("agent")
+        if not a:
+            continue
+        x = per.get(a)
+        if x is None:
+            x = per[a] = {"calls": 0, "denied": 0, "touches": 0, "streak": 0, "_same": 0, "_any": 0, "_last": None}
+        if s.get("tripwire"):
+            x["touches"] += 1
+        if s["kind"] != "tool":
+            continue
+        x["calls"] += 1
+        if s.get("denied"):
+            x["denied"] += 1
+            x["_same"] = x["_same"] + 1 if s.get("name") == x["_last"] else 1
+            x["_any"] += 1
+            x["_last"] = s.get("name")
+        else:
+            x["_same"], x["_any"], x["_last"] = 0, 0, None
+        x["streak"] = max(x["streak"], x["_same"], x["_any"])
+    return {a: {k: v for k, v in x.items() if not k.startswith("_")} for a, x in sorted(per.items())}
 
 
 OUTCOMES = ("completed", "failed", "rework", "interrupted")   # what a grade may state (store.OUTCOMES)

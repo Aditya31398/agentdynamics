@@ -18,11 +18,12 @@ import time
 
 from .privacy import TASK_TEXT_FIELDS
 
-SCHEMA_VERSION = 10   # 6: outcome_source / outcome_reason (graded outcomes)
+SCHEMA_VERSION = 11   # 6: outcome_source / outcome_reason (graded outcomes)
                      # 7: tokens_unverified (cache accounting that rests on a guess)
                      # 8: steps.governed (did this call go through an Aegis kernel)
                      # 9: task_type_source / task_type_match (how a task type was decided)
                      # 10: tasks.tripwires / tripwire_what, steps.tripwire (decoys touched)
+                     # 11: tasks.agents (what each agent did: trust.py)
 
 RUN_COLS = ["id", "source", "project", "environment", "framework", "workflow", "cwd", "title", "agent_name", "parent_id",
             "parent_task_id", "is_subagent", "thread_id", "user_id", "tags", "root_status", "complete", "version", "git_branch",
@@ -46,7 +47,7 @@ TASK_COLS = ["id", "run_id", "idx", "project", "environment", "source", "framewo
              # governance (Aegis)
              "governed", "policy_version", "policy_denials", "spend_denials", "budget_denials", "repeated_denials",
              "revocations", "blocked_cost", "tripwires", "tripwire_what"]
-TASK_JSON = ["phase_calls", "phase_cost", "scores", "path", "denied_rules"]
+TASK_JSON = ["phase_calls", "phase_cost", "scores", "path", "denied_rules", "agents"]
 # an incident: security signals about one agent (or, without an agent name, one workflow) in one project
 INCIDENT_COLS = ["id", "project", "agent", "workflow", "opened", "updated", "status", "severity", "signals",
                  "verdict", "note", "resolved_by", "resolved_at", "alerted"]

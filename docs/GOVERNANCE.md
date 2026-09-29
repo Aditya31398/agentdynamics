@@ -193,6 +193,46 @@ tighten the policy it ran under, or give the verdict.
 - **Who.** Anyone who can read a project sees its incidents. A verdict needs an admin key: the trust score
   will read verdicts, and marking real incidents false alarms would weaken it.
 
+### 3e. Trust: what an agent's own behaviour says about it
+
+Each agent has a trust score from 0 to 100, on the Incidents page (lowest first), on each incident, and in
+Prometheus as `agentdynamics_agent_trust{project, agent}`. It starts at 100 and loses points for evidence of
+trying to exceed what the agent was given:
+
+| Evidence | Points |
+|---|---|
+| a task in which the agent touched a tripwire | 40 |
+| a task in which it had 3 or more calls refused in a row (probing) | 15 |
+| the share of its governed calls the policy refused | up to 20, pro rata |
+
+Evidence counts half as much a week later (`half_life_days`), so an agent earns trust back by behaving. Below
+80 it is on **watch**; below 50, **low**. Click an agent for the arithmetic and the tasks behind each point.
+
+- **Behaviour, not competence.** A failed task or a tool error is a mistake, not an attempt to go further than
+  allowed, so neither lowers trust. The agent's success rate is shown beside it instead.
+- **A rate, not a count.** Refused calls count as a share of the agent's calls: a busy agent is not marked down
+  for being busy, only for being refused more often.
+- **Each agent answers for itself.** When a root agent and the sub-agents it spawned act in one task, each is
+  scored on its own steps.
+- **A person's verdict wins.** Evidence in a task whose incident was resolved as a false alarm doesn't count;
+  evidence in one confirmed as real counts 1.5 times (`confirmed`).
+- **Computed when read.** From the tasks still held, the verdicts, and the clock -- nothing stored, so it
+  follows retention and a changed verdict at once.
+
+```toml
+[trust]
+half_life_days = 7
+tripwire = 40
+probing = 15
+denial_rate = 20
+confirmed = 1.5
+watch = 80
+low = 50
+```
+
+Trust is a number to watch and to alert on (`agentdynamics_agent_trust < 50` in Alertmanager). Acting on it --
+narrowing what a low-trust agent is granted -- is the next step.
+
 ### 4. Observe → govern: least-privilege policy from real behaviour
 
 ```bash

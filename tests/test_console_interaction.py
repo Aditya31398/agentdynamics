@@ -242,6 +242,29 @@ class ConsoleInteractionTest(unittest.TestCase):
         self.assertIn("tripwire · canary vault_token", self.page.text("#wf"))
         self.assertNothingWentWrong()
 
+    def test_an_agents_trust_opens_to_its_evidence(self):
+        self.open("incidents", days="")
+        self.page.wait("!!document.querySelector('#trust-list .trust-row')", what="the trust card")
+        self.assertIn("support", self.page.text("#trust-list"))
+        self.page.click("#trust-list .trust-row")
+        self.page.wait("!!document.querySelector('#trust-list .trust-detail')", what="the agent's evidence")
+        detail = self.page.text("#trust-list .trust-detail")
+        self.assertIn("tripwire", detail)
+        self.assertIn("= ", detail, "the arithmetic is shown")
+        self.page.click("#trust-list .trust-detail tr.click")
+        self.page.wait("location.hash === '#/task/shop-1%230'", what="the task the evidence came from")
+        self.page.settle()
+        self.page.eval("history.back()")
+        self.page.wait("!!document.querySelector('#trust-list .trust-row')", what="the incidents page again")
+        self.page.click("#trust-list .trust-row")                 # open, then close again
+        self.page.wait("!!document.querySelector('.trust-detail')")
+        self.page.click("#trust-list .trust-row")
+        self.page.wait("!document.querySelector('.trust-detail')", what="the evidence to close")
+        self.page.click("#inc-list tr.click")
+        self.page.wait("!!document.querySelector('#inc-trust')", what="the agent's trust on its incident")
+        self.assertIn("support's trust", self.page.text("#inc-trust"))
+        self.assertNothingWentWrong()
+
     def test_resolve_an_incident_then_reopen_it(self):
         self.open("incidents", days="")
         self.page.wait("!!document.querySelector('#inc-list tr.click')", what="the incident list")

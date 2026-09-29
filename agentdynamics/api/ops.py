@@ -111,6 +111,8 @@ class OpsMixin:
           [({"task_type": k}, round((c["satisfied"] + c["tolerating"] / 2) / max(1, sum(c.values())), 4)) for k, c in by.items()])
         ev = rows(self.con, "SELECT rule_id, severity, COUNT(*) n FROM events GROUP BY rule_id, severity")
         m("agentdynamics_health_events", "Open health-rule violations", "gauge", [({"rule": r["rule_id"], "severity": r["severity"]}, r["n"]) for r in ev])
+        m("agentdynamics_agent_trust", "How far an agent's own behaviour says it can be trusted, 0-100 (trust.py)",
+          "gauge", [({"project": a["project"], "agent": a["agent"]}, a["trust"]) for a in self._trust()])
         m("agentdynamics_spans_ingested_total", "Spans/runs accepted by push and pull ingestion", "counter", [({}, self.e.stats["spans_ingested"])])
         m("agentdynamics_last_refresh_timestamp_seconds", "Last successful analysis", "gauge", [({}, self.e.last_refresh or 0)])
         m("agentdynamics_refresh_duration_seconds", "Duration of last analysis", "gauge", [({}, self.e.last_duration or 0)])
