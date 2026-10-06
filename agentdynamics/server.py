@@ -383,10 +383,22 @@ class Handler(BaseHTTPRequestHandler):
                 b = json.loads(self._body() or b"{}")
                 if not b.get("reason"):
                     return self._send(400, {"error": "say why: a reason goes into the kernel's audit log"})
-                rid = e.revoke(agent=b.get("agent") or None, project=b.get("project") or None,
-                               reason=f"{b['reason']} ({self._key_name()})", minutes=float(b.get("minutes") or 60),
-                               source="operator")
-                return self._send(200, {"ok": True, "id": rid})
+                # any sign of a restriction makes it one: an empty "tools" must be refused, never become a revoke
+                restricting = b.get("tools") is not None or b.get("budget") not in (None, "")
+                kind = b.get("kind") or ("restrict" if restricting else "revoke")
+                who = dict(agent=b.get("agent") or None, project=b.get("project") or None,
+                           reason=f"{b['reason']} ({self._key_name()})", minutes=float(b.get("minutes") or 60),
+                           source="operator")
+                if kind == "restrict":           # take tools / budget away
+                    try:
+                        rid = e.restrict(tools=b.get("tools") or (), budget=b.get("budget"), **who)
+                    except ValueError as ex:     # nothing to take, or a share that would give: a bad request
+                        return self._send(400, {"error": str(ex)})
+                elif kind == "revoke":
+                    rid = e.revoke(**who)
+                else:
+                    return self._send(400, {"error": "kind is revoke or restrict"})
+                return self._send(200, {"ok": True, "id": rid, "kind": kind})
             if p.startswith("/api/incidents/") and p.endswith("/verdict"):
                 # a verdict is a security judgement (the trust score will read it): admin, like a directive
                 if not self._require("admin"):

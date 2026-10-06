@@ -108,6 +108,11 @@ class ConsoleInteractionTest(unittest.TestCase):
                                                                   .startsWith({json.dumps(label)}));
             return k ? k.querySelector('.value').innerText : null; }})()""")
 
+    @staticmethod
+    def row(text):
+        """JS for the directives-table row whose text includes `text` (tests share one server's directives)."""
+        return f"[...document.querySelectorAll('#gv-dir-list tbody tr')].find(r => r.innerText.includes({json.dumps(text)}))"
+
     def assertNothingWentWrong(self):
         self.assertEqual(self.page.problems(), [], "the console logged an error or got an HTTP error")
 
@@ -223,12 +228,44 @@ class ConsoleInteractionTest(unittest.TestCase):
         self.page.fill("#gv-r-project", "shop")
         self.page.fill("#gv-r-reason", "interaction test")
         self.page.click("#gv-r-go")
-        self.page.wait("!!document.querySelector('.gv-clear')", what="the active directive")
-        self.assertIn("interaction test", self.page.text("#gv-directives"))
-        self.page.click(".gv-clear")
-        self.page.wait("!document.querySelector('.gv-clear') && document.querySelector('#gv-directives').innerText.includes('cleared')",
+        self.page.wait("!!(" + self.row("interaction test") + " && " + self.row("interaction test") + ".querySelector('.gv-clear'))",
+                       what="the active directive")
+        self.page.eval(self.row("interaction test") + ".querySelector('.gv-clear').click()")
+        self.page.wait("!!(" + self.row("interaction test") + " && " + self.row("interaction test") + ".innerText.includes('cleared'))",
                        what="the directive to show as cleared")
-        self.assertEqual([d["status"] for d in self.api("/api/revocations")["revocations"]], ["cleared"])
+        self.assertEqual([d["status"] for d in self.api("/api/revocations")["revocations"]
+                          if d["reason"].startswith("interaction test")], ["cleared"])
+        self.assertNothingWentWrong()
+
+    def test_issue_a_restriction_from_the_directives_card(self):
+        self.open("governance", days="")
+        self.page.wait("!!document.querySelector('#gv-r-go')", what="the directives card")
+        self.page.fill("#gv-r-agent", "support")
+        self.page.fill("#gv-r-project", "shop")
+        self.page.fill("#gv-r-tools", "fs.read, db.query")
+        self.assertEqual(self.page.text("#gv-r-go"), "Restrict", "the button says what it will do")
+        self.page.fill("#gv-r-reason", "restriction test")
+        self.page.click("#gv-r-go")
+        self.page.wait("document.querySelector('#gv-dir-list') && document.querySelector('#gv-dir-list').innerText.includes('restriction test')",
+                       what="the restriction listed")
+        self.assertIn("takes db.query, fs.read", self.page.text("#gv-dir-list"))
+        mine = [d for d in self.api("/api/revocations")["revocations"] if d["reason"].startswith("restriction test")]
+        self.assertEqual([(d["kind"], d["spec"]) for d in mine], [("restrict", {"tools": ["db.query", "fs.read"]})])
+        self.page.eval(self.row("restriction test") + ".querySelector('.gv-clear').click()")     # leave nothing in force
+        self.page.wait(self.row("restriction test") + ".innerText.includes('cleared')", what="the restriction cleared")
+        self.assertNothingWentWrong()
+
+    def test_take_the_misused_tool_away_from_an_incident(self):
+        self.open("incidents", days="")
+        self.page.wait("!!document.querySelector('#inc-list tr.click')", what="the incident list")
+        self.page.click("#inc-list tr.click")
+        self.page.wait("!!document.querySelector('#inc-restrict')", what="the restrict action")
+        self.assertIn("Take fs.read away from support", self.page.text("#inc-restrict"))
+        self.page.click("#inc-restrict")
+        self.page.wait("document.querySelector('#inc-actions') && document.querySelector('#inc-actions').innerText.includes('restricted')",
+                       what="the restriction in force")
+        self.assertIn("without fs.read", self.page.text("#inc-actions"))
+        self.assertFalse(self.page.eval("!!document.querySelector('#inc-restrict')"), "not offered twice")
         self.assertNothingWentWrong()
 
     def test_a_tripwire_row_opens_the_task_that_touched_it(self):

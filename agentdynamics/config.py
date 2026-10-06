@@ -31,6 +31,10 @@ Example agentdynamics.toml:
     rules = ["tripwire", "repeated_denials", "revoked", "policy_denials"]
     gap_hours = 24                  # quiet this long, and the agent's next signal opens a new incident
 
+    [enforcement.trust]             # restrict a low-trust agent: it loses the tools it misused (off unless set)
+    restrict_below = 50
+    minutes = 60
+
     [trust]                         # each agent's trust score (trust.py): points for evidence, halved weekly
     half_life_days = 7
     tripwire = 40                   # a task in which the agent touched a tripwire

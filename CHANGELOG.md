@@ -8,13 +8,28 @@ bumps the minor version.
 
 ## [Unreleased]
 
-**Upgrading.** `SCHEMA_VERSION` 12: tasks and steps record tripwires and what each agent did in a task, and tool
+**Upgrading.** `SCHEMA_VERSION` 13: tasks and steps record tripwires and what each agent did in a task, and tool
 arguments are stored redacted. The derived tables are rebuilt from the
 sources on first start, as after any schema change; nothing to migrate. The new durable `incidents` tables are
 created then too, and the first refresh opens incidents from the security events already held -- without
 alerting, as history never is.
 
 ### Added
+- **Restrict instead of revoke.** A directive can now take some of an agent's authority away and leave it the rest:
+  tools, and all but a share of what remains of its budget (`agentdynamics revoke --tools ... / --budget ...`,
+  `{"tools": [...], "budget": ...}` in `POST /api/revocations`, the directives card, or **Take ... away** on an
+  incident, which offers the tools the agent misused there and recommends it when the evidence is refused calls
+  rather than a tripwire). With aegis-kernel 0.6's new `Kernel.restrict` the grant and its subtree lose them in
+  place and Aegis refuses a call to one; with an older Aegis the integration revokes a grant the moment it calls a
+  tool that was taken. `[enforcement.trust]` restricts an agent whose trust falls below `restrict_below`, taking the
+  tools it misused, renewed while it stays low. Directives gain `kind` and `spec`; a store from before gains the
+  columns on start, and its directives read as revocations.
+- **A process starts held.** `instrument(..., revocations=True)` now fetches directives before it returns (at most
+  3 seconds), so a process restarted while its agent is revoked or restricted no longer gets its first
+  conversations free; the demo showed exactly that.
+- **Untrusted input** (aegis-kernel 0.6): refusals under Aegis's new `integrity.untrusted_input` show up like any
+  other, and the governed demo gains a phishing scenario -- the agent fetches the page a ticket links to and does
+  what it says, and the call is refused.
 - **Trust: what each agent's own behaviour says about it.** A score from 0 to 100 per agent, on the Incidents
   page, on each incident, and in Prometheus (`agentdynamics_agent_trust`). It loses points for tasks in which
   the agent touched a tripwire (40) or probed its policy (15) and for the share of its calls the policy refused

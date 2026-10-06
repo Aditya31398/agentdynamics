@@ -399,6 +399,24 @@ def quiet(*a, **k):
     pass
 
 
+@unittest.skipUnless(PG_URL and has_driver(), "set AGENTDYNAMICS_TEST_PG_URL and install psycopg to run")
+class DurableColumnsTest(unittest.TestCase):
+    def test_a_schema_from_before_restrict_gains_the_columns_and_keeps_its_directives(self):
+        from agentdynamics import pg, store
+        schema = "old_" + os.urandom(4).hex()
+        raw = pg.connect(PG_URL, schema, create=True)
+        with raw:
+            raw.execute("CREATE TABLE revocations (id TEXT PRIMARY KEY, project TEXT, agent TEXT, reason TEXT, "
+                        "source TEXT, created DOUBLE PRECISION, expires DOUBLE PRECISION, cleared DOUBLE PRECISION)")
+            raw.execute("INSERT INTO revocations VALUES ('old1', 'shop', 'bot', 'from 0.8', 'operator', 1, 9999999999, NULL)")
+        raw.close()
+        con = store.connect(PG_URL, schema)
+        self.addCleanup(con.close)
+        self.assertEqual([(d["id"], d["kind"], d["spec"]) for d in store.revocations(con, 2)], [("old1", "revoke", None)])
+        store.add_revocation(con, "shop", "bot", "r", "operator", 3, 9999999999, kind="restrict", spec={"tools": ["x"]})
+        self.assertEqual([d["kind"] for d in store.revocations(con, 4)], ["restrict", "revoke"])
+
+
 class CopyCoversTheStoreTest(unittest.TestCase):
     def test_every_durable_table_is_copied(self):
         """A durable table added later and not copied would be left behind by every move to Postgres."""

@@ -351,7 +351,7 @@ def ddl(schema_version, derived):
         f"attempts {NUM} DEFAULT 0, next_try {NUM}, last_error TEXT)",
         f"CREATE TABLE IF NOT EXISTS alert_state (key TEXT PRIMARY KEY, since {NUM}, data TEXT)",
         "CREATE TABLE IF NOT EXISTS revocations (id TEXT PRIMARY KEY, project TEXT, agent TEXT, reason TEXT, "
-        f"source TEXT, created {NUM}, expires {NUM}, cleared {NUM})",
+        f"source TEXT, created {NUM}, expires {NUM}, cleared {NUM}, kind TEXT, spec TEXT)",
         f"CREATE TABLE IF NOT EXISTS rollup_daily ({dims}, {', '.join(f'{c} {NUM}' for c in s.ROLLUP_SUMS)}, "
         f"PRIMARY KEY ({', '.join(s.ROLLUP_DIMS)}))",
         "CREATE TABLE IF NOT EXISTS incidents (" + ", ".join(
@@ -378,6 +378,10 @@ def connect_store(url, schema, schema_version, derived):
             con.execute("INSERT INTO schema_version (version) VALUES (?)", (schema_version,))
         for stmt in ddl(schema_version, derived):
             con.execute(stmt)
+        from .store import ADDED_COLUMNS         # durable tables created before these columns existed
+        for table, cols in ADDED_COLUMNS.items():
+            for c in cols:
+                con.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {c} TEXT")
     return con
 
 

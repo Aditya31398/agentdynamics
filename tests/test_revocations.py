@@ -153,6 +153,59 @@ class ApiTest(Base):
         self.assertEqual(statuses, {"probe": "active", "x": "active", "y": "active", "z": "expired", "w": "cleared"})
 
 
+class RestrictApiTest(ApiTest):
+    def test_an_admin_restricts_and_a_restriction_must_take_something(self):
+        body = {"agent": "probe", "project": "shop", "reason": "keeps probing fs.read", "tools": ["fs.read", " "]}
+        for key in ("k-ingest", "k-read", "k-shop"):
+            self.assertEqual(self.call("/api/revocations", key, body)[0], 403, key)
+        st, r = self.call("/api/revocations", "k-admin", body)
+        self.assertEqual((st, r["kind"]), (200, "restrict"))
+        st, r = self.call("/api/revocations?active=1&project=shop", "k-ingest")
+        self.assertEqual([(d["kind"], d["spec"]) for d in r["revocations"]], [("restrict", {"tools": ["fs.read"]})])
+        for bad in ({"tools": []}, {"kind": "restrict"}, {"budget": 1.5}, {"budget": -0.1}, {"kind": "expel"}):
+            st, r = self.call("/api/revocations", "k-admin", {**body, "tools": None, **bad})
+            self.assertEqual(st, 400, bad)
+        st, r = self.call("/api/revocations", "k-admin", dict(body, tools=None, budget=0.25))
+        self.assertEqual(st, 200)
+        specs = [d["spec"] for d in self.call("/api/revocations?active=1", "k-read")[1]["revocations"]]
+        self.assertCountEqual(specs, [{"tools": ["fs.read"]}, {"budget": 0.25}])      # same clock: any order
+
+    def test_the_command(self):
+        from agentdynamics.__main__ import main
+        import contextlib
+        import io
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(main(["--data", self.tmp, "--claude-root", "", "revoke", "--agent", "probe",
+                                   "--project", "shop", "--reason", "probing", "--tools", "fs.read,db.query"]), 0)
+            self.assertEqual(main(["--data", self.tmp, "--claude-root", "", "revoke", "--agent", "probe",
+                                   "--reason", "nothing", "--budget", "1"]), 2)
+            self.assertEqual(main(["--data", self.tmp, "--claude-root", "", "revoke", "--list"]), 0)
+        text = out.getvalue()
+        self.assertIn("loses db.query, fs.read", text)
+        self.assertIn("restrict: db.query, fs.read", text)
+        self.assertIn("share of what remains", text)
+
+
+class DurableColumnsTest(Base):
+    @unittest.skipIf(os.environ.get("AGENTDYNAMICS_DB_URL"), "an old SQLite file; test_postgres covers the Postgres store")
+    def test_a_store_from_before_restrict_gains_the_columns_and_keeps_its_directives(self):
+        import sqlite3
+        path = os.path.join(self.tmp, "agentdynamics.db")
+        con = sqlite3.connect(path)
+        con.execute("CREATE TABLE revocations (id PRIMARY KEY, project, agent, reason, source, created REAL, "
+                    "expires REAL, cleared REAL)")
+        con.execute("INSERT INTO revocations VALUES ('old1', 'shop', 'bot', 'from 0.8', 'operator', ?, ?, NULL)",
+                    (self.now - 60, self.now + 600))
+        con.commit()
+        con.close()
+        e = self.engine()
+        self.assertEqual([(d["id"], d["kind"], d["spec"]) for d in store.revocations(e.con, self.now)],
+                         [("old1", "revoke", None)])
+        e.restrict(agent="bot", project="shop", reason="r", minutes=5, tools=["x"])
+        self.assertEqual([d["kind"] for d in store.revocations(e.con, self.now)], ["restrict", "revoke"])
+
+
 class KeepAliveTest(ApiTest):
     def test_a_body_a_route_doesnt_read_doesnt_become_the_next_request(self):
         """POST /api/revocations/<id>/clear and /api/refresh take no body, and the console sends "{}". Left in

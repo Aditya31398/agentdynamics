@@ -48,9 +48,9 @@ class EvidenceTest(unittest.TestCase):
         steps += [{"kind": "tool", "name": n, "agent": "careful", "denied": d}
                   for n, d in (("fs.read", True), ("fs.read", True), ("kb.search", False), ("fs.read", True), ("db.query", True))]
         self.assertEqual(agent_evidence(steps), {
-            "careful": {"calls": 5, "denied": 4, "touches": 0, "streak": 2},
-            "researcher": {"calls": 3, "denied": 3, "touches": 1, "streak": 3},
-            "root": {"calls": 5, "denied": 0, "touches": 0, "streak": 0}})
+            "careful": {"calls": 5, "denied": 4, "touches": 0, "streak": 2, "misused": ["db.query", "fs.read"]},
+            "researcher": {"calls": 3, "denied": 3, "touches": 1, "streak": 3, "misused": ["db.query", "fs.read"]},
+            "root": {"calls": 5, "denied": 0, "touches": 0, "streak": 0, "misused": []}})
 
 
 class ScoreTest(unittest.TestCase):
@@ -136,6 +136,35 @@ class EngineTest(unittest.TestCase):
         self.e.incident_verdict(iid, "real", None, "ops")
         self.assertLess(self.trust()["support-bot"]["trust"], before["support-bot"]["trust"])
         self.assertEqual(list(self.trust(project="billing")), ["clean-bot"])
+
+    def test_a_low_trust_agent_loses_the_tools_it_misused(self):
+        from agentdynamics import store
+        from test_incidents import warn_only
+        self.e.ingest(run("a2", self.now - 700, "tool"))        # a second touch: support-bot is well below 50
+        self.e.ingest(warn_only("w", self.now - 600, agent="helper-bot"))   # refused calls only: trust 90
+        self.e.refresh()
+        self.assertLess(self.trust()["support-bot"]["trust"], 40)
+        self.assertEqual(store.revocations(self.e.con, self.now), [], "off unless configured")
+        self.e.cfg["enforcement"]["trust"] = {"restrict_below": 60, "minutes": 60}
+        self.e.ingest(run("c", self.now - 500))           # new traffic, so the refresh runs the detector
+        self.e.refresh()
+        ds = store.revocations(self.e.con, self.now, active=True)
+        self.assertEqual([(d["agent"], d["kind"], d["source"], d["spec"]) for d in ds],
+                         [("support-bot", "restrict", "trust", {"tools": ["secrets.dump"]})],
+                         "helper-bot, at 90, is above the threshold")
+        self.assertRegex(ds[0]["reason"], r"^trust \d+(\.\d)? < 60: takes away secrets\.dump$")
+        self.e.ingest(run("d", self.now - 400))
+        self.e.refresh()
+        self.assertEqual(len(store.revocations(self.e.con, self.now)), 1, "not issued again while it holds")
+        incident = [i for i in Api(self.e).incidents({})["incidents"] if i["agent"] == "support-bot"][0]
+        sources = [s["detail"].get("source") for s in Api(self.e).incident(incident["id"])["signals"]]
+        self.assertNotIn("trust", sources, "an automatic renewal isn't an incident signal")
+        # a person says it was a false alarm: once the restriction runs out, it isn't renewed
+        self.e.incident_verdict(incident["id"], "false_alarm", None, "ops")
+        self.now += 2 * 3600
+        self.e.ingest(run("e", self.now - 60))
+        self.e.refresh()
+        self.assertEqual(store.revocations(self.e.con, self.now, active=True), [])
 
     def test_prometheus(self):
         lines = [ln for ln in Api(self.e).prometheus().splitlines() if ln.startswith("agentdynamics_agent_trust{")]

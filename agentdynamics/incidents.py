@@ -27,7 +27,8 @@ SEV = {"info": 1, "warning": 2, "critical": 3}
 VERDICTS = ("real", "false_alarm")
 LABELS = {"tripwire": "tripwire", "repeated_denials": "probing", "revoked": "revoked mid-run",
           "policy_denials": "refused calls", "directive.probing": "directive (probing)",
-          "directive.tripwire": "directive (tripwire)", "directive.operator": "directive (operator)"}
+          "directive.tripwire": "directive (tripwire)", "directive.operator": "directive (operator)",
+          "restrict.operator": "restricted (operator)"}
 
 
 def _is_evidence(s):
@@ -56,10 +57,16 @@ def from_events(events, runs, tasks, rules=RULES):
 
 
 def from_directives(directives):
-    return [{"ref": f"directive:{d['id']}", "kind": "directive", "ts": d["created"], "rule": f"directive.{d['source']}",
-             "severity": "critical", "task_id": None, "run_id": None, "project": d["project"], "agent": d["agent"],
-             "workflow": None, "detail": {"directive": d["id"], "reason": d["reason"], "source": d["source"],
-                                          "expires": d["expires"]}} for d in directives]
+    """A revocation is a critical signal, a restriction a warning. One the server renews on its own while an
+    agent's trust stays low (source "trust") is not: it is a consequence of evidence the incident already
+    holds, and renewed every hour it would open an incident each time."""
+    return [{"ref": f"directive:{d['id']}", "kind": "directive", "ts": d["created"],
+             "rule": f"{'restrict' if d.get('kind') == 'restrict' else 'directive'}.{d['source']}",
+             "severity": "warning" if d.get("kind") == "restrict" else "critical", "task_id": None, "run_id": None,
+             "project": d["project"], "agent": d["agent"], "workflow": None,
+             "detail": {"directive": d["id"], "reason": d["reason"], "source": d["source"], "expires": d["expires"],
+                        "kind": d.get("kind") or "revoke", "spec": d.get("spec")}}
+            for d in directives if d["source"] != "trust"]
 
 
 def key(x):

@@ -18,13 +18,14 @@ import time
 
 from .privacy import TASK_TEXT_FIELDS
 
-SCHEMA_VERSION = 12   # 6: outcome_source / outcome_reason (graded outcomes)
+SCHEMA_VERSION = 13   # 6: outcome_source / outcome_reason (graded outcomes)
                      # 7: tokens_unverified (cache accounting that rests on a guess)
                      # 8: steps.governed (did this call go through an Aegis kernel)
                      # 9: task_type_source / task_type_match (how a task type was decided)
                      # 10: tasks.tripwires / tripwire_what, steps.tripwire (decoys touched)
                      # 11: tasks.agents (what each agent did: trust.py)
                      # 12: steps.args_json redacted (a rebuild drops arguments stored before)
+                     # 13: tasks.agents names the tools each agent misused
 
 RUN_COLS = ["id", "source", "project", "environment", "framework", "workflow", "cwd", "title", "agent_name", "parent_id",
             "parent_task_id", "is_subagent", "thread_id", "user_id", "tags", "root_status", "complete", "version", "git_branch",
@@ -102,12 +103,25 @@ CREATE TABLE IF NOT EXISTS alert_outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, d
                                          attempts INTEGER DEFAULT 0, next_try REAL, last_error);
 CREATE TABLE IF NOT EXISTS alert_state (key PRIMARY KEY, since REAL, data);
 CREATE TABLE IF NOT EXISTS revocations (id PRIMARY KEY, project, agent, reason, source, created REAL, expires REAL,
-                                        cleared REAL);
+                                        cleared REAL, kind, spec);
 CREATE TABLE IF NOT EXISTS rollup_daily ({", ".join(ROLLUP_DIMS + ROLLUP_SUMS)}, PRIMARY KEY({", ".join(ROLLUP_DIMS)})) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS incidents ({", ".join(INCIDENT_COLS)}, PRIMARY KEY(id));
 CREATE TABLE IF NOT EXISTS incident_signals ({", ".join(SIGNAL_COLS)}, PRIMARY KEY(ref));
 CREATE INDEX IF NOT EXISTS incident_signals_incident ON incident_signals(incident_id);
 """
+
+
+# Columns added to a durable table after it shipped. CREATE TABLE IF NOT EXISTS leaves an existing table as it
+# was, and a durable table outlives every schema version, so they are added to it on connect. Never remove one.
+ADDED_COLUMNS = {"revocations": ("kind", "spec")}        # restrict directives (kind, what they take away)
+
+
+def _add_columns(con):
+    for table, cols in ADDED_COLUMNS.items():
+        have = {r[1] for r in con.execute(f"PRAGMA table_info({table})")}
+        for c in cols:
+            if c not in have:
+                con.execute(f"ALTER TABLE {table} ADD COLUMN {c}")
 
 
 def target(cfg, data_dir):
@@ -137,6 +151,7 @@ def connect(path, schema=None):
             con.execute(f"DROP TABLE IF EXISTS {t}")
         con.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     con.executescript(SCHEMA)
+    _add_columns(con)
     return con
 
 
@@ -489,14 +504,18 @@ def rollup_boundary(con):
 
 # ---------------------------------------------------------------- revocation directives (durable)
 
-def add_revocation(con, project, agent, reason, source, created, expires):
-    """A directive to revoke the grants of `agent` (all of a process's grants when None) in `project` (every
-    project when None) until `expires`. Returns its id. Applied by the in-process Aegis integration."""
+def add_revocation(con, project, agent, reason, source, created, expires, kind="revoke", spec=None):
+    """A directive about the grants of `agent` (all of a process's grants when None) in `project` (every
+    project when None) until `expires`: revoke them, or (`kind` "restrict") take away what `spec` names --
+    {"tools": [...], "budget": fraction of what remains to keep}. Returns its id. Applied by the in-process
+    Aegis integration."""
     import uuid
     rid = uuid.uuid4().hex[:12]
     with con:
-        con.execute("INSERT INTO revocations (id, project, agent, reason, source, created, expires, cleared) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, NULL)", (rid, project, agent, str(reason)[:500], source, created, expires))
+        con.execute("INSERT INTO revocations (id, project, agent, reason, source, created, expires, cleared, kind, spec) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)",
+                    (rid, project, agent, str(reason)[:500], source, created, expires, kind,
+                     json.dumps(spec, sort_keys=True) if spec else None))
     return rid
 
 
@@ -581,6 +600,13 @@ def set_incident_verdict(con, iid, verdict, note, who, now):
     return dict(con.execute("SELECT * FROM incidents WHERE id = ?", (iid,)).fetchone())
 
 
+def incident_verdicts(con):
+    """(project, agent, task_id, verdict) for every task in an incident someone has judged (trust.verdicts)."""
+    return [dict(r) for r in con.execute(
+        "SELECT i.project, i.agent, s.task_id, i.verdict FROM incident_signals s JOIN incidents i ON i.id = s.incident_id "
+        "WHERE i.verdict IS NOT NULL AND i.agent IS NOT NULL AND s.task_id IS NOT NULL ORDER BY s.ref")]
+
+
 def revocations(con, now, active=False, project=None, limit=200):
     """Directives, newest first. `active`: not cleared and not expired. `project`: those for it or for all."""
     clauses, args = [], []
@@ -591,5 +617,10 @@ def revocations(con, now, active=False, project=None, limit=200):
         clauses.append("(project = ? OR project IS NULL)")
         args.append(project)
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-    return [dict(r) for r in con.execute(f"SELECT * FROM revocations{where} ORDER BY created DESC, id LIMIT ?",
-                                         args + [limit])]
+    out = []
+    for r in con.execute(f"SELECT * FROM revocations{where} ORDER BY created DESC, id LIMIT ?", args + [limit]):
+        d = dict(r)
+        d["kind"] = d.get("kind") or "revoke"              # a directive from before restrict existed
+        d["spec"] = json.loads(d["spec"]) if d.get("spec") else None
+        out.append(d)
+    return out

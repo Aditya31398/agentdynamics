@@ -440,6 +440,86 @@ class ServerRevocationTest(unittest.TestCase):
         self.assertEqual(self.rv.poll_once(), 0)
         self.assertTrue(probe.is_active())
 
+    def two_tools(self, name):
+        return self.kernel.spawn(self.root, SpawnRequest(name, frozenset({"kb.search", "fs.read"}), budget_fraction=0.1))
+
+    @unittest.skipUnless(HAS_AEGIS and hasattr(aegis.Kernel, "restrict"), "Kernel.restrict needs aegis-kernel>=0.6")
+    def test_a_restriction_takes_a_tool_away_and_leaves_the_rest(self):
+        probe = self.two_tools("probe")
+        self.eng.restrict(agent="probe", project="shop", reason="probing fs.read", minutes=30, tools=["fs.read"])
+        self.assertEqual(self.rv.poll_once(), 1)
+        with self.assertRaises(PolicyViolation) as cm:
+            self.kernel.invoke(probe, "fs.read", path="/workspace/a.md")
+        self.assertEqual(cm.exception.verdict.rule, "capability.not_granted", "Aegis refuses it: the grant lacks it")
+        self.assertEqual(self.kernel.invoke(probe, "kb.search", query="q"), ["doc1", "doc2"])
+        self.assertTrue(probe.is_active(), "restricted, not revoked")
+        late = self.two_tools("probe")                    # a new grant while it holds: restricted before it acts
+        with self.assertRaises(PolicyViolation):
+            self.kernel.invoke(late, "fs.read", path="/workspace/a.md")
+        self.assertEqual([r.tool for r in self.kernel.audit.records if r.tool == "agent.restrict"],
+                         ["agent.restrict", "agent.restrict"])
+        self.assertTrue(self.kernel.audit.verify())
+        import agentdynamics as ad                         # and the server sees it happen
+        ad.flush()
+        self.eng.refresh(force=True)
+        notices = self.eng.con.execute("SELECT agent, text FROM steps WHERE kind = 'notice' AND name = 'restricted'").fetchall()
+        self.assertEqual(len(notices), 2)
+        self.assertIn("probe lost fs.read", notices[0][1])
+
+    @unittest.skipUnless(HAS_AEGIS and hasattr(aegis.Kernel, "restrict"), "Kernel.restrict needs aegis-kernel>=0.6")
+    def test_a_budget_restriction_and_clearing_restores_nothing(self):
+        probe = self.two_tools("probe")
+        rid = self.eng.restrict(agent="probe", project="shop", reason="spending", minutes=30, budget=0.0)
+        self.rv.poll_once()
+        with self.assertRaises(PolicyViolation) as cm:
+            self.kernel.invoke(probe, "kb.search", query="q")
+        self.assertTrue(cm.exception.verdict.rule.startswith("budget."))
+        self.eng.clear_revocation(rid)
+        self.rv.poll_once()
+        with self.assertRaises(PolicyViolation):
+            self.kernel.invoke(probe, "kb.search", query="q")   # Aegis can't widen a grant back
+
+    def test_without_kernel_restrict_a_taken_tool_revokes_the_grant_that_calls_it(self):
+        """Aegis 0.4/0.5: nothing narrows a grant in place, so the integration enforces at use."""
+        probe = self.kernel.spawn(self.root, SpawnRequest("probe", frozenset({"kb.search", "fs.read", "agent.spawn"}),
+                                                          budget_fraction=0.2))
+        child = self.kernel.spawn(probe, SpawnRequest("helper", frozenset({"kb.search", "fs.read"}), budget_fraction=0.5))
+        self.kernel.restrict = None                         # as on an Aegis without it
+        self.eng.restrict(agent="probe", project="shop", reason="probing fs.read", minutes=30, tools=["fs.read"])
+        self.rv.poll_once()
+        self.assertEqual(self.kernel.invoke(probe, "kb.search", query="q"), ["doc1", "doc2"], "the rest still works")
+        with self.assertRaises(PolicyViolation) as cm:
+            self.kernel.invoke(child, "fs.read", path="/workspace/a.md")    # taken from its parent: from it too
+        self.assertEqual(cm.exception.verdict.rule, "grant.revoked")
+        self.assertTrue(probe.is_active(), "only the grant that used the tool")
+        with self.assertRaises(PolicyViolation):
+            self.kernel.invoke(probe, "fs.read", path="/workspace/a.md")
+        self.assertFalse(probe.is_active())
+        other = self.two_tools("bystander")
+        self.assertEqual(self.kernel.invoke(other, "fs.read", path="/workspace/a.md"), "</workspace/a.md>")
+
+    def test_a_process_started_under_a_directive_is_held_from_its_first_call(self):
+        """A restarted process used to run its first conversations before the poller's first answer arrived."""
+        from agentdynamics.integrations import aegis as gov
+        self.eng.revoke(agent="probe", project="shop", reason="still probing", minutes=30)
+        other, other_root = build_kernel(parse_policy(POLICY, source="support"), registry())
+        g = gov.instrument(other, other_root, gate_models=False, revocations=gov.Revocations(interval=3600))
+        self.addCleanup(g.uninstall)
+        probe = other.spawn(other_root, SpawnRequest("probe", frozenset({"kb.search"}), budget_fraction=0.1))
+        with self.assertRaises(PolicyViolation):
+            other.invoke(probe, "kb.search", query="first call")
+
+    def test_an_unreachable_server_delays_startup_only_briefly(self):
+        import agentdynamics as ad
+        from agentdynamics.integrations import aegis as gov
+        ad.init(url="http://10.255.255.1:9", api_key="k-app", project="shop", otel=False, langchain=False, quiet=True)
+        other, other_root = build_kernel(parse_policy(POLICY, source="support"), registry())
+        t0 = time.time()
+        g = gov.instrument(other, other_root, gate_models=False, revocations=gov.Revocations(interval=3600, first_wait=1.0))
+        self.addCleanup(g.uninstall)
+        self.assertLess(time.time() - t0, 3.0)
+        self.assertEqual(other.invoke(other_root, "kb.search", query="q"), ["doc1", "doc2"])
+
     def test_an_unreachable_server_revokes_nothing_and_raises_nothing(self):
         import agentdynamics as ad
         probe = self.spawn("probe")

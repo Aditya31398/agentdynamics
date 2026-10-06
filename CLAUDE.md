@@ -54,8 +54,9 @@ AGENTDYNAMICS_URL=http://127.0.0.1:8790 python examples/governed_agent.py 45   #
    child spans and feedback before its run must all merge. Re-pulling a window must not double count.
 5. **One canonical model.** Collectors map to canonical spans (`collectors/spans.py`) or the generic run
    format (`collectors/generic.py`). Analysis never sees vendor formats.
-6. **Nothing here can loosen Aegis.** The integration only adds correlation data, reserves budget and revokes.
-   Server revocation directives only revoke; clearing one never un-revokes a grant.
+6. **Nothing here can loosen Aegis.** The integration only adds correlation data, reserves budget, revokes and
+   restricts. Server directives only revoke or restrict (`Kernel.restrict` only narrows); clearing one never gives a
+   grant anything back.
    `govern.synthesize` only ever tightens a base policy, and tests verify it with `aegis ratify` and
    `aegis drift` (no widening).
 7. **Health-rule ids and API field names are a contract** for saved `rules.json`, alert consumers and
@@ -176,9 +177,10 @@ deploy/               Dockerfile companion: compose, OTel Collector config, exam
    sidebar, the filters, a task, Analytics, Refresh, revocation directives, Health Rules and the SLO editor, and
    fails on any console error or HTTP error. Other controls (Compare, the flow map, CSV export, theme) and the
    look of a page (layout, dark mode, narrow screens) are still checked by hand.
-5. **Server-side enforcement reaches only processes that opt in** (`instrument(..., revocations=True)`), and within
-   one poll interval (10 s). A kernel not wrapped by the integration can't be reached; an Aegis-side revocation
-   source checked on every call would close both gaps.
+5. **Server-side enforcement reaches only processes that opt in** (`instrument(..., revocations=True)`), and a
+   directive issued while a process runs within one poll interval (10 s; a starting process fetches them first). A
+   kernel not wrapped by the integration can't be reached; an Aegis-side revocation source checked on every call
+   would close both gaps.
 6. **Cache accounting for undocumented formats is estimated.** `collectors/spans.uncached_input` applies each
    format's documented rule (GenAI semconv, OpenInference, LangChain: inclusive of reads and writes). Formats
    with no citable rule (older `gen_ai.usage.prompt_tokens`, Langfuse) are estimated and counted as

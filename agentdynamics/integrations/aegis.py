@@ -125,7 +125,7 @@ def _wrap_kernel(kernel):
         """Directives and tripwires, before a grant acts; returns the tripwire the call touches, if any."""
         rv = getattr(kernel, "_agentdynamics_revocations", None)    # this kernel's, not another's in-process
         if rv is not None:
-            rv.check_use(grant)
+            rv.check_use(grant, tool)
         tw = getattr(kernel, "_agentdynamics_tripwires", None)
         return tw.before_call(grant, tool, args) if tw is not None and tool is not None else None
 
@@ -189,6 +189,15 @@ def _wrap_kernel(kernel):
                     "rule": "grant.revoked_subtree", "text": f"{grant.agent_name}: {reason}"}, "aegis.revoke")
 
     kernel.invoke, kernel.ainvoke, kernel.spawn, kernel.revoke = invoke, ainvoke, spawn, revoke
+    orig_restrict = getattr(kernel, "restrict", None)            # Aegis 0.6+
+    if callable(orig_restrict):
+        def restrict(grant, *, remove=(), budget_fraction=None, reason="operator"):
+            orig_restrict(grant, remove=remove, budget_fraction=budget_fraction, reason=reason)
+            took = sorted(remove) + ([f"budget x{budget_fraction:g}"] if budget_fraction is not None else [])
+            _emit_step({"kind": "notice", "name": "restricted", "ts": time.time(), "agent": grant.agent_name,
+                        "rule": "grant.restricted_subtree", "text": f"{grant.agent_name} lost {', '.join(took)}: {reason}"},
+                       "aegis.restrict")
+        kernel.restrict = restrict
     kernel._agentdynamics_wrapped = True
 
 
@@ -396,25 +405,39 @@ class Revocations:
     It uses the URL, key and project given to agentdynamics.init(). The key needs the ingest role.
     """
 
-    def __init__(self, interval=10.0):
+    def __init__(self, interval=10.0, first_wait=3.0):
         self.interval = interval
+        self.first_wait = first_wait     # how long start() waits for the first answer (0: don't)
         self.active = {}                 # directive id -> directive, as of the last successful poll
-        self.applied = []                # {"directive", "agent", "grant_id", "ts"} for each grant revoked here
+        self.applied = []                # {"directive", "kind", "agent", "grant_id", "ts"} for each grant acted on
         self._done = set()               # (directive id, grant id)
+        self._taken = {}                 # grant id -> tools taken away, when this Aegis can't restrict in place
         self._roots = weakref.WeakValueDictionary()   # grant id -> root, for every tree seen (kept only while alive)
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self.kernel = self.root = None
 
     def start(self, kernel, root):
+        """Fetch the directives once before returning -- a process restarted while its agent is revoked or
+        restricted must not get a first conversation's worth of free rein -- then keep polling in the
+        background. The first fetch waits at most `first_wait` seconds: an unreachable server delays startup
+        by that much, never more, and nothing is revoked until it answers."""
         self.kernel, self.root = kernel, root
+        if self.first_wait:
+            try:
+                self.poll_once(timeout=self.first_wait)
+            except Exception as ex:      # never into the agent
+                at._warn("revocations-err", f"revocation poll failed: {ex}")
         if self.interval:
-            threading.Thread(target=self._loop, daemon=True, name="agentdynamics-revocations").start()
+            threading.Thread(target=self._loop, args=(bool(self.first_wait),), daemon=True,
+                             name="agentdynamics-revocations").start()
 
     def stop(self):
         self._stop.set()
 
-    def _loop(self):
+    def _loop(self, polled=False):
+        if polled and self._stop.wait(self.interval):
+            return
         while True:
             try:
                 self.poll_once()
@@ -423,8 +446,8 @@ class Revocations:
             if self._stop.wait(self.interval):
                 return
 
-    def poll_once(self):
-        """Fetch the active directives and apply them; returns the number of grants revoked."""
+    def poll_once(self, timeout=5):
+        """Fetch the active directives and apply them; returns the number of grants acted on."""
         url = at._cfg.get("url")
         if not url:
             at._warn("revocations-nourl", "revocations=True needs agentdynamics.init(url=...); nothing is polled")
@@ -433,7 +456,7 @@ class Revocations:
         headers = {"Authorization": f"Bearer {at._cfg['key']}"} if at._cfg.get("key") else {}
         try:
             with urllib.request.urlopen(urllib.request.Request(f"{url}/api/revocations?{q}", headers=headers),
-                                        timeout=5) as r:
+                                        timeout=timeout) as r:
                 data = json.loads(r.read())
         except Exception as ex:
             at._warn("revocations-down", f"could not fetch revocation directives from {url} ({ex}); "
@@ -449,10 +472,10 @@ class Revocations:
             return [d for d in self.active.values() if (d.get("expires") or 0) > now]
 
     def apply(self):
-        """Revoke every live grant an active directive names; returns how many."""
+        """Revoke or restrict every live grant an active directive names; returns how many."""
         if self.kernel is None or self.root is None:
             return 0
-        return sum(self._revoke(d, g) for d in self._live() for g in self._targets(d))
+        return sum(self._apply(d, g) for d in self._live() for g in self._targets(d))
 
     def note(self, grant):
         root = grant                     # up the parent chain (Grant.root is a constructor, not this)
@@ -475,23 +498,41 @@ class Revocations:
                 stack.extend(g.children)
         return out
 
-    def _revoke(self, d, grant):
+    def _apply(self, d, grant):
+        """Revoke `grant`, or restrict it and its subtree, as directive `d` says: once per (directive, grant)."""
         key = (d["id"], grant.grant_id)
         with self._lock:
             if key in self._done or not grant.is_active():
                 return 0
             self._done.add(key)
-        self.kernel.revoke(grant, reason=f"agentdynamics directive {d['id']}: {d.get('reason')}")
-        self.applied.append({"directive": d["id"], "agent": grant.agent_name, "grant_id": grant.grant_id,
+        reason = f"agentdynamics directive {d['id']}: {d.get('reason')}"
+        kind = d.get("kind") or "revoke"
+        if kind == "restrict":
+            spec = d.get("spec") or {}
+            restrict = getattr(self.kernel, "restrict", None)
+            if callable(restrict):
+                restrict(grant, remove=spec.get("tools") or (), budget_fraction=spec.get("budget"), reason=reason)
+            else:
+                # Aegis before 0.6 can't narrow a grant in place. A tool taken away is enforced at use instead:
+                # the grant that calls it, or anything under it, is revoked first (check_use). The budget part
+                # of a restriction can't be applied at all.
+                with self._lock:
+                    self._taken.setdefault(grant.grant_id, set()).update(spec.get("tools") or ())
+                at._warn("revocations-norestrict", "this aegis version has no Kernel.restrict: a restricted tool "
+                         "revokes the grant that calls it, and a budget restriction is not applied (aegis-kernel>=0.6)")
+        else:
+            self.kernel.revoke(grant, reason=reason)
+        self.applied.append({"directive": d["id"], "kind": kind, "agent": grant.agent_name, "grant_id": grant.grant_id,
                              "ts": time.time()})
         return 1
 
-    def check_use(self, grant):
-        """Before a grant acts: if an active directive names its agent or an ancestor's (or every agent),
-        revoke first, so the call is refused. Free while no directive is active."""
+    def check_use(self, grant, tool=None):
+        """Before a grant acts: if an active directive names its agent or an ancestor's (or every agent), apply
+        it first -- a revoked grant's call is refused, a restricted one's is refused if it needed what was taken.
+        Free while no directive is active."""
         try:
             self.note(grant)             # so a later directive finds this tree even while it sits idle
-            if not self.active:
+            if not self.active and not self._taken:
                 return
             chain, g = [], grant
             while g is not None:
@@ -500,8 +541,13 @@ class Revocations:
             for d in self._live():
                 hit = chain[-1] if not d.get("agent") else next((g for g in chain if g.agent_name == d["agent"]), None)
                 if hit is not None:
-                    self._revoke(d, hit)
-                    return
+                    self._apply(d, hit)
+            if tool is not None and grant.is_active():
+                for g in chain:          # the fallback: a tool taken from this grant or one above it
+                    if tool in self._taken.get(g.grant_id, ()):
+                        self.kernel.revoke(grant, reason=f"agentdynamics: '{tool}' was taken from {g.agent_name} "
+                                                         f"by a restrict directive")
+                        break
         except Exception as ex:          # the check itself must not break the agent
             at._warn("revocations-check", f"could not check a grant against revocation directives: {ex}")
 

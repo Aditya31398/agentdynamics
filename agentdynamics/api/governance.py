@@ -5,7 +5,7 @@ from collections import Counter, defaultdict
 
 from .. import incidents as incmod, trust as trustmod
 from ..analysis import pct
-from ..store import incident_signals, incidents as list_incidents, revocations as list_revocations, rows
+from ..store import incident_signals, incident_verdicts, incidents as list_incidents, revocations as list_revocations, rows
 
 DAY = 86400
 
@@ -63,10 +63,7 @@ class GovernanceMixin:
             args.append(project)
         tasks = rows(self.con, f"SELECT id, project, started, ended, outcome, agents FROM tasks WHERE {where} "
                                "ORDER BY started, id", args)
-        judged = trustmod.verdicts(rows(
-            self.con, "SELECT i.project, i.agent, s.task_id, i.verdict FROM incident_signals s "
-                      "JOIN incidents i ON i.id = s.incident_id WHERE i.verdict IS NOT NULL AND i.agent IS NOT NULL "
-                      "AND s.task_id IS NOT NULL ORDER BY s.ref"))
+        judged = trustmod.verdicts(incident_verdicts(self.con))
         # the engine's clock: decay depends on now, and two instances (or a test) must agree on it
         return trustmod.score(tasks, judged, self.e._clock(), trustmod.settings(self.e.cfg))
 
@@ -126,13 +123,25 @@ class GovernanceMixin:
                   if d["agent"] in (inc["agent"], None)] if inc["agent"] else []
         actions = []
         if inc["agent"]:
-            if active:
-                actions.append({"kind": "revoked", "directive": active[0]["id"], "until": active[0]["expires"]})
+            revoked = next((d for d in active if d["kind"] == "revoke"), None)
+            if revoked:
+                actions.append({"kind": "revoked", "directive": revoked["id"], "until": revoked["expires"]})
             else:
-                # recommended when the evidence is of intent -- a tripwire, probing -- not a few refused calls
+                taken = set()
+                for d in (d for d in active if d["kind"] == "restrict"):
+                    actions.append({"kind": "restricted", "directive": d["id"], "until": d["expires"],
+                                    "tools": (d["spec"] or {}).get("tools", []), "budget": (d["spec"] or {}).get("budget")})
+                    taken |= set((d["spec"] or {}).get("tools", []))
+                # a tripwire, or a directive already issued, is evidence of intent: revoke. Refused calls and
+                # probing alone are the agent pushing on tools it was given: take those tools away.
+                intent = any(s["rule"] == "tripwire" or s["kind"] == "directive" for s in sig)
+                misused = sorted({s["name"] for s in evidence if s["kind"] == "tool" and s["name"]
+                                  and (s["denied"] or s["tripwire"])} - taken)
+                if misused:
+                    actions.append({"kind": "restrict", "agent": inc["agent"], "project": inc["project"],
+                                    "tools": misused, "minutes": 60, "recommended": not intent})
                 actions.append({"kind": "revoke", "agent": inc["agent"], "project": inc["project"], "minutes": 60,
-                                "recommended": any(s["rule"] in ("tripwire", "repeated_denials") or s["kind"] == "directive"
-                                                   for s in sig)})
+                                "recommended": intent or not misused})
         for pv in sorted({t["policy_version"] for t in tasks.values() if t.get("policy_version")}):
             actions.append({"kind": "tighten", "policy": pv})
         trust = next((a for a in self._trust(inc["project"]) if a["agent"] == inc["agent"]), None) \

@@ -20,7 +20,7 @@ import traceback
 from collections import Counter, defaultdict
 
 from . import alerts as alertmod, analysis, config as cfgmod, incidents as incmod, pricing, slo as slomod, store
-from . import tripwires as tripmod
+from . import tripwires as tripmod, trust as trustmod
 from .collectors import aegis_audit, claude_code, generic, inbox, langfuse, langsmith, otlp, spans as spanmod
 from .privacy import Redactor
 
@@ -85,6 +85,23 @@ def _doc_project(source, doc):
     if source == "aegis":
         return ((doc.get("details") or {}).get("ctx") or {}).get("project") or "aegis"
     return doc.get("project")
+
+
+def restrict_spec(tools=(), budget=None):
+    """What a restrict directive takes away, checked: tool names, and/or the share of the remaining budget to
+    keep (0 <= budget < 1). Raises ValueError for one that takes nothing, or would give something."""
+    tools = sorted({str(x).strip() for x in (tools or ()) if str(x).strip()})
+    spec = {}
+    if tools:
+        spec["tools"] = tools
+    if budget is not None and budget != "":
+        b = float(budget)
+        if not 0.0 <= b < 1.0:
+            raise ValueError("budget is the share of what remains to keep: at least 0 and below 1")
+        spec["budget"] = b
+    if not spec:
+        raise ValueError("a restriction takes something away: name tools, or a budget share below 1")
+    return spec
 
 
 class Engine:
@@ -470,6 +487,21 @@ class Engine:
         self._wake.set()
         return rid
 
+    def restrict(self, agent=None, project=None, reason="operator", minutes=60, tools=(), budget=None,
+                 source="operator"):
+        """Issue a restrict directive: take `tools` away from the agent's grants, and with `budget`, all but that
+        share of what remains of their budget -- in place, through Aegis's Kernel.restrict. The agent keeps
+        working with what is left: the step between leaving it alone and revoking it."""
+        spec = restrict_spec(tools, budget)
+        now = self._clock()
+        with self.lock:
+            rid = store.add_revocation(self.con, project, agent, reason, source, now, now + float(minutes) * 60,
+                                       kind="restrict", spec=spec)
+            if self.writer:
+                self._update_incidents(())
+        self._wake.set()
+        return rid
+
     def clear_revocation(self, rid):
         """Stop a directive applying to new grants; ones it revoked stay revoked (Aegis can't un-revoke)."""
         with self.lock:
@@ -610,6 +642,32 @@ class Engine:
                 sig = store.incident_signals(self.con, [iid])[iid]
                 self._queue([alertmod.from_incident(inc, incmod.title(inc, sig), "resolve")], now)
             return inc
+
+    def _detect_low_trust(self):
+        """[enforcement.trust]: an agent whose trust (trust.py) is below `restrict_below` loses the tools it
+        misused, wherever it runs, for `minutes` -- renewed while it stays low. Not revoked: it keeps doing
+        everything else. Off unless configured: it acts on running agents."""
+        t = (self.cfg.get("enforcement") or {}).get("trust") or {}
+        if not t:
+            return []
+        now = self._clock()
+        below = float(t.get("restrict_below", trustmod.DEFAULTS["low"]))
+        tasks = [x for ts in self._tasks.values() for x in ts if x.get("agents")]
+        scores = trustmod.score(tasks, trustmod.verdicts(store.incident_verdicts(self.con)), now,
+                                trustmod.settings(self.cfg))
+        held = {(d["project"], d["agent"]) for d in store.revocations(self.con, now, active=True, limit=10000)
+                if d["source"] == "trust" or d["kind"] == "revoke"}      # already restricted, or stopped outright
+        out = []
+        for a in scores:
+            if a["trust"] >= below or (a["project"], a["agent"]) in held:
+                continue
+            # what it misused; if nothing names a tool (a canary quoted in a model response), its budget
+            spec = restrict_spec(a["misused"], None if a["misused"] else 0.5)
+            reason = (f"trust {a['trust']:g} < {below:g}: takes away "
+                      + (", ".join(spec["tools"]) if spec.get("tools") else "half of what remains of its budget"))
+            out.append(store.add_revocation(self.con, a["project"], a["agent"], reason, "trust", now,
+                                            now + float(t.get("minutes", 60)) * 60, kind="restrict", spec=spec))
+        return out
 
     def _alert_new_revocations(self):
         """Alert on directives issued since the last look, from wherever they came (this process, another
@@ -855,6 +913,7 @@ class Engine:
             self._queue_event_alerts(events)
             self._detect_probing()
             self._detect_tripwires()
+            self._detect_low_trust()
             self._update_incidents(events)
             self._first = False
             self.last_refresh = time.time()

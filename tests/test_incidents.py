@@ -204,12 +204,23 @@ class GroupingTest(Base):
         by = {i["subject"]: i for i in self.incidents(e)}
         d = Api(e).incident(by["support-bot"]["id"])
         self.assertEqual([(s["name"], s["tripwire"]) for s in d["evidence"]], [("secrets.dump", "decoy tool secrets.dump")])
-        self.assertEqual(d["actions"], [{"kind": "revoke", "agent": "support-bot", "project": "shop", "minutes": 60,
-                                         "recommended": True}, {"kind": "tighten", "policy": "support@v2#abc"}])
-        self.assertFalse(Api(e).incident(by["helper-bot"]["id"])["actions"][0]["recommended"],
-                         "three refused calls are worth a look, not a revocation")
+        self.assertEqual(d["actions"], [
+            {"kind": "restrict", "agent": "support-bot", "project": "shop", "tools": ["secrets.dump"], "minutes": 60,
+             "recommended": False},
+            {"kind": "revoke", "agent": "support-bot", "project": "shop", "minutes": 60, "recommended": True},
+            {"kind": "tighten", "policy": "support@v2#abc"}], "a tripwire is intent: revoke")
+        helper = Api(e).incident(by["helper-bot"]["id"])["actions"]
+        self.assertEqual([(a["kind"], a.get("tools"), a.get("recommended")) for a in helper[:2]],
+                         [("restrict", ["fs.read"], True), ("revoke", None, False)],
+                         "refused calls alone: take away the tool it pushed on, don't stop the agent")
+        e.restrict(agent="helper-bot", project="shop", reason="from the incident", minutes=30, tools=["fs.read"])
+        helper = Api(e).incident(by["helper-bot"]["id"])["actions"]
+        self.assertEqual([(a["kind"], a.get("tools")) for a in helper[:2]], [("restricted", ["fs.read"]), ("revoke", None)],
+                         "once taken away, it isn't offered again")
         e.revoke(agent="support-bot", project="shop", reason="tripwire", minutes=30)
         self.assertEqual(Api(e).incident(by["support-bot"]["id"])["actions"][0]["kind"], "revoked")
+        helper_incident = [i for i in self.incidents(e) if i["agent"] == "helper-bot"][0]
+        self.assertIn("restricted (operator)", helper_incident["counts"], "an operator's restriction joins the incident")
         self.assertIsNone(Api(e).incident("nope"))
 
 

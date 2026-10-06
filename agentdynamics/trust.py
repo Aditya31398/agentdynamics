@@ -57,7 +57,7 @@ def score(tasks, judged, now, conf):
     `judged`: verdicts()."""
     half = max(conf["half_life_days"], 1e-6) * DAY
     acc = defaultdict(lambda: {"tasks": 0, "completed": 0, "calls": 0, "denied": 0, "w_calls": 0.0, "w_denied": 0.0,
-                               "evidence": []})
+                               "evidence": [], "misused": set()})
     for t in tasks:
         ts = t.get("ended") or t.get("started") or now
         w = 0.5 ** (max(0.0, now - ts) / half)
@@ -72,6 +72,7 @@ def score(tasks, judged, now, conf):
                 continue                   # a person said this wasn't it: none of it counts
             x["denied"] += a["denied"]
             x["w_denied"] += w * a["denied"]
+            x["misused"].update(a.get("misused") or ())
             f = conf["confirmed"] if verdict == "real" else 1.0
             for kind, hit in (("tripwire", a["touches"] > 0), ("probing", a["streak"] >= 3)):
                 if hit:
@@ -91,6 +92,7 @@ def score(tasks, judged, now, conf):
                     "calls": x["calls"], "denied": x["denied"], "denial_rate": round(rate, 4),
                     "tripwire_tasks": sum(1 for e in ev if e["kind"] == "tripwire"),
                     "probing_tasks": sum(1 for e in ev if e["kind"] == "probing"),
-                    "last_evidence": max((e["ts"] for e in ev), default=None), "evidence": ev[:10]})
+                    "last_evidence": max((e["ts"] for e in ev), default=None), "evidence": ev[:10],
+                    "misused": sorted(x["misused"])})
     out.sort(key=lambda r: (r["trust"], r["project"] or "", r["agent"]))
     return out

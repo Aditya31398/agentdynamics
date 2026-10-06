@@ -226,16 +226,31 @@ def cmd_revoke(a, data):
         rows_ = store.revocations(con, now)
         for d in rows_:
             status = "cleared" if d["cleared"] else "expired" if d["expires"] <= now else "active"
+            what = "revoke" if d["kind"] == "revoke" else "restrict: " + ", ".join(
+                (d["spec"].get("tools") or []) + ([f"budget x{d['spec']['budget']:g}"] if "budget" in d["spec"] else []))
             print(f"{d['id']}  {status:<8} {d['project'] or '(all projects)':<18} {d['agent'] or '(all agents)':<18} "
-                  f"until {time.strftime('%Y-%m-%d %H:%M', time.localtime(d['expires']))}  [{d['source']}] {d['reason']}")
+                  f"until {time.strftime('%Y-%m-%d %H:%M', time.localtime(d['expires']))}  [{d['source']}] {what}  {d['reason']}")
         if not rows_:
             print("no directives")
         return 0
     if not a.reason:
         print("--reason is required: it goes into the kernel's audit log")
         return 2
+    who = f"{'agent ' + a.agent if a.agent else 'every agent'} in {a.project or 'every project'}"
+    if a.tools or a.budget is not None:
+        from .engine import restrict_spec
+        try:
+            spec = restrict_spec((a.tools or "").split(","), a.budget)
+        except ValueError as ex:
+            print(ex)
+            return 2
+        rid = store.add_revocation(con, a.project, a.agent, a.reason, "operator", now, now + a.minutes * 60,
+                                   kind="restrict", spec=spec)
+        print(f"{rid}: {who} loses {', '.join(spec.get('tools', [])) or 'part of its budget'} for {a.minutes:g} min, "
+              "in processes using agentdynamics.integrations.aegis.instrument(..., revocations=True)")
+        return 0
     rid = store.add_revocation(con, a.project, a.agent, a.reason, "operator", now, now + a.minutes * 60)
-    print(f"{rid}: {'agent ' + a.agent if a.agent else 'every agent'} in {a.project or 'every project'} is revoked "
+    print(f"{rid}: {who} is revoked "
           f"for {a.minutes:g} min, in processes using agentdynamics.integrations.aegis.instrument(..., revocations=True)")
     return 0
 
@@ -437,6 +452,8 @@ def main(argv=None):
     rv.add_argument("--project", help="omit for every project")
     rv.add_argument("--reason", help="why (it goes into the kernel's audit log)")
     rv.add_argument("--minutes", type=float, default=60, help="how long new grants of that agent are refused too")
+    rv.add_argument("--tools", help="restrict instead of revoke: take these tools away (comma-separated)")
+    rv.add_argument("--budget", type=float, help="restrict: keep only this share (0-1) of what remains of the budget")
     rv.add_argument("--list", action="store_true", help="list directives")
     rv.add_argument("--clear", metavar="ID", help="stop a directive (grants it revoked stay revoked)")
     sub.add_parser("ingest", help="scan sources once and rebuild the database")

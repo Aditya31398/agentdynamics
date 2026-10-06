@@ -96,18 +96,36 @@ probing = { denials = 10, runs = 3, window_minutes = 30, revoke_minutes = 60 }
 
 That revokes an agent whose calls the policy refused 10 times across 3 or more runs within 30 minutes.
 
-- **How it arrives.** With `revocations=True`, a background thread polls `GET /api/revocations` every 10 seconds,
-  with the key given to `agentdynamics.init()` (the ingest role is enough). It revokes the matching grants through
-  `kernel.revoke`, in every grant tree it has seen (an app often makes a root per conversation). Before every
-  governed call and on every spawn, it checks the grant against the directives too, so a grant it hasn't seen
-  yet is revoked before it acts. The kernel enforces, and records each revocation in its audit log; the task
-  shows it with the directive's id and reason.
-- **It can only take away.** A directive revokes and nothing else, and Aegis revocation is permanent: clearing a
-  directive stops it applying to new grants and restores none. This keeps the promise that nothing here can
-  loosen Aegis.
+**Restrict instead of revoke.** A directive can take some of an agent's authority away and leave it the rest:
+
+```bash
+agentdynamics revoke --agent support-bot --project helpdesk --tools fs.read,email.send --reason "probing fs.read"
+agentdynamics revoke --agent researcher --budget 0.25 --reason "running up opus spend"   # keep a quarter of what's left
+```
+
+(or `{"tools": [...], "budget": ...}` in `POST /api/revocations`, the "tools to take away" field on the card, or
+**Take ... away** on an incident, which offers the tools the agent misused there). With aegis-kernel 0.6 or later it
+is applied through `Kernel.restrict`: the grant and everything under it lose those tools in place, Aegis refuses
+a call to one with `capability.not_granted`, and the agent keeps working with the rest. With an older Aegis,
+which can't narrow a grant, the integration revokes a grant -- or anything under it -- the moment it calls a tool
+that was taken; the budget part can't be applied there, and the process warns once. Like a revocation, a
+restriction is permanent for the grants it reached and only stops applying to new ones when cleared.
+
+- **How it arrives.** With `revocations=True`, `instrument()` fetches the directives once before it returns (waiting
+  at most 3 seconds), so a process restarted while its agent is revoked or restricted is held from its first call;
+  then a background thread polls `GET /api/revocations` every 10 seconds, with the key given to
+  `agentdynamics.init()` (the ingest role is enough). It revokes or restricts the matching grants through
+  `kernel.revoke` / `kernel.restrict`, in every grant tree it has seen (an app often makes a root per conversation).
+  Before every governed call and on every spawn, it checks the grant against the directives too, so a grant it
+  hasn't seen yet is dealt with before it acts. The kernel enforces, and records each one in its audit log; the
+  task shows it with the directive's id and reason.
+- **It can only take away.** A directive revokes or restricts and nothing else, and both are permanent in Aegis:
+  clearing a directive stops it applying to new grants and restores none. This keeps the promise that nothing here
+  can loosen Aegis.
 - **Failing.** If the server can't be reached, nothing is revoked and the agent carries on, as it would without
-  this; the process warns once. A directive takes effect within one poll interval. Clocks matter: a directive's
-  expiry is compared with the process's clock.
+  this; the process warns once, and startup waits no more than those 3 seconds. A directive issued while a process
+  runs takes effect within one poll interval. Clocks matter: a directive's expiry is compared with the process's
+  clock.
 - **Trust.** The process acts on directives from the server it is configured to send telemetry to. Someone
   controlling that server could stop agents, but never grant them anything.
 
@@ -230,8 +248,37 @@ watch = 80
 low = 50
 ```
 
-Trust is a number to watch and to alert on (`agentdynamics_agent_trust < 50` in Alertmanager). Acting on it --
-narrowing what a low-trust agent is granted -- is the next step.
+Trust is a number to watch and to alert on (`agentdynamics_agent_trust < 50` in Alertmanager), and the server can
+act on it:
+
+```toml
+[enforcement.trust]
+restrict_below = 50     # an agent below this loses the tools it misused, wherever it runs ...
+minutes = 60            # ... for this long, renewed while it stays low
+```
+
+A low-trust agent is restricted, not revoked: it loses the tools it was refused or touched a tripwire with (or, if
+nothing names a tool, half of what remains of its budget) and keeps doing everything else. The restriction is
+renewed while trust stays low and lapses once it recovers -- including when a person resolves its incident as a
+false alarm. Renewals aren't incident signals: they follow from evidence the incident already holds. Off unless
+configured, since it acts on running agents.
+
+### 3f. Untrusted input (aegis-kernel 0.6+)
+
+Aegis can mark a tool `untrusted` -- it returns content from outside the trust boundary, like a web page, an inbound
+email or an upload -- and a policy can name what an agent may no longer do once it has read such content:
+
+```python
+registry.register("web.fetch", fetch, effects={"network", "read"}, untrusted=True)
+```
+```yaml
+integrity:
+  untrusted_blocks: [egress]     # nothing leaves after untrusted input
+```
+
+The kernel refuses those calls with `integrity.untrusted_input`, which the Governance page, incidents and trust
+count like any other refusal. The governed demo's phishing scenario shows it: the agent fetches the page a ticket
+links to, then does what the page says, and the call is refused though the policy allows it otherwise.
 
 ### 4. Observe → govern: least-privilege policy from real behaviour
 

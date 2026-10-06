@@ -165,6 +165,9 @@ governance.instrument(kernel, root, watchdog=governance.Watchdog(max_repeated_de
       ? `${i.verdict === "real" ? "Real" : "False alarm"} · ${esc(i.resolved_by || "")} · ${dt(i.resolved_at)}${i.note ? `<div class="small">${esc(i.note)}</div>` : ""}` : "";
     const acts = d.actions.map((a) => {
       if (a.kind === "revoked") return `<div class="small">${pill("critical", "revoked")} until ${dt(a.until)} · <a href="#/governance">directives</a></div>`;
+      if (a.kind === "restricted") return `<div class="small">${pill("warning", "restricted")} without ${esc([...a.tools, ...(a.budget != null ? ["part of its budget"] : [])].join(", "))} until ${dt(a.until)}</div>`;
+      if (a.kind === "restrict") return `<button class="${a.recommended ? "primary" : ""}" id="inc-restrict">Take ${esc(a.tools.join(", "))} away from ${esc(a.agent)} for ${a.minutes} min</button>
+        <span class="small muted">${a.recommended ? "recommended: it keeps everything else" : "milder than revoking: it keeps everything else"}</span>`;
       if (a.kind === "revoke") return `<button class="${a.recommended ? "primary" : ""}" id="inc-revoke">Revoke ${esc(a.agent)} for ${a.minutes} min</button>
         <span class="small muted">${a.recommended ? "recommended: the evidence is of intent" : "optional: refused calls alone may be a policy the agent doesn't know"}</span>`;
       if (a.kind === "tighten") return `<a class="btn" href="#/governance" title="Generate tightened policy">Tighten ${esc(a.policy)}</a>`;
@@ -205,6 +208,15 @@ governance.instrument(kernel, root, watchdog=governance.Watchdog(max_repeated_de
       <div style="margin-top:14px">${card("Evidence", ev ? `<div class="table-wrap"><table><thead><tr><th>When</th><th>Step</th><th>Agent</th><th>Why</th></tr></thead><tbody>${ev}</tbody></table></div>
           ${d.evidence_total > d.evidence.length ? `<p class="small muted">${d.evidence.length} of ${d.evidence_total} steps shown.</p>` : ""}`
         : `<div class="empty">No steps: the tasks are past retention, or the signals are directives.</div>`, "the touching, refused and revoked steps")}</div>`;
+    const rs = $("#inc-restrict", host);
+    const ract = d.actions.find((a) => a.kind === "restrict");
+    if (rs) rs.onclick = async () => {
+      try {
+        await post("revocations", { agent: ract.agent, project: ract.project || "", minutes: ract.minutes, tools: ract.tools,
+          reason: `incident ${i.id}: ${i.title}` });
+        toast("Restriction issued"); route();
+      } catch (e) { toast("Not issued: " + e.message); }
+    };
     const rv = $("#inc-revoke", host);
     const act = d.actions.find((a) => a.kind === "revoke");
     if (rv) rv.onclick = async () => {
@@ -246,29 +258,36 @@ governance.instrument(kernel, root, watchdog=governance.Watchdog(max_repeated_de
     const d = await api("revocations").catch(() => null);
     if (!d || !box.isConnected) return;
     const STATUS = { active: "critical", expired: "unknown", cleared: "ok" };
+    const what = (r) => r.kind === "restrict"
+      ? `<span class="tag warn">restrict</span><div class="small muted">takes ${esc([...(r.spec.tools || []), ...(r.spec.budget != null ? [`all but ${pct(r.spec.budget)} of the budget left`] : [])].join(", "))}</div>`
+      : `<span class="tag bad">revoke</span>`;
     const rows = d.revocations.map((r) => `<tr><td>${pill(STATUS[r.status] || "unknown", r.status)}</td>
       <td><b>${esc(r.agent || "every agent")}</b><div class="small muted">${esc(r.project || "every project")}</div></td>
-      <td class="small">${esc(r.reason)}</td><td class="small muted" style="white-space:nowrap">${ago(r.created)} · ${esc(r.source)}</td>
+      <td>${what(r)}</td><td class="small">${esc(r.reason)}</td><td class="small muted" style="white-space:nowrap">${ago(r.created)} · ${esc(r.source)}</td>
       <td class="small muted" style="white-space:nowrap">${r.status === "active" ? "until " + dt(r.expires) : ""}</td>
       <td>${r.status === "active" ? `<button class="gv-clear" data-id="${esc(r.id)}">Clear</button>` : ""}</td></tr>`).join("");
     const p = d.probing;
-    box.innerHTML = card("Revocation directives", `<p class="small muted" style="margin:0 0 8px">Revoke an agent wherever it runs. Processes that call
+    box.innerHTML = card("Revocation directives", `<p class="small muted" style="margin:0 0 8px">Revoke an agent wherever it runs, or restrict it: take some tools away and let it keep the rest. Processes that call
         <code>instrument(kernel, root, revocations=True)</code> apply a directive through <code>Kernel.revoke</code> within seconds, and revoke new grants of that agent while it lasts.
         Revocation is permanent in Aegis: clearing a directive stops it applying to new grants, and restores nothing.
         ${p ? `Probing detection is on: ${p.denials ?? 10} denied calls across ${p.runs ?? 3} runs within ${p.window_minutes ?? 30} min issue one for ${p.revoke_minutes ?? 60} min.`
             : "Probing detection is off (<code>[enforcement] probing</code> in agentdynamics.toml)."}</p>
-      ${rows ? `<div class="table-wrap"><table><thead><tr><th>Status</th><th>Agent</th><th>Reason</th><th>Issued</th><th>Applies</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`
+      ${rows ? `<div class="table-wrap"><table id="gv-dir-list"><thead><tr><th>Status</th><th>Agent</th><th>Does</th><th>Reason</th><th>Issued</th><th>Applies</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`
              : `<div class="empty">No directives.</div>`}
       <div class="row" style="margin-top:10px;flex-wrap:wrap;gap:6px"><input id="gv-r-agent" placeholder="agent (blank: every agent)" style="width:190px">
         <input id="gv-r-project" placeholder="project (blank: all)" style="width:150px"><input id="gv-r-min" type="number" value="60" min="1" style="width:80px" title="minutes">
+        <input id="gv-r-tools" placeholder="tools to take away (blank: revoke)" style="width:210px" title="comma-separated: restrict instead of revoke">
         <input id="gv-r-reason" placeholder="reason (goes into the audit log)" style="flex:1;min-width:200px"><button class="primary" id="gv-r-go">Revoke</button></div>`,
       "server-side · needs an admin key to issue or clear");
+    $("#gv-r-tools").oninput = () => { $("#gv-r-go").textContent = $("#gv-r-tools").value.trim() ? "Restrict" : "Revoke"; };
     $("#gv-r-go").onclick = async () => {
       const reason = $("#gv-r-reason").value.trim();
       if (!reason) { toast("Say why: the reason goes into the kernel's audit log"); return; }
+      const tools = $("#gv-r-tools").value.split(",").map((t) => t.trim()).filter(Boolean);
       try {
-        await post("revocations", { agent: $("#gv-r-agent").value.trim(), project: $("#gv-r-project").value.trim(), minutes: +$("#gv-r-min").value || 60, reason });
-        toast("Directive issued"); directives(box);
+        await post("revocations", { agent: $("#gv-r-agent").value.trim(), project: $("#gv-r-project").value.trim(), minutes: +$("#gv-r-min").value || 60, reason,
+          ...(tools.length ? { tools } : {}) });
+        toast(tools.length ? "Restriction issued" : "Directive issued"); directives(box);
       } catch (e) { toast("Not issued: " + e.message); }
     };
     $$(".gv-clear", box).forEach((b) => b.onclick = async () => {
