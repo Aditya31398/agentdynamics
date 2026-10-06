@@ -157,18 +157,33 @@ class WebSocket:
 class Browser:
     """A headless Chrome/Edge with a fresh profile and remote debugging on a port it chooses."""
 
-    def __init__(self, path):
-        self.profile = tempfile.mkdtemp(prefix="ad-cdp-")
-        self.proc = subprocess.Popen([path, "--headless=new", "--disable-gpu", "--no-sandbox", "--no-first-run",
-                                      "--no-default-browser-check", "--remote-debugging-port=0",
-                                      f"--user-data-dir={self.profile}", "about:blank"],
-                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        port_file = os.path.join(self.profile, "DevToolsActivePort")
-        deadline = time.time() + 30
-        while not (os.path.exists(port_file) and os.path.getsize(port_file)) and time.time() < deadline:
-            time.sleep(0.1)
-        with open(port_file, encoding="utf-8") as f:
-            self.port = int(f.read().split()[0])
+    def __init__(self, path, attempts=3, wait=45):
+        # A cold CI runner sometimes starts Chrome slowly or not at all (a nightly Windows run never got its
+        # DevToolsActivePort in 30 s). Each attempt gets a fresh profile; a failure says what Chrome said.
+        errors = []
+        for _ in range(attempts):
+            self.profile = tempfile.mkdtemp(prefix="ad-cdp-")
+            log = open(os.path.join(self.profile, "chrome-stderr.log"), "wb")
+            self.proc = subprocess.Popen([path, "--headless=new", "--disable-gpu", "--no-sandbox", "--no-first-run",
+                                          "--no-default-browser-check", "--remote-debugging-port=0",
+                                          f"--user-data-dir={self.profile}", "about:blank"],
+                                         stdout=subprocess.DEVNULL, stderr=log)
+            port_file = os.path.join(self.profile, "DevToolsActivePort")
+            deadline = time.time() + wait
+            while time.time() < deadline and self.proc.poll() is None:
+                if os.path.exists(port_file) and os.path.getsize(port_file):
+                    with open(port_file, encoding="utf-8") as f:
+                        self.port = int(f.read().split()[0])
+                    log.close()
+                    return
+                time.sleep(0.1)
+            self.proc.kill()
+            self.proc.wait(timeout=10)
+            log.close()
+            with open(os.path.join(self.profile, "chrome-stderr.log"), "rb") as f:
+                errors.append(f"exit {self.proc.returncode}: {f.read()[-400:].decode('utf-8', 'replace').strip()}")
+            shutil.rmtree(self.profile, ignore_errors=True)
+        raise RuntimeError(f"{path} did not open a DevTools port in {attempts} attempts: " + " | ".join(errors))
 
     def page(self):
         """A page (tab) to drive: the one the browser opened with."""
