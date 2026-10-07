@@ -147,6 +147,8 @@ That call sets up four flows:
 2. **Model calls are charged to the Aegis budget before they're sent.** When the budget runs out, the call is refused and never made.
 3. **A watchdog revokes the grant** of an agent that keeps probing a boundary, for example after a prompt injection,
    and **tripwires** (decoy tools and planted canary values) stop a run before the call that touches one is made.
+   For tools that can't be undone, an opt-in **reviewer** model checks each call against what the user asked
+   before Aegis admits it, and refuses what goes beyond it (`review={"tools": ["payments.refund"]}`).
 4. **`agentdynamics policy export` writes a tighter, least-privilege policy** from observed behaviour. `aegis ratify` and `aegis drift` verify its declaration; `agentdynamics policy check` replays the traffic that actually ran through it and reports how much it would refuse, so a policy change can be gated in CI.
 
 The console's **Governance** page shows denials, budget stops, revocations, unused grants and budget headroom per policy version. See [docs/GOVERNANCE.md](docs/GOVERNANCE.md).

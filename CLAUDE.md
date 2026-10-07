@@ -45,8 +45,9 @@ AGENTDYNAMICS_URL=http://127.0.0.1:8790 python examples/governed_agent.py 45   #
    warning. `dependencies = []` in pyproject is a feature.
 2. **Telemetry never breaks the agent.** SDK code runs hooks and sends from a background thread with a bounded
    queue. Hooks are wrapped, failures warn once and are dropped. The only exception is by design: an Aegis gate
-   may raise `PolicyViolation` to block a model call, and the watchdog and tripwires revoke grants. That is
-   enforcement, not telemetry.
+   may raise `PolicyViolation` to block a model call, the watchdog and tripwires revoke grants, and the reviewer
+   (`ReviewGuard`, opt-in) refuses a listed call it can't approve -- failing closed. That is enforcement, not
+   telemetry.
 3. **Sources are the system of record; the DB is derived.** `runs/steps/tasks/events/baselines/meta` can be
    rebuilt from `spans_raw`, transcript files and `runs/*.json`. Changing a derived schema means bumping
    `store.SCHEMA_VERSION`, which drops and rebuilds derived tables. Never put data only in a derived table.
@@ -134,7 +135,7 @@ AGENTDYNAMICS_URL=http://127.0.0.1:8790 python examples/governed_agent.py 45   #
 ```
 agentdynamics/
   autotrace.py        SDK: init/trace/span/tool/llm_call, Anthropic+OpenAI patches, hook points (_hooks)
-  integrations/aegis.py  instrument(): decisions -> steps, ModelSpendGate, Watchdog, TripwireGuard, policy identity
+  integrations/aegis.py  instrument(): decisions -> steps, ModelSpendGate, Watchdog, TripwireGuard, ReviewGuard, policy identity
   tripwires.py        decoy tools and canary values: matching and step marks, shared by the server and the SDK
   incidents.py        security signals about one agent grouped into incidents (durable, with verdicts)
   trust.py            each agent's trust score from its evidence (tasks.agents), decayed, verdicts applied

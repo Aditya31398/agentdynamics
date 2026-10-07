@@ -33,8 +33,9 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+import uuid
 import weakref
-from collections import Counter
+from collections import Counter, deque
 
 from .. import autotrace as at
 from .. import pricing
@@ -386,6 +387,97 @@ class TripwireGuard:
             self._trip(grant, label)
 
 
+# ---------------------------------------------------------------- 6. a review before calls that can't be undone
+
+REVIEW_SCHEMA = {"type": "object",
+                 "properties": {"decision": {"type": "string", "enum": ["allow", "block"]}, "reason": {"type": "string"}},
+                 "required": ["decision", "reason"], "additionalProperties": False}
+
+
+def _review_system():
+    from .. import checker as checkmod
+    return f"""You review one action an AI agent is about to take, before it happens. It cannot be undone.
+
+{checkmod.UNTRUSTED}
+
+The evidence holds the request the user made and the call the agent proposes. Allow the call only if it plainly \
+serves that request. Block it if it goes beyond the request -- a recipient, amount, account or destination the \
+request does not imply, or data the request did not ask to send. Give a one-sentence reason."""
+
+
+class ReviewGuard:
+    """An Aegis guard: before a call to one of `tools` -- the ones that can't be undone, like a refund or an email
+    -- a model checks that the call serves what the user asked. It can only refuse.
+
+        governance.instrument(kernel, root, review={"tools": ["payments.refund", "email.send"]})
+
+    * It runs last in the kernel's guard chain: a call the policy refuses never reaches it, and costs nothing.
+      A call it allows still had to pass every other guard, so it can't approve what the policy refuses.
+    * It sees the user's request for this run and the proposed call -- not the documents and tool results the
+      agent read on the way, which is where an injected instruction would come from: a reviewer that read the
+      injection could be talked into approving it. Even so, the evidence is fenced off as data.
+    * It fails closed. No request to judge against (call it inside `agentdynamics.trace(..., prompt=...)`), no
+      SDK, an API error or an answer outside the schema: the kernel refuses the call (`review.unavailable`,
+      `review.no_request`), and audits that like any refusal. A model's "block" is `review.blocked`.
+    * Its model call is a sub-agent run of the conversation (workflow "aegis.review", agent "reviewer"), priced:
+      what reviewing costs is on the task as sub-agent cost, and it isn't counted as the agent's own model turn
+      (or its final message). It is not reserved against the Aegis budget, and a watchdog's per-run limits don't
+      count it: the review is the governance's cost, not the agent's.
+    * The proposed arguments go to the model as they are -- judging a recipient takes seeing it.
+    * The call is synchronous (Aegis guards are), so on `ainvoke` it holds the event loop for its duration.
+    """
+
+    name = "review"
+
+    def __init__(self, tools, model="claude-opus-5-5", effort="low", client=None):
+        self.tools = frozenset(tools)
+        self.conf = {"model": model, "effort": effort}
+        self._client = client
+        self.kernel = None
+        self.reviews = deque(maxlen=1000)    # {"tool", "agent", "decision", "reason", "ts"}, the latest
+
+    def check(self, grant, call):
+        from aegis.decision import Verdict
+
+        from .. import checker as checkmod
+        if call.tool not in self.tools:
+            return Verdict.allow("review.not_required", self.name)
+        if self.kernel is not None and self.kernel.registry.spec(call.tool) is None:
+            return Verdict.allow("review.not_required", self.name)   # the kernel refuses it next, unreviewed
+        run = at._current.get()
+        request = getattr(run, "request", None)
+        if not request:
+            return Verdict.deny("review.no_request", f"'{call.tool}' is reviewed against the user's request, and this "
+                                "call has none: make it inside agentdynamics.trace(..., prompt=...)", self.name)
+        if self._client is None:
+            self._client, why = checkmod.client()
+            if self._client is None:
+                return Verdict.deny("review.unavailable", f"'{call.tool}' needs a review and {why}", self.name)
+        t0 = time.time()
+        evidence = {"user_request": request[:4000], "agent": grant.agent_name,
+                    "proposed_call": {"tool": call.tool, "arguments": call.args}}
+        answer, error, use, _ = checkmod.ask(self._client, self.conf, _review_system(), evidence, REVIEW_SCHEMA)
+        model = use.get("model", self.conf["model"])
+        reason = str(answer.get("reason") or "")[:300] if answer else ""
+        said = answer["decision"] + (f" -- {reason}" if at._cfg["content"] else "") if answer else error
+        # a sub-agent of the run: its cost is the task's (sub-agent cost), its turn isn't the agent's
+        rv = at._Run("aegis.review", prompt=f"Review {call.tool} before it runs")
+        rv.id, rv.parent_id, rv.steps[0]["ts"] = f"{run.id}:review-{uuid.uuid4().hex[:12]}", run.id, t0
+        rv.add({"kind": "llm", "ts": t0, "end_ts": time.time(), "model": model, "provider": "anthropic",
+                "agent": "reviewer", "name": "review", "input_tokens": use.get("input_tokens", 0),
+                "output_tokens": use.get("output_tokens", 0),
+                "cost": pricing.cost(model, use.get("input_tokens", 0), use.get("output_tokens", 0)),
+                "text": f"review of {call.tool}: {said}"})
+        at._emit(rv.payload())
+        if answer is None:
+            return Verdict.deny("review.unavailable", f"'{call.tool}' could not be reviewed: {error}", self.name)
+        self.reviews.append({"tool": call.tool, "agent": grant.agent_name, "decision": answer["decision"],
+                             "reason": reason, "ts": time.time()})
+        if answer["decision"] == "allow":
+            return Verdict.allow("review.approved", self.name, reason=reason)
+        return Verdict.deny("review.blocked", f"reviewer: {reason}", self.name)
+
+
 # ---------------------------------------------------------------- entry point
 
 # ---------------------------------------------------------------- 5. server-side revocation (#8)
@@ -553,17 +645,18 @@ class Revocations:
 
 
 class Governance:
-    def __init__(self, kernel, root, gate, watchdog, unregister, revocations=None, tripwires=None):
+    def __init__(self, kernel, root, gate, watchdog, unregister, revocations=None, tripwires=None, review=None):
         self.kernel, self.root, self.gate, self.watchdog, self._unregister = kernel, root, gate, watchdog, unregister
         self.revocations = revocations
         self.tripwires = tripwires
+        self.review = review
 
     def uninstall(self):
         self._unregister()
 
 
 def instrument(kernel, root=None, *, gate_models=True, watchdog=None, correlate=True, record_decisions=True,
-               revocations=None, tripwires=None):
+               revocations=None, tripwires=None, review=None):
     """Connect an Aegis kernel to AgentDynamics. Call after `agentdynamics.init()` and `build_kernel()`.
 
     kernel      the Aegis Kernel
@@ -575,6 +668,9 @@ def instrument(kernel, root=None, *, gate_models=True, watchdog=None, correlate=
     tripwires   decoy tools and canary values -- {"tools": [...], "canaries": {name: value}}, an
                 agentdynamics.tripwires.Tripwires, or a TripwireGuard. Touching one revokes the run's grant tree
                 before the call is made.
+    review      calls a model checks against the user's request before the kernel admits them --
+                {"tools": [...], "model": ..., "effort": ...} or a ReviewGuard. Last in the guard chain, and it
+                only refuses (ReviewGuard says how it fails closed).
     """
     _require_aegis()
     _state.update(kernel=kernel, root=root)
@@ -650,10 +746,21 @@ def instrument(kernel, root=None, *, gate_models=True, watchdog=None, correlate=
             rv.start(kernel, root)
             undo += [rv.stop, lambda: setattr(kernel, "_agentdynamics_revocations", None)]
 
+    rg = None
+    if review:
+        rg = review if isinstance(review, ReviewGuard) else ReviewGuard(
+            review["tools"], **{k: review[k] for k in ("model", "effort", "client") if k in review})
+        rg.kernel = kernel
+        kernel.guards = tuple(kernel.guards) + (rg,)     # last: the policy refuses first, for free
+
+        def remove_review():
+            kernel.guards = tuple(g for g in kernel.guards if g is not rg)
+        undo.append(remove_review)
+
     def unregister():
         for u in undo:
             try:
                 u()
             except ValueError:
                 pass
-    return Governance(kernel, root, gate, watchdog, unregister, rv, tw)
+    return Governance(kernel, root, gate, watchdog, unregister, rv, tw, rg)

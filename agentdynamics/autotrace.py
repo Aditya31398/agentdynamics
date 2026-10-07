@@ -139,6 +139,10 @@ class _Run:
         self.id = f"{_cfg['project'] or 'app'}-{uuid.uuid4().hex[:16]}"
         self.name = name
         self.steps = [{"kind": "prompt", "ts": time.time(), "text": _clip(prompt if prompt is not None else name, 2000) or name}]
+        # what the user asked, in this process only -- never in the payload, whatever content capture says:
+        # the Aegis reviewer judges a call against it (integrations/aegis.py, ReviewGuard)
+        self.request = prompt if isinstance(prompt, str) else None
+        self.parent_id = None            # a sub-agent run: its cost rolls up into the parent's task
         self.error = None
         self.thread_id = thread_id
         self.user_id = user_id
@@ -163,6 +167,8 @@ class _Run:
                "environment": _cfg["environment"], "source": "sdk", "framework": "agentdynamics-sdk",
                "thread_id": self.thread_id, "user_id": self.user_id, "status": "error" if self.error else "ok",
                "error": self.error, "complete": True, "feedback": self.feedback, "steps": self.steps}
+        if self.parent_id:
+            out["parent_id"] = self.parent_id
         for hook in list(_hooks["run_meta"]):
             try:
                 out.update(hook(self) or {})

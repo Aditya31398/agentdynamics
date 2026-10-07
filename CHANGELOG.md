@@ -15,6 +15,14 @@ created then too, and the first refresh opens incidents from the security events
 alerting, as history never is.
 
 ### Added
+- **A review before calls that can't be undone** (`instrument(..., review={"tools": [...]})`, `pip install
+  anthropic`). For the tools listed -- a refund, an email -- a model checks each call against the request the run
+  was traced with, as the last guard in the Aegis kernel. It can only refuse (`review.blocked`, audited like any
+  denial); it sees the request and the proposed call, never the documents and tool results an injection would come
+  from; and it fails closed: no request, no SDK, an error or an answer outside the schema refuses the call. Each
+  review is a sub-agent run of the conversation (`aegis.review`), so its cost is the task's sub-agent cost and not
+  one of the agent's turns. The governed demo's new refund scenarios show it refusing a refund a retrieved note
+  added. SDK runs gain `parent_id` for sub-agent runs.
 - **The checker: a model's view of each incident, in shadow mode** (`[checker]`, `pip install anthropic`). For each
   incident a model (`claude-opus-5-5` by default) says what it thinks happened -- prompt injection, probing, an
   exfiltration attempt, a policy too narrow for the agent, an honest error -- and what it would do; with

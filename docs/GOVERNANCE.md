@@ -308,6 +308,34 @@ grade_outcomes = false
   recorded; an overloaded API is retried five minutes later. Tokens spent are on the card. A safety classifier
   that declines (security text trips them more than most) falls back to Anthropic's recommended model.
 
+### 3h. A review before calls that can't be undone
+
+A policy decides from a call's shape: this tool, this argument range. It can't tell a refund the customer asked
+for from one an injected note added, when both fit. For the few tools whose effect can't be taken back, a
+model can check each call against what the user actually asked, before Aegis admits it:
+
+```python
+governance.instrument(kernel, root, review={"tools": ["payments.refund", "email.send"]})   # pip install anthropic
+
+@agentdynamics.trace("support", prompt=ticket)      # the request each call is judged against
+def handle(ticket): ...
+```
+
+- **It can only refuse.** It is the last guard in the kernel's chain, so a call the policy refuses never reaches
+  it (and costs nothing), and a call it allows has passed every other guard. A refusal is `review.blocked`, with
+  the reviewer's reason, in the audit log and on the task like any denial.
+- **It doesn't read what the agent read.** It sees the user's request and the proposed call, not the documents
+  and tool results on the way, which is where an injected instruction comes from: a reviewer that read the
+  injection could be talked into approving it. The evidence is still fenced off as data.
+- **It fails closed.** No traced request to judge against (`review.no_request`), no SDK or key, an API error, an
+  answer outside the schema (`review.unavailable`): the call is refused. List only the tools worth a model call
+  and that latency; the call is synchronous, as Aegis guards are.
+- **Its cost is the task's.** Each review is a sub-agent run of the conversation (workflow `aegis.review`): the
+  task shows it under its sub-agents and in its sub-agent cost, not as one of the agent's own turns. It isn't
+  reserved against the Aegis budget, and the watchdog's per-run limits don't count it.
+- The arguments go to the model as they are -- judging a recipient takes seeing it. Model and effort are
+  `review={"tools": [...], "model": "claude-opus-5-5", "effort": "low"}`.
+
 ### 4. Observe → govern: least-privilege policy from real behaviour
 
 ```bash

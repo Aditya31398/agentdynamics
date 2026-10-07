@@ -168,9 +168,11 @@ def ask(cl, conf, system, evidence, schema):
         answer = json.loads(text or "")
     except ValueError:
         return None, f"not JSON (stop_reason {getattr(r, 'stop_reason', None)})", use, False
-    for k, allowed in (("classification", CLASSIFICATIONS), ("recommendation", RECOMMENDATIONS), ("outcome", GRADES)):
-        if k in schema["properties"] and answer.get(k) not in allowed:
-            return None, f"{k} {answer.get(k)!r} is not one of {allowed}", use, False
+    if not isinstance(answer, dict):
+        return None, f"not an object: {type(answer).__name__}", use, False
+    for k, prop in schema["properties"].items():      # every enum: an answer outside one is no answer
+        if "enum" in prop and answer.get(k) not in prop["enum"]:
+            return None, f"{k} {answer.get(k)!r} is not one of {tuple(prop['enum'])}", use, False
     return answer, None, use, False
 
 
