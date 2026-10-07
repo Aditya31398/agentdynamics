@@ -175,8 +175,8 @@ class RollupTest(unittest.TestCase):
         kept = Api(e).overview({"days": ""})["kpis"]["tasks"]
         self.assertLess(kept, len(held), "the KPIs cover the tasks still held; the sketches, all of them")
         # rows rolled up before sketches were kept: no figure rather than one from half the window
-        e.con.execute("UPDATE rollup_daily SET cost_q = NULL WHERE day = (SELECT MIN(day) FROM rollup_daily)")
-        e.con.commit()
+        with e.con:
+            e.con.execute("UPDATE rollup_daily SET cost_q = NULL WHERE day = (SELECT MIN(day) FROM rollup_daily)")
         self.assertIsNone(Api(e).overview({"days": ""})["history"]["percentiles"])
 
     def test_a_task_without_a_workflow_rolls_up(self):
