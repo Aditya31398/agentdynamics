@@ -35,6 +35,11 @@ SSE = [
     ("message_delta", {"type": "message_delta", "delta": {"stop_reason": "max_tokens", "stop_sequence": None}, "usage": {"output_tokens": 256}}),
     ("message_stop", {"type": "message_stop"}),
 ]
+# a Batch response, US-only inference, with 1-hour cache writes: three things that change the price
+BILLED = dict(MSG, model="claude-opus-5-5", usage={
+    "input_tokens": 1000, "output_tokens": 200, "cache_read_input_tokens": 3000, "cache_creation_input_tokens": 500,
+    "cache_creation": {"ephemeral_5m_input_tokens": 100, "ephemeral_1h_input_tokens": 400},
+    "service_tier": "batch", "inference_geo": "us"})
 CHAT = {"id": "c1", "object": "chat.completion", "created": 0, "model": "gpt-test", "choices": [
     {"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
     "usage": {"prompt_tokens": 500, "completion_tokens": 40, "total_tokens": 540, "prompt_tokens_details": {"cached_tokens": 100}}}
@@ -58,7 +63,7 @@ class MockLLM(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(data)
                 return
-            data, ctype = json.dumps(MSG).encode(), "application/json"
+            data, ctype = json.dumps(BILLED if body.get("model") == "billed" else MSG).encode(), "application/json"
         else:
             data, ctype = json.dumps(CHAT).encode(), "application/json"
         self.send_response(200)
@@ -161,6 +166,21 @@ class AutotraceTest(unittest.TestCase):
         self.assertEqual(ts["openai.call"]["input_tokens"], 400)    # cached part split out
         self.assertEqual(ts["anthropic.call"]["outcome"], "failed")
         self.assertEqual(ts["anthropic.call"]["rate_limited"], 1)
+
+    def test_2b_what_the_response_says_about_its_price(self):
+        """1-hour cache writes cost 2x input, not 1.25x; the Batch API halves the price and US-only inference adds 10%.
+        The SDK reads all three off the response's usage."""
+        import agentdynamics as ad
+        ad.init(url=self.url, api_key=self.ingest, project="billing-app", otel=False, quiet=True)
+        client = anthropic.Anthropic(api_key="x", base_url=self.llm_url)
+        with ad.trace("billed", prompt="price this"):
+            client.messages.create(model="billed", max_tokens=100, messages=[{"role": "user", "content": "x"}])
+        ad.flush()
+        self.eng.refresh()
+        t = self.tasks("billing-app")[0]
+        list_price = (1000 * 4 + 200 * 20 + 3000 * 0.2 + 100 * 5 + 400 * 8) / 1e6
+        self.assertAlmostEqual(t["cost"], list_price * 0.5 * 1.1)
+        self.assertEqual(t["unpriced"], 0)
 
     def test_3_zero_code_run(self):
         app = os.path.join(self.tmp, "app.py")

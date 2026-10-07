@@ -103,8 +103,15 @@ alerting, as history never is.
   off; `SCHEMA_VERSION` 12 rebuilds existing stores without the old values. Policy export treats a redacted
   value as unknowable: it no longer learns `one_of: ["[REDACTED]"]` (which would refuse every real address), and
   its coverage check no longer counts a call as refused on the strength of a placeholder.
-- **Claude Opus 5.5 was priced as Claude Opus 5.** Prices match by longest prefix, so `claude-opus-5-5` took
-  Opus 5's $5 / $25 instead of its own $4 / $20 (cache reads $0.20). It and Claude Sonnet 5.5 are now listed.
+- **Claude Opus 5.5 was priced as Claude Opus 5.** Prices matched by longest prefix, so `claude-opus-5-5` took
+  Opus 5's $5 / $25 instead of its own $4 / $20 (cache reads $0.20). An entry now prices only its own model: the
+  id, or the id followed by a snapshot date or a provider tag (Bedrock's `us.anthropic.…-v1:0`, Vertex's `@date`,
+  OpenRouter's `anthropic/claude-opus-4.5`), never a later version, which is unpriced until it is listed. The
+  table gains Claude Sonnet 4.6 and 4.5, Opus 4.1 and Mythos 5, which had been priced as Sonnet 4 and Opus 4.
+- **Claude Mythos 5.1's cache reads were priced at $1 / MTok** instead of $0.25.
+- **What a response says about its own price is applied.** The SDK and the Claude Code collector read the Batch
+  tier (half price), fast mode (double), US-only inference (+10%) and 1-hour cache writes (2x input, not 1.25x) off
+  each response's usage. Every model call now says whether it was priced, for every source, not only OpenTelemetry.
 - **Policy export answered 500** when the governed runs in view named no policy (an Aegis audit log, an older
   integration). It now builds a policy from scratch, as it does with no base.
 

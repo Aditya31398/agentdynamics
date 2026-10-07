@@ -165,6 +165,9 @@ def parse_file(path, root=DEFAULT_ROOT):
                     "thinking_tokens": (usage.get("output_tokens_details") or {}).get("thinking_tokens", 0) or 0,
                     "effort": e.get("effort") or step.get("effort"),
                 })
+                for k in ("service_tier", "speed", "inference_geo"):      # what changes the price (pricing.MODIFIERS)
+                    if usage.get(k) in pricing.MODIFIERS:
+                        step[k] = usage[k]
                 for b in msg.get("content") or []:
                     bt = b.get("type")
                     if bt == "text":
@@ -231,7 +234,9 @@ def parse_file(path, root=DEFAULT_ROOT):
     for s in steps:
         if s["kind"] == "llm":
             s["cost"] = pricing.cost(s["model"], s.get("input_tokens", 0), s.get("output_tokens", 0),
-                                     s.get("cache_read", 0), s.get("cache_write_5m", 0), s.get("cache_write_1h", 0))
+                                     s.get("cache_read", 0), s.get("cache_write_5m", 0), s.get("cache_write_1h", 0),
+                                     s.get("service_tier"), s.get("speed"), s.get("inference_geo"))
+            s["priced"] = s["model"] == "<synthetic>" or pricing.rates(s["model"]) is not None
             s["context_tokens"] = s.get("input_tokens", 0) + s.get("cache_read", 0) + s.get("cache_write", 0)
             if s.get("start_ts") and s.get("end_ts"):
                 s["duration_ms"] = max(0, int((s["end_ts"] - s["start_ts"]) * 1000))

@@ -54,7 +54,9 @@ def normalize(payload):
             st.setdefault("cache_write_1h", 0)
             if st.get("cost") is None:
                 st["cost"] = pricing.cost(st.get("model"), st["input_tokens"], st["output_tokens"], st["cache_read"],
-                                          st["cache_write_5m"], st["cache_write_1h"])
+                                          st["cache_write_5m"], st["cache_write_1h"], st.get("service_tier"), st.get("speed"),
+                                          st.get("inference_geo"))
+            st.setdefault("priced", pricing.rates(st.get("model")) is not None)
             st["context_tokens"] = st["input_tokens"] + st["cache_read"] + st["cache_write"]
             st.setdefault("text", "")
             st["_id"] = st.get("id") or f"{rid}:{i}"

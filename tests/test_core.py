@@ -120,6 +120,29 @@ class CoreTest(unittest.TestCase):
             self.assertEqual((r["input"], r["output"]), (inp, out), model)
             self.assertAlmostEqual(r["cache_read"], read, msg=model)
         self.assertIsNone(pricing.rates("gpt-5"), "unknown models are unpriced, never guessed")
+        self.assertAlmostEqual(pricing.rates("claude-mythos-5-1")["cache_read"], 0.25, msg="0.025x, like Claude Fable 5.1")
+
+    def test_an_entry_prices_its_own_model_and_never_a_later_version(self):
+        """A table entry used to price every id it prefixed, so a release missing from the table took the price of
+        the one before it. Now only a snapshot date or a provider's version tag may follow an entry's id."""
+        for model, key in {"claude-opus-4-1-20250805": "claude-opus-4-1", "claude-opus-4-20250514": "claude-opus-4",
+                           "claude-sonnet-4-5-20250929": "claude-sonnet-4-5", "claude-sonnet-4-6": "claude-sonnet-4-6",
+                           "us.anthropic.claude-sonnet-4-5-20250929-v1:0": "claude-sonnet-4-5",
+                           "anthropic.claude-opus-5-5": "claude-opus-5-5", "claude-opus-4-5@20251101": "claude-opus-4-5",
+                           "anthropic/claude-opus-4.5": "claude-opus-4-5", "claude-haiku-4-5-20251001": "claude-haiku-4-5",
+                           "claude-opus-4-6[1m]": "claude-opus-4-6"}.items():
+            self.assertEqual(pricing.entry(model), key, model)
+        for model in ("claude-opus-5-6", "claude-sonnet-4-7", "claude-haiku-4-6", "claude-opus-4-9-20270101", "claude-fable-6"):
+            self.assertIsNone(pricing.rates(model), f"{model}: a version the table doesn't know is unpriced")
+        self.assertEqual(pricing.rates("claude-opus-4-1")["input"], 15.0, "not Opus 4's entry by accident")
+
+    def test_batch_fast_and_us_inference_change_the_price(self):
+        base = pricing.cost("claude-opus-5-5", 1000, 200, 3000, 100, 400)
+        self.assertAlmostEqual(base, (1000 * 4 + 200 * 20 + 3000 * 0.2 + 100 * 5 + 400 * 8) / 1e6)
+        self.assertAlmostEqual(pricing.cost("claude-opus-5-5", 1000, 200, 3000, 100, 400, "batch"), base * 0.5)
+        self.assertAlmostEqual(pricing.cost("claude-opus-5-5", 1000, 200, 3000, 100, 400, speed="fast"), base * 2)
+        self.assertAlmostEqual(pricing.cost("claude-opus-5-5", 1000, 200, 3000, 100, 400, "batch", None, "us"), base * 0.55)
+        self.assertAlmostEqual(pricing.cost("claude-opus-5-5", 1000, 200, 3000, 100, 400, "standard", "standard", "global"), base)
 
     def test_segmentation_and_types(self):
         t0, t1 = self.by_id["sess-1#0"], self.by_id["sess-1#1"]

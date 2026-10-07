@@ -344,12 +344,23 @@ def _is_denial(err):
     return v is not None and getattr(v, "allowed", True) is False
 
 
-def _record_llm(model, it, ot, cr, cw, stop, t0, t1, text="", err=None, ttft=None, provider=None, handles=()):
-    from .pricing import cost as _price
-    usd = _price(model, it or 0, ot or 0, cr or 0, cw or 0, 0)
+def _record_llm(model, it, ot, cr, cw, stop, t0, t1, text="", err=None, ttft=None, provider=None, handles=(),
+                billing=None):
+    """billing: what the response says about its own price -- cache_write_1h (of cw), service_tier, speed,
+    inference_geo (Anthropic usage fields)."""
+    from . import pricing
+    b = billing or {}
+    w1h = min(cw or 0, b.get("cache_write_1h") or 0)
+    usd = pricing.cost(model, it or 0, ot or 0, cr or 0, (cw or 0) - w1h, w1h,
+                       b.get("service_tier"), b.get("speed"), b.get("inference_geo"))
     step = {"kind": "llm", "model": model, "ts": t0, "end_ts": t1, "input_tokens": it or 0, "output_tokens": ot or 0,
             "cache_read": cr or 0, "cache_write": cw or 0, "stop_reason": stop, "text": _clip(text), "provider": provider,
-            "cost": usd}
+            "cost": usd, "priced": pricing.rates(model) is not None}
+    if w1h:
+        step["cache_write_1h"] = w1h
+    for k in ("service_tier", "speed", "inference_geo"):
+        if b.get(k) in pricing.MODIFIERS:          # only what changes the price; "standard" is the default
+            step[k] = b[k]
     if ttft is not None:
         step["ttft_ms"] = ttft
     if err is not None and _is_denial(err):  # blocked before it was sent (budget / revoked grant)
@@ -461,12 +472,26 @@ def _anthropic_usage(msg):
     return g("input_tokens"), g("output_tokens"), g("cache_read_input_tokens"), g("cache_creation_input_tokens"), getattr(msg, "stop_reason", None), text
 
 
+def _anthropic_billing(u):
+    """The usage fields that change a call's price: 1-hour cache writes, Batch, fast mode, US-only inference."""
+    if u is None:
+        return {}
+    cc = getattr(u, "cache_creation", None)
+    out = {"cache_write_1h": getattr(cc, "ephemeral_1h_input_tokens", 0) or 0}
+    for k in ("service_tier", "speed", "inference_geo"):
+        v = getattr(u, k, None)
+        if isinstance(v, str):
+            out[k] = v
+    return out
+
+
 class _AnthropicStream:
     """Wraps a stream=True iterator, accumulating usage from message_start / message_delta events."""
 
     def __init__(self, inner, model, t0, handles=()):
         self._inner, self._model, self._t0, self._handles = inner, model, t0, handles
         self._u = {"i": 0, "o": 0, "cr": 0, "cw": 0}
+        self._billing = {}
         self._stop, self._ttft, self._text, self._done = None, None, [], False
 
     def __iter__(self):
@@ -507,6 +532,7 @@ class _AnthropicStream:
             u = m.usage
             self._u.update(i=u.input_tokens or 0, cr=getattr(u, "cache_read_input_tokens", 0) or 0,
                            cw=getattr(u, "cache_creation_input_tokens", 0) or 0, o=u.output_tokens or 0)
+            self._billing = _anthropic_billing(u)
         elif t == "content_block_delta":
             if self._ttft is None:
                 self._ttft = (time.time() - self._t0) * 1000
@@ -522,7 +548,7 @@ class _AnthropicStream:
         if not self._done:
             self._done = True
             _record_llm(self._model, self._u["i"], self._u["o"], self._u["cr"], self._u["cw"], self._stop, self._t0, time.time(),
-                        "".join(self._text), err, self._ttft, "anthropic", self._handles)
+                        "".join(self._text), err, self._ttft, "anthropic", self._handles, self._billing)
 
     def __enter__(self):
         return self
@@ -557,7 +583,8 @@ def _patch_anthropic():
         if k.get("stream"):
             return _AnthropicStream(r, k.get("model"), t0, h)
         it, ot, cr, cw, stop, text = _anthropic_usage(r)
-        _record_llm(getattr(r, "model", k.get("model")), it, ot, cr, cw, stop, t0, time.time(), text, provider="anthropic", handles=h)
+        _record_llm(getattr(r, "model", k.get("model")), it, ot, cr, cw, stop, t0, time.time(), text, provider="anthropic", handles=h,
+                    billing=_anthropic_billing(getattr(r, "usage", None)))
         return r
 
     @functools.wraps(aorig)
@@ -573,7 +600,8 @@ def _patch_anthropic():
         if k.get("stream"):
             return _AnthropicStream(r, k.get("model"), t0, h)
         it, ot, cr, cw, stop, text = _anthropic_usage(r)
-        _record_llm(getattr(r, "model", k.get("model")), it, ot, cr, cw, stop, t0, time.time(), text, provider="anthropic", handles=h)
+        _record_llm(getattr(r, "model", k.get("model")), it, ot, cr, cw, stop, t0, time.time(), text, provider="anthropic", handles=h,
+                    billing=_anthropic_billing(getattr(r, "usage", None)))
         return r
 
     Messages.create, AsyncMessages.create = create, acreate
