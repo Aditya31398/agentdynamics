@@ -388,6 +388,35 @@ class ConsoleInteractionTest(unittest.TestCase):
             urllib.request.urlopen(req, timeout=60).read()
         self.assertNothingWentWrong()
 
+    def test_an_apdex_target_is_set_and_cleared_from_task_types(self):
+        self.open("types", days="")
+        i = self.page.eval("(() => { const rs = [...document.querySelectorAll('#page table')[1].querySelectorAll('tbody tr')];"
+                           " return rs.findIndex(r => r.innerText.includes('refund_flow')); })()")
+        self.assertGreaterEqual(i, 0, "the targets table lists the type")
+        try:
+            self.page.fill(f"#apdex-lat-{i}", "0.5")              # half a second: every refund_flow task is too slow
+            self.page.click("#apdex-save")
+            self.page.wait("document.querySelector('#toast').innerText.startsWith('Apdex targets saved')",
+                           what="the save toast")
+            self.page.wait("[...document.querySelectorAll('#page table')[0].querySelectorAll('tbody tr')]"
+                           ".some(r => r.innerText.includes('refund_flow') && r.innerText.includes('≤'))",
+                           what="the type's target in the table")
+            tasks = [t for t in self.api("/api/tasks?days=&type=refund_flow")["tasks"]]
+            self.assertTrue(tasks and all(t["apdex_basis"] == "targets" for t in tasks))
+            self.assertTrue(all(t["apdex"] == "frustrated" for t in tasks), "3 s of agent time is over 4x 0.5 s")
+            self.open("types", days="")
+            self.page.fill(f"#apdex-lat-{i}", "")
+            self.page.click("#apdex-save")
+            self.page.wait("document.querySelector('#toast').innerText.startsWith('Apdex targets saved')",
+                           what="the clearing toast")
+            tasks = self.api("/api/tasks?days=&type=refund_flow")["tasks"]
+            self.assertTrue(all(t["apdex_basis"] == "baseline" for t in tasks), "cleared: judged by the baseline again")
+        finally:
+            req = urllib.request.Request(self.url + "/api/apdex", data=json.dumps({"targets": {"refund_flow": None}}).encode(),
+                                         method="POST", headers={"Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=60).read()
+        self.assertNothingWentWrong()
+
 
 if __name__ == "__main__":
     unittest.main()

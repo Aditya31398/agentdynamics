@@ -18,7 +18,7 @@ import time
 
 from .privacy import TASK_TEXT_FIELDS
 
-SCHEMA_VERSION = 15   # 6: outcome_source / outcome_reason (graded outcomes)
+SCHEMA_VERSION = 16   # 6: outcome_source / outcome_reason (graded outcomes)
                      # 7: tokens_unverified (cache accounting that rests on a guess)
                      # 8: steps.governed (did this call go through an Aegis kernel)
                      # 9: task_type_source / task_type_match (how a task type was decided)
@@ -28,6 +28,7 @@ SCHEMA_VERSION = 15   # 6: outcome_source / outcome_reason (graded outcomes)
                      # 13: tasks.agents names the tools each agent misused
                      # 14: agent time from step intervals; cost attributed by the context a result adds
                      # 15: tasks.baseline (recent baselines per type, model and release)
+                     # 16: Apdex judges agent time as well as cost, against targets when set (tasks.apdex_basis)
 
 RUN_COLS = ["id", "source", "project", "environment", "framework", "workflow", "cwd", "title", "agent_name", "parent_id",
             "parent_task_id", "is_subagent", "thread_id", "user_id", "tags", "root_status", "complete", "version", "git_branch",
@@ -40,6 +41,8 @@ TASK_COLS = ["id", "run_id", "idx", "project", "environment", "source", "framewo
              "duplicate_calls", "max_error_streak", "large_outputs", "explore_ratio", "steps_to_first_edit", "code_changed",
              "verified", "unverified_edits", "waste_cost", "final_stop", "final_text", "ended_on_error", "next_prompt", "rework",
              "outcome", "cost_vs_baseline", "duration_vs_baseline", "score", "apdex",
+             # what Apdex was judged against: targets people set for the type, or the baseline
+             "apdex_basis",
              # how the outcome was decided: graded (stated), feedback (a recorded score), or inferred
              "outcome_source", "outcome_reason",
              # how the task type was decided: workflow, prompt kind, follow-up, keywords, unmatched

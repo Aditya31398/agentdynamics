@@ -561,8 +561,22 @@ def cost_rank(q, cost):
     return 1.0
 
 
-def score_task(t, b):
-    """Scores, Apdex and the comparison with `b`, the baseline chosen for this task (choose_baseline)."""
+APDEX_DEFAULT = 1.5      # with no target set, T is 1.5x the baseline's median (cost, and agent time)
+
+
+def apdex_targets(target, b):
+    """(T for cost, T for agent time, basis): a target people set for this type wins; each dimension with none
+    is 1.5x the task's baseline median. None: that dimension isn't judged."""
+    target = target or {}
+    med_cost, med_dur = b.get("cost_p50") or 0, b.get("duration_p50") or 0
+    t_cost = target.get("cost") or (APDEX_DEFAULT * med_cost if med_cost else None)
+    t_lat = target.get("latency_s") or (APDEX_DEFAULT * med_dur if med_dur else None)
+    return t_cost, t_lat, "targets" if (target.get("cost") or target.get("latency_s")) else "baseline"
+
+
+def score_task(t, b, target=None):
+    """Scores, Apdex and the comparison with `b`, the baseline chosen for this task; `target`, the Apdex target
+    set for its type ({"latency_s", "cost"}), if any."""
     s = {}
     b = b or {}
     med_cost = b.get("cost_p50") or 0
@@ -605,17 +619,15 @@ def score_task(t, b):
     t["scores"] = {k: (round(v, 1) if v is not None else None) for k, v in s.items()}
     t["score"] = t["scores"]["overall"]
 
-    # Agent Apdex: T = 1.5x median cost of this task type
-    T = 1.5 * med_cost if med_cost else None
-    total = t["cost"] + t["subagent_cost"]
+    # Agent Apdex: the outcome first, then the worse of cost and agent time against T (satisfied up to T,
+    # tolerating up to 4T). T is what people set for the type, else 1.5x the baseline's median.
+    t_cost, t_lat, t["apdex_basis"] = apdex_targets(target, b)
+    level = max((0 if T is None or v <= T else 1 if v <= 4 * T else 2)
+                for v, T in ((t["cost"] + t["subagent_cost"], t_cost), (t["duration_s"], t_lat)))
     if t["outcome"] in ("interrupted", "rework", "failed") or t["max_error_streak"] >= 4:
         t["apdex"] = "frustrated"
-    elif T is None or total <= T:
-        t["apdex"] = "satisfied"
-    elif total <= 4 * T:
-        t["apdex"] = "tolerating"
     else:
-        t["apdex"] = "frustrated"
+        t["apdex"] = ("satisfied", "tolerating", "frustrated")[level]
 
 
 def apdex_score(tasks):
@@ -907,8 +919,9 @@ def baseline_sample_size(n):
         m = nxt
 
 
-def finalize(runs, tasks_by_run, rules=None, now=None, grades=None, cache=None, dirty=(), redact=None):
-    """Cross-run analysis: outcomes, subagent roll-up, baselines, scores, events.
+def finalize(runs, tasks_by_run, rules=None, now=None, grades=None, cache=None, dirty=(), redact=None, targets=None):
+    """Cross-run analysis: outcomes, subagent roll-up, baselines, scores, events. `targets`: Apdex targets per task
+    type, {type: {"latency_s", "cost"}}.
 
     With a `cache` (a ScoreCache kept between calls), tasks from runs not in `dirty` whose settled
     fields and baseline are unchanged keep their previous score and events instead of being re-scored;
@@ -1099,11 +1112,13 @@ def finalize(runs, tasks_by_run, rules=None, now=None, grades=None, cache=None, 
         for tid in [k for k in cache.sig if k not in live]:     # tasks that no longer exist
             cache.sig.pop(tid, None)
             cache.events.pop(tid, None)
+    targets = targets or {}
     for t in all_tasks:
         b, basis = choose(t)
         b = b or {}
+        target = targets.get(t["task_type"])
         if cache is not None:
-            sig = (_settled_values(t), basis, b.get("sample"), b.get("cost_p50"), b.get("cost_p90"), b.get("duration_p50"),
+            sig = (_settled_values(t), tuple(sorted((target or {}).items())), basis, b.get("sample"), b.get("cost_p50"), b.get("cost_p90"), b.get("duration_p50"),
                    b.get("duration_p90"), tuple(b.get("cost_q") or ()))
             if t["run_id"] not in dirty and cache.sig.get(t["id"]) == sig:
                 events.extend(cache.events[t["id"]])            # nothing it depends on moved
@@ -1111,10 +1126,10 @@ def finalize(runs, tasks_by_run, rules=None, now=None, grades=None, cache=None, 
         t["failed"] = 1 if t.get("outcome") == "failed" else 0
         if t["llm_calls"] == 0 and t["tool_calls"] == 0:
             t.update({"scores": {}, "score": None, "apdex": None, "cost_vs_baseline": None, "duration_vs_baseline": None,
-                      "baseline": None})
+                      "baseline": None, "apdex_basis": None})
             ev = []
         else:
-            score_task(t, b)
+            score_task(t, b, target)
             t["baseline"] = {"basis": basis, "n": b.get("sample"),
                              **{k: b.get(k) for k in ("cost_p50", "cost_p90", "duration_p50", "duration_p90")},
                              "cost_rank": cost_rank(b.get("cost_q"), t["cost"] + t["subagent_cost"])} if b else None

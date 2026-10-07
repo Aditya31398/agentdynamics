@@ -178,6 +178,7 @@ class MonitorMixin:
     def types(self, q):
         ts = self.tasks(q)
         base = {r["task_type"]: r["data"] for r in rows(self.con, "SELECT * FROM baselines")}
+        targets = self.e.apdex_targets()          # install-wide, but read only for the types this view holds
         by = defaultdict(list)
         for t in ts:
             by[t["task_type"]].append(t)
@@ -190,6 +191,7 @@ class MonitorMixin:
             k.update({"typed_by": dict(srcs),
                       "top_matches": [m for m, _ in Counter(t["task_type_match"] for t in g if t.get("task_type_match")).most_common(3)]})
             k.update({"type": ty, "health": self.health(k["apdex"]), "baseline": base.get(ty) or base.get("__all__"),
+                      "apdex_target": targets.get(ty),
                       "p90_cost": round(pct(costs, 0.9), 4), "p90_duration": round(pct([t["duration_s"] for t in g], 0.9), 1),
                       "daily": [{"day": d["day"], "tasks": d["tasks"], "cost": d["cost"]}
                                 for d in self.daily(g, dict(q, type=ty))]})

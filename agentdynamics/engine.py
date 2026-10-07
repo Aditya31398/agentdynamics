@@ -793,6 +793,39 @@ class Engine:
     def slos(self):
         return self._setting("slos") or slomod.DEFAULT_SLOS
 
+    def apdex_targets(self):
+        """{task type: {"latency_s", "cost"}}: what people say a satisfying task is, per type."""
+        return self._setting("apdex_targets") or {}
+
+    def save_apdex_targets(self, targets):
+        """Set or clear the targets of the types named: {type: {"latency_s", "cost"}}, or {type: None} to clear.
+        A target needs a positive latency (seconds of agent time) or cost (USD), or both; with neither, the type's
+        target is cleared. Other types keep theirs. Raises ValueError on anything else, saving nothing."""
+        if not isinstance(targets, dict):
+            raise ValueError("targets is {type: {latency_s, cost} or null}")
+        clean = dict(self.apdex_targets())
+        for ty, tg in targets.items():
+            if tg is None:
+                clean.pop(ty, None)
+                continue
+            if not isinstance(ty, str) or not ty or not isinstance(tg, dict) or set(tg) - {"latency_s", "cost"}:
+                raise ValueError(f"a target is {{type: {{latency_s, cost}}}}, not {ty!r}: {tg!r}")
+            t = {}
+            for k in ("latency_s", "cost"):
+                v = tg.get(k)
+                if v in (None, ""):
+                    continue
+                if isinstance(v, bool) or not isinstance(v, (int, float)) or not v > 0:
+                    raise ValueError(f"{ty}: {k} must be a positive number, not {v!r}")
+                t[k] = float(v)
+            if t:
+                clean[ty] = t
+            else:
+                clean.pop(ty, None)
+        self._save_setting("apdex_targets", clean)
+        self.refresh()                    # re-scores the types whose target changed; a no-op on a reader
+        return clean
+
     def save_slos(self, slos):
         self._save_setting("slos", slos)
 
@@ -899,7 +932,9 @@ class Engine:
             if gsig != self._grades_sig:
                 self._regrade = self._grades_sig is not None or self._regrade
                 self._grades_sig = gsig
-            rsig = hashlib.sha1(json.dumps(self.rules(), sort_keys=True, default=str).encode()).hexdigest()
+            # rules and Apdex targets: either can be saved on another instance
+            rsig = hashlib.sha1(json.dumps([self.rules(), self.apdex_targets()], sort_keys=True,
+                                           default=str).encode()).hexdigest()
             rules_changed = self._rules_sig is not None and rsig != self._rules_sig
             self._rules_sig = rsig
             if rules_changed:             # every task's events depend on the rules: re-score them all
@@ -959,7 +994,7 @@ class Engine:
             tasks, baselines, events = analysis.finalize(runs, self._tasks, self.rules(), now=self._clock(),
                                                          grades=store.get_grades(self.con),
                                                          cache=self._cache, dirty=dirty.keys(),
-                                                         redact=self.redactor.text)
+                                                         redact=self.redactor.text, targets=self.apdex_targets())
             self._settle_due = min((t["ended"] + analysis.IN_PROGRESS_S for t in tasks
                                     if t.get("outcome") == "in progress" and t.get("ended")), default=None)
             # Process Review insights are computed when the page asks, over the tasks it shows: every

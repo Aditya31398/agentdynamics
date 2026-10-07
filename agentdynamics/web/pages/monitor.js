@@ -158,20 +158,33 @@
   }
 
   // ------------------------------------------------------------------ task types (business transactions)
+  const targetText = (tg) => !tg ? `<span class="muted">baseline</span>` : [tg.latency_s ? `≤ ${dur(tg.latency_s)}` : "", tg.cost ? `≤ ${usd(tg.cost)}` : ""].filter(Boolean).join(" · ");
   PAGES.types = async (host, _a, _p, alive) => {
     const d = await api("types");
     if (!alive()) return;
     host.innerHTML = head("Task Types", "The agent equivalent of business transactions. Requests are grouped by intent. Each group gets a learned baseline (median and p90 cost/time) that individual tasks are judged against.") +
       card("All task types", `<div class="table-wrap"><table><thead><tr><th>Health</th><th>Type</th><th class="num">Tasks</th><th class="num">Spend</th><th class="num">History cost (p50 / p90)</th>
-      <th class="num">History time (p50)</th><th class="num">Apdex</th><th class="num">Clean completion</th><th class="num">Tool errors</th><th class="num">Verified</th><th class="num">Avg score</th><th class="num">Events</th><th>Trend</th></tr></thead><tbody>
+      <th class="num">History time (p50)</th><th class="num">Apdex</th><th class="num">Clean completion</th><th class="num">Tool errors</th><th class="num">Verified</th><th class="num">Avg score</th><th class="num">Apdex target</th><th class="num">Events</th><th>Trend</th></tr></thead><tbody>
       ${d.types.map((t) => `<tr class="click" data-href="#/tasks?type=${encodeURIComponent(t.type)}">
         <td>${pill(t.health)}</td><td><b>${esc(t.type)}</b><div class="small muted">${typedBy(t)}</div></td><td class="num">${t.tasks}</td><td class="num">${usd(t.cost)}</td>
         <td class="num">${t.baseline ? usd(t.baseline.cost_p50) + " / " + usd(t.baseline.cost_p90) : "–"}</td>
         <td class="num">${t.baseline ? dur(t.baseline.duration_p50) : "–"}</td>
         <td class="num">${t.apdex == null ? "–" : t.apdex.toFixed(2)}</td><td class="num">${pct(t.success_rate)}</td><td class="num">${pct(t.tool_error_rate, 1)}</td>
         <td class="num">${pct(t.verification_rate)}</td><td class="num" style="color:${scoreColor(t.avg_score)};font-weight:600">${t.avg_score == null ? "–" : Math.round(t.avg_score)}</td>
+        <td class="num small">${targetText(t.apdex_target)}</td>
         <td class="num">${t.events}</td><td>${C.sparkline(t.daily.map((x) => x.cost))}</td></tr>`).join("")}</tbody></table></div>`) +
-      `<p class="small muted">A traced app's type is its workflow name, which is a fact. Coding sessions have none, so their type is guessed from intent keywords in the request (fix/bug → bugfix, create/build → feature, and so on); each type says which it was. The baselines here cover each type's whole history. A task is compared with something closer: the tasks of its type, model and release in the 14 days before it, when there are 10 or more (then type and model, then type), and with the type's history only when nothing recent is enough. Its page says which. A type's history baseline needs 3 tasks, or the global one is used.</p>`;
+      card("Apdex targets", `<p class="small muted">What a satisfying task is, per type: agent time and cost at or under the target are satisfied, up to 4× tolerating, beyond that frustrated -- after the outcome, which comes first. A type with no target is judged against 1.5× its baseline median. Leave both blank to clear one. Needs an admin key.</p>
+        <div class="table-wrap"><table><thead><tr><th>Type</th><th class="num">Agent time ≤ (s)</th><th class="num">Cost ≤ ($)</th></tr></thead><tbody>
+        ${d.types.map((t, i) => `<tr><td>${esc(t.type)}</td><td class="num"><input id="apdex-lat-${i}" type="number" min="0" step="any" style="width:90px" value="${t.apdex_target?.latency_s ?? ""}"></td>
+          <td class="num"><input id="apdex-cost-${i}" type="number" min="0" step="any" style="width:90px" value="${t.apdex_target?.cost ?? ""}"></td></tr>`).join("")}</tbody></table></div>
+        <div class="row" style="margin-top:8px"><button class="primary" id="apdex-save">Save targets</button></div>`) +
+      `<p class="small muted" id="types-note">A traced app's type is its workflow name, which is a fact. Coding sessions have none, so their type is guessed from intent keywords in the request (fix/bug → bugfix, create/build → feature, and so on); each type says which it was. The baselines here cover each type's whole history. A task is compared with something closer: the tasks of its type, model and release in the 14 days before it, when there are 10 or more (then type and model, then type), and with the type's history only when nothing recent is enough. Its page says which. A type's history baseline needs 3 tasks, or the global one is used.</p>`;
+    $("#apdex-save").onclick = async () => {
+      const num = (id) => { const v = $(id).value.trim(); return v === "" ? null : Number(v); };
+      const targets = {};
+      d.types.forEach((t, i) => { const lat = num(`#apdex-lat-${i}`), cost = num(`#apdex-cost-${i}`); targets[t.type] = lat || cost ? { latency_s: lat, cost } : null; });
+      try { await post("apdex", { targets }); toast("Apdex targets saved"); route(); } catch (e) { toast("Save failed: " + e.message); }
+    };
     bindRows(host);
   };
 

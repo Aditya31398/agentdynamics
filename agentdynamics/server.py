@@ -422,6 +422,14 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 e.save_slos(json.loads(self._body())["slos"])
                 return self._send(200, {"ok": True})
+            if p == "/api/apdex":
+                if not self._require("admin"):
+                    return
+                try:
+                    saved = e.save_apdex_targets((json.loads(self._body() or b"{}") or {}).get("targets"))
+                except (ValueError, AttributeError) as ex:
+                    return self._send(400, {"error": str(ex)})
+                return self._send(200, {"ok": True, "targets": saved})
         except ScopeError as ex:
             return self._refuse(ex)
         except ClientGone:

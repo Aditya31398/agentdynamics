@@ -13,7 +13,7 @@ DEFAULT_SLOS = [
     {"id": "cost", "name": "Median cost per task ($)", "metric": "median_cost", "op": "<=", "target": 1.0, "window_days": 7, "scope": {}},
     {"id": "tool_errors", "name": "Tool error rate", "metric": "tool_error_rate", "op": "<=", "target": 0.05, "window_days": 7, "scope": {}},
 ]
-RATIO = {"success_rate", "apdex"}  # "good event" ratios get an error budget
+RATIO = {"success_rate", "apdex", "good_task_rate"}  # "good event" ratios get an error budget
 
 
 def path(data_dir):
@@ -40,6 +40,8 @@ def metric(tasks, m):
         return sum(1 for t in tasks if t["outcome"] == "completed") / len(tasks)
     if m == "apdex":
         return apdex_score([t for t in tasks if t["apdex"]])
+    if m == "good_task_rate":         # completed, and within the Apdex targets on both cost and agent time
+        return sum(1 for t in tasks if t["outcome"] == "completed" and t["apdex"] == "satisfied") / len(tasks)
     if m == "p95_seconds":
         return pct([t["wall_s"] or 0 for t in tasks], 0.95)
     if m == "median_cost":

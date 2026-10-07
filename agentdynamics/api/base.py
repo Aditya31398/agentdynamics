@@ -183,7 +183,7 @@ class ApiBase:
     @staticmethod
     def _task_brief(t):
         keys = ["id", "run_id", "project", "task_type", "prompt", "started", "duration_s", "cost", "subagent_cost", "outcome",
-                "apdex", "score", "tool_calls", "tool_errors", "llm_calls", "total_tokens", "cost_vs_baseline", "is_subagent",
+                "apdex", "apdex_basis", "score", "tool_calls", "tool_errors", "llm_calls", "total_tokens", "cost_vs_baseline", "is_subagent",
                 "waste_cost", "verified", "models", "max_context", "workflow", "environment", "framework", "wall_s",
                 "steps_total", "max_node_visits", "feedback_score"]
         d = {k: t.get(k) for k in keys}

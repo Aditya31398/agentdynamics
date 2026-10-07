@@ -91,7 +91,7 @@
   PAGES.slos = async (host, _a, _p, alive) => {
     const d = await api("slos");
     if (!alive()) return;
-    const fmtM = (m, v) => v == null ? "–" : ["success_rate", "tool_error_rate"].includes(m) ? pct(v, 1) : m === "apdex" ? v.toFixed(2) : m === "median_cost" ? usd(v) : m === "p95_seconds" ? dur(v) : v;
+    const fmtM = (m, v) => v == null ? "–" : ["success_rate", "tool_error_rate", "good_task_rate"].includes(m) ? pct(v, 1) : m === "apdex" ? v.toFixed(2) : m === "median_cost" ? usd(v) : m === "p95_seconds" ? dur(v) : v;
     const ALERT = { page: ["critical", "paging"], ticket: ["warning", "ticket open"], breach: ["warning", "breach alert"] };
     const firing = (s) => (s.alerts || []).map((a) => { const [k, t] = ALERT[a.alert] || ["warning", a.alert]; return `<span title="alerting since ${esc(new Date(a.since * 1000).toLocaleString())}">${pill(k, t)}</span>`; }).join(" ");
     const burns = (s) => Object.entries(s.burn || {}).map(([w, b]) => { const thr = (s.burn_thresholds || {})[w]; return `<span title="${thr ? `alerts at ${thr}×` : ""}">${w} <b style="color:${thr && b >= thr ? "var(--critical-text)" : "inherit"}">${b}×</b></span>`; }).join(" · ");
@@ -108,7 +108,7 @@
     d.slos.forEach((s, i) => { if (s.daily && s.daily.length > 1) C.line($(`#slo-${i}`), s.daily.map((x, j) => ({ x: j, y: x.value || 0 })), { fmt: (v) => fmtM(s.metric, v), xfmt: (j) => dayLabel(s.daily[j].day), height: 110, refLine: s.target, refLabel: "target", color: "var(--s1)", label: s.metric }); });
     $("#slo-edit").onclick = () => {
       const rows = d.slos.map((s) => ({ id: s.id, name: s.name, metric: s.metric, op: s.op, target: s.target, window_days: s.window_days, scope: s.scope || {} }));
-      $("#slo-editor").innerHTML = card("Edit objectives", `<p class="small muted">Scope limits an objective to one workflow, project, environment or task type (leave blank for all). Metrics: success_rate, apdex, p95_seconds, median_cost, tool_error_rate. Needs an admin key.</p>
+      $("#slo-editor").innerHTML = card("Edit objectives", `<p class="small muted">Scope limits an objective to one workflow, project, environment or task type (leave blank for all). Metrics: success_rate, apdex, good_task_rate (completed, and within its Apdex targets), p95_seconds, median_cost, tool_error_rate. Needs an admin key.</p>
         <textarea id="slo-json" style="width:100%;height:280px;font-family:var(--mono);font-size:12px">${esc(JSON.stringify(rows, null, 2))}</textarea><div class="row" style="margin-top:8px"><button class="primary" id="slo-save">Save</button></div>`);
       $("#slo-save").onclick = async () => { try { await post("slos", { slos: JSON.parse($("#slo-json").value) }); toast("Objectives saved"); route(); } catch (e) { toast("Save failed: " + e.message); } };
     };

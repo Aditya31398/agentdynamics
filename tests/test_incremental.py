@@ -478,7 +478,7 @@ class SettledFieldsTest(unittest.TestCase):
             before = {t["id"]: dict(t) for ts in fresh.values() for t in ts}
             # written while scoring, from inputs the scoring signature holds (the chosen baseline among them)
             scored = {"scores", "score", "apdex", "cost_vs_baseline", "duration_vs_baseline", "failed", "_sdk_grade",
-                      "baseline"}
+                      "baseline", "apdex_basis"}
             analysis.finalize(runs, fresh, now=sc.clock, grades={"r1#0": {"outcome": "failed"}})
             written = set()
             for ts in fresh.values():

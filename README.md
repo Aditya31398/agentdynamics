@@ -125,7 +125,7 @@ AGENTDYNAMICS_URL=http://127.0.0.1:8790 python examples/governed_agent.py 40
 | **Baselines & Apdex** | "Normal" cost and latency per workflow, learned automatically, plus an agent Apdex score |
 | **Health rules & alerts** | 29 rules (runaway cost, policy denials, boundary probing, tripwires, revocations, retry loops, node loops, truncation, rate limits, ping-pong handoffs, unverified code changes, …) sent to Slack, PagerDuty or webhooks, routed by project, rule and severity |
 | **Tools & Models** | Error rate and p95 per tool; per model TTFT, tokens/s, truncation rate, cache hit rate and spend |
-| **SLOs** | Success rate, Apdex, latency and cost objectives with error budgets and burn rates |
+| **SLOs** | Success rate, Apdex, good-task rate, latency and cost objectives with error budgets and burn rates |
 | **Governance** | Aegis policy enforcement per task: denials by rule, budget stops, kill-switch revocations, unused grants, policy export, and what a policy change would refuse |
 | **Incidents & trust** | Tripwires, probing, refused calls and revocations about one agent, grouped into one incident with its evidence; revoke the agent or resolve it as real or a false alarm, and alert once per incident. Each agent's trust score (0-100) weighs that evidence by age and by the verdicts given, and is exported to Prometheus. An optional checker has a model review each incident in shadow mode, and keeps score of how often it agreed with you |
 | **Process Review** | Scores how well the agent works (efficiency, focus, reliability, verification, context, autonomy, compliance) and suggests fixes |

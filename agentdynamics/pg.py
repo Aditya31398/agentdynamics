@@ -317,6 +317,7 @@ def ddl(schema_version, derived):
                       "prompt_kind", "prompt", "task_type", "models", "churn_file", "final_stop", "final_text",
                       "next_prompt", "outcome", "apdex", "outcome_source", "outcome_reason", "task_type_source",
                       "task_type_match", "loop_node", "critical_node", "root_error", "policy_version", "tripwire_what",
+                      "apdex_basis",
                       *s.TASK_JSON},
             "steps": {"run_id", "task_id", "kind", "name", "model", "phase", "target", "text", "input_preview", "error",
                       "subagent_id", "stop_reason", "effort", "span_id", "parent_span_id", "node", "agent", "span_kind",

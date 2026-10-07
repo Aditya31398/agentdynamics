@@ -10,7 +10,7 @@ These metrics were chosen because each one maps to a decision someone can act on
   4. **inferred** from signals, when nothing states it: an error ends a run as `failed`, an interrupt as `interrupted`, a correcting follow-up in the same thread ("still not working") as `rework`.
 
   The Overview shows how much of the success rate is stated and how much is guessed, and a task shows who graded it and why. Grades live in a durable table: they survive schema upgrades, and a grade may arrive before its task and applies when the task does.
-- ✅ First-time-right rate, Agent Apdex and user feedback score (from LangSmith/Langfuse feedback and scores).
+- ✅ First-time-right rate, Agent Apdex and user feedback score (from LangSmith/Langfuse feedback and scores). Apdex judges the outcome first (failed, interrupted, rework or a 4+ error streak is frustrated), then the worse of cost and agent time against T: satisfied up to T, tolerating up to 4T, frustrated beyond. T is the target set for the task type on the Task Types page (`POST /api/apdex`), per dimension; with none, 1.5x the task's baseline median. Each task says which (`apdex_basis`). The `good_task_rate` SLO metric is the share completed *and* satisfied.
 - ✅ Verification rate for coding agents: after the last code edit, did the agent run tests, a build or the app?
 
 - ✅ Task types say how they were decided: a traced app's workflow name, the prompt's kind (slash command, scheduled job, subagent), inherited by a follow-up, or guessed from intent keywords — in which case the matched words are shown.
@@ -55,7 +55,7 @@ These metrics were chosen because each one maps to a decision someone can act on
 | Transaction Snapshots | **Task snapshot** | Span tree waterfall, execution path, context growth, cost against the baseline, findings, final answer and the user's reaction |
 | *(no equivalent)* | **Workflow process mining** | The directly-follows graph of real node transitions, path variants with success rates, loops, critical node |
 | Dynamic baselines | **Baselines** | Median and p90 cost, latency and steps per task type, learned from history |
-| Apdex | **Agent Apdex** | Outcome combined with cost against the baseline: satisfied / tolerating / frustrated |
+| Apdex | **Agent Apdex** | Outcome first, then cost and agent time against targets you set per type (or the baseline): satisfied / tolerating / frustrated |
 | Health rules → Events → Alerts | **Health Rules → Events → Webhooks** | 28 built-in rules (including Aegis governance), editable thresholds, Slack/PagerDuty/JSON destinations, SLO burn-rate alerts |
 | Backends / DB calls | **Tools** | Error rate, p95 latency and context bloat per tool / MCP server / retriever |
 | Infrastructure | **Models** | Spend, TTFT, tokens/s, truncations, rate limits, cache hit and context size per model |

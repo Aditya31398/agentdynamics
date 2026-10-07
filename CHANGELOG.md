@@ -8,9 +8,9 @@ bumps the minor version.
 
 ## [Unreleased]
 
-**Upgrading.** `SCHEMA_VERSION` 15: tasks and steps record tripwires and what each agent did in a task, tool
-arguments are stored redacted, agent time and cost attribution are computed the new way, and each task records
-the baseline it was compared with. The derived tables are rebuilt from the
+**Upgrading.** `SCHEMA_VERSION` 16: tasks and steps record tripwires and what each agent did in a task, tool
+arguments are stored redacted, agent time and cost attribution are computed the new way, each task records
+the baseline it was compared with, and Apdex judges agent time as well as cost. The derived tables are rebuilt from the
 sources on first start, as after any schema change; nothing to migrate. The new durable `incidents` tables are
 created then too, and the first refresh opens incidents from the security events already held -- without
 alerting, as history never is.
@@ -89,6 +89,12 @@ alerting, as history never is.
   the move.
 
 ### Changed
+- **Apdex judges time too, against targets people set.** It was cost alone against 1.5x the type's median, so it
+  measured an agent against its own past, and a uniformly slow or dear one scored well. Now the outcome comes
+  first, then the worse of cost and agent time against T, where T is the target set for the type (Task Types page,
+  or `POST /api/apdex` with `{"targets": {type: {"latency_s", "cost"} or null}}`, admin) and, for a dimension
+  without one, 1.5x the task's baseline median. Each task records which (`apdex_basis`). A new SLO metric,
+  `good_task_rate`, is the share of tasks completed and satisfied, with an error budget and burn-rate alerts.
 - **Baselines follow recent behaviour.** A task was compared with its type's whole history (in practice its
   earliest tasks), so after a model switch or a deploy that halved cost, every task read 0.5x "normal" for as long
   as the old ones were held. Now each task is compared with the tasks like it in the 14 days before its day --
