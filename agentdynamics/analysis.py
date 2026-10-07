@@ -474,6 +474,13 @@ def flow_metrics(t, run, steps, llm, tools):
     notices = [s for s in steps if s["kind"] == "notice"]
     t["environment"] = run.get("environment") or "default"
     t["framework"] = run.get("framework") or run.get("source")
+    # what a recent baseline is segmented by (transient: finalize reads them, write_analysis doesn't keep them)
+    by_model = Counter()
+    for s in llm:
+        if s.get("model") and s["model"] != "<synthetic>":
+            by_model[s["model"]] += (s.get("cost") or 0) + 1e-12      # most spend; with none priced, most calls
+    t["_model"] = min(by_model, key=lambda m: (-by_model[m], m)) if by_model else None
+    t["_release"] = run.get("version") or run.get("policy_version")
     t["workflow"] = run.get("workflow") or (t["task_type"] if run.get("source") == "claude-code" else None)
     t["steps_total"] = len(llm) + len(tools)
     # model calls whose cache accounting rests on a guess (collectors/spans.uncached_input); None is
@@ -538,9 +545,26 @@ def flow_metrics(t, run, steps, llm, tools):
 
 # ---------------------------------------------------------------- scoring
 
-def score_task(t, base):
+def cost_rank(q, cost):
+    """Where `cost` falls in a sample with quantiles `q` (0..1, interpolated): 0.9 is dearer than 90% of it."""
+    if not q:
+        return None
+    if cost <= q[0]:
+        return 0.0
+    if cost >= q[-1]:
+        return 1.0
+    step = 1 / (len(q) - 1)
+    for i in range(1, len(q)):
+        if cost <= q[i]:
+            lo, hi = q[i - 1], q[i]
+            return round(step * (i - 1 + ((cost - lo) / (hi - lo) if hi > lo else 1.0)), 3)
+    return 1.0
+
+
+def score_task(t, b):
+    """Scores, Apdex and the comparison with `b`, the baseline chosen for this task (choose_baseline)."""
     s = {}
-    b = base.get(t["task_type"]) or base.get("__all__") or {}
+    b = b or {}
     med_cost = b.get("cost_p50") or 0
     ratio = (t["cost"] + t["subagent_cost"]) / med_cost if med_cost else 1
     t["cost_vs_baseline"] = round(ratio, 2)
@@ -806,21 +830,61 @@ def _settled_values(t):
 class ScoreCache:
     """What finalize needs to skip unchanged tasks on the next refresh.
 
-    sig[task_id]     the settled fields plus the two baseline numbers scoring reads
+    sig[task_id]     the settled fields plus the baseline scoring reads
     events[task_id]  the health events that signature produced
     changed          task ids scored this time (their rows must be written)
     baselines[group] the last sample of a baseline group (size, ids, last key) and the figures from it
     subagent_cost    task id -> the subagent cost it had last time (non-zero only)
     spawns[run_id]   the (subagent id, task id) pairs a run's tool steps spawned
+    windows[(k, d)]  a recent baseline: segment k's figures over the BASELINE_DAYS before day d (or None)
+    slots[task_id]   what a task puts into windows (segments, day, the figures' inputs), to see it change
     """
 
     def __init__(self):
         self.sig, self.events, self.changed = {}, {}, set()
         self.baselines, self.subagent_cost, self.spawns = {}, {}, {}
+        self.windows, self.slots = {}, {}
 
 
 BASELINE_EXACT_UP_TO = 20      # below this many tasks, a type's baseline uses all of them
 BASELINE_GROWTH = 1.05          # above it, only when the count has grown 5% since the last step
+BASELINE_DAYS = 14              # a recent baseline: the tasks like this one in the 14 days before its day
+BASELINE_MIN = 10               # fewest tasks a recent baseline needs; with fewer, a broader one is used
+BASELINE_MAX = 500              # at most the latest 500 of them, so a busy segment costs no more
+QUANTILES = [i / 20 for i in range(21)]
+DAY = 86400
+
+
+def _figures(g):
+    costs = sorted(t["cost"] + t["subagent_cost"] for t in g)
+    durs = [t["duration_s"] for t in g]
+    return {
+        "sample": len(g),
+        "cost_p50": pct(costs, 0.5), "cost_p90": pct(costs, 0.9),
+        "duration_p50": pct(durs, 0.5), "duration_p90": pct(durs, 0.9),
+        "tokens_p50": pct([t["total_tokens"] for t in g], 0.5),
+        "tool_calls_p50": pct([t["tool_calls"] for t in g], 0.5),
+        "steps_p50": pct([t["steps_total"] for t in g], 0.5),
+        "cost_q": [round(pct(costs, q), 7) for q in QUANTILES] if costs else [],
+    }
+
+
+def segments(t):
+    """The recent baselines a task can be compared with, most specific first: the same type, model and release
+    (an app's `version`, else its Aegis policy version), the same type and model, the same type."""
+    if t["is_subagent"]:
+        return (("subagent", t["task_type"]), ("subagent",))
+    ty, m, r = t["task_type"], t.get("_model"), t.get("_release")
+    keys = [(ty, m, r)] if r else []
+    return tuple(keys + ([(ty, m)] if m else []) + [(ty,)])
+
+
+def segment_label(k):
+    if k[0] == "subagent":
+        return f"sub-agent {k[1]}" if len(k) > 1 else "sub-agents"
+    if k == ("__all__",):
+        return "all tasks"
+    return " · ".join(str(x) for x in k)
 
 
 def baseline_sample_size(n):
@@ -971,22 +1035,63 @@ def finalize(runs, tasks_by_run, rules=None, now=None, grades=None, cache=None, 
             baselines[k] = {"n": n, **prev["figures"]}
             continue
         g = sorted(g, key=order)[:m]
-        costs = [t["cost"] + t["subagent_cost"] for t in g]
-        durs = [t["duration_s"] for t in g]
-        figures = {
-            "sample": len(g),
-            "cost_p50": pct(costs, 0.5), "cost_p90": pct(costs, 0.9),
-            "duration_p50": pct(durs, 0.5), "duration_p90": pct(durs, 0.9),
-            "tokens_p50": pct([t["total_tokens"] for t in g], 0.5),
-            "tool_calls_p50": pct([t["tool_calls"] for t in g], 0.5),
-            "steps_p50": pct([t["steps_total"] for t in g], 0.5),
-        }
+        figures = _figures(g)
         baselines[k] = {"n": n, **figures}
         if cache is not None:
             cache.baselines[k] = {"m": m, "ids": {t["id"] for t in g}, "last": order(g[-1]) if g else (0, ""),
                                   "figures": figures}
     if cache is not None:
         cache.baselines = {k: v for k, v in cache.baselines.items() if k in baselines}
+
+    # recent baselines: per segment and day, the BASELINE_DAYS before it. A window depends only on the tasks in
+    # it, so it is kept until one of them changes -- new traffic today moves no window anyone is scored against.
+    buckets = defaultdict(lambda: defaultdict(list))        # segment -> day -> tasks
+    slots = {}
+    for t in main + sub:
+        d = int((t["started"] or 0) // DAY)
+        keys = segments(t) + ((("__all__",),) if not t["is_subagent"] else ())
+        for k in keys:
+            buckets[k][d].append(t)
+        slots[t["id"]] = (keys, d, t["cost"] + t["subagent_cost"], t["duration_s"], t["total_tokens"],
+                          t["tool_calls"], t["steps_total"], order(t))
+    windows = cache.windows if cache is not None else {}
+    if cache is not None:
+        stale = set()
+        for tid, slot in slots.items():
+            old = cache.slots.get(tid)
+            if old != slot:
+                for s_ in (old, slot):
+                    if s_ is not None:
+                        stale.update((k, s_[1] + i) for k in s_[0] for i in range(1, BASELINE_DAYS + 1))
+        for tid, old in cache.slots.items():
+            if tid not in slots:
+                stale.update((k, old[1] + i) for k in old[0] for i in range(1, BASELINE_DAYS + 1))
+        for kd in stale:
+            windows.pop(kd, None)
+        cache.slots = slots
+
+    def window(k, d):
+        if (k, d) not in windows:
+            g = [t for dd in range(d - BASELINE_DAYS, d) for t in buckets[k].get(dd, ())]
+            if len(g) > BASELINE_MAX:
+                g = sorted(g, key=order)[-BASELINE_MAX:]
+            windows[(k, d)] = _figures(g) if len(g) >= BASELINE_MIN else None
+        return windows[(k, d)]
+
+    def choose(t):
+        """The baseline a task is compared with, most specific first, with what it is."""
+        d = int((t["started"] or 0) // DAY)
+        for k in segments(t):
+            f = window(k, d)
+            if f:
+                return f, f"{segment_label(k)}, last {BASELINE_DAYS} days"
+        hist = "subagent" if t["is_subagent"] else t["task_type"]
+        if baselines.get(hist):
+            return baselines[hist], f"{segment_label(('subagent',)) if t['is_subagent'] else hist}, all history"
+        f = window(("__all__",), d)
+        if f:
+            return f, f"all tasks, last {BASELINE_DAYS} days"
+        return baselines.get("__all__"), "all tasks, all history"
 
     events = []
     if cache is not None:
@@ -995,18 +1100,24 @@ def finalize(runs, tasks_by_run, rules=None, now=None, grades=None, cache=None, 
             cache.sig.pop(tid, None)
             cache.events.pop(tid, None)
     for t in all_tasks:
+        b, basis = choose(t)
+        b = b or {}
         if cache is not None:
-            b = baselines.get(t["task_type"]) or baselines.get("__all__") or {}
-            sig = (_settled_values(t), b.get("cost_p50"), b.get("duration_p50"))
+            sig = (_settled_values(t), basis, b.get("sample"), b.get("cost_p50"), b.get("cost_p90"), b.get("duration_p50"),
+                   b.get("duration_p90"), tuple(b.get("cost_q") or ()))
             if t["run_id"] not in dirty and cache.sig.get(t["id"]) == sig:
                 events.extend(cache.events[t["id"]])            # nothing it depends on moved
                 continue
         t["failed"] = 1 if t.get("outcome") == "failed" else 0
         if t["llm_calls"] == 0 and t["tool_calls"] == 0:
-            t.update({"scores": {}, "score": None, "apdex": None, "cost_vs_baseline": None, "duration_vs_baseline": None})
+            t.update({"scores": {}, "score": None, "apdex": None, "cost_vs_baseline": None, "duration_vs_baseline": None,
+                      "baseline": None})
             ev = []
         else:
-            score_task(t, baselines)
+            score_task(t, b)
+            t["baseline"] = {"basis": basis, "n": b.get("sample"),
+                             **{k: b.get(k) for k in ("cost_p50", "cost_p90", "duration_p50", "duration_p90")},
+                             "cost_rank": cost_rank(b.get("cost_q"), t["cost"] + t["subagent_cost"])} if b else None
             ev = evaluate_rules(t, rules, redact)
         events.extend(ev)
         if cache is not None:

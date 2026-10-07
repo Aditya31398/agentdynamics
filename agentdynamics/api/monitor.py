@@ -241,7 +241,8 @@ class MonitorMixin:
         nav = {"prev": sibs[pos - 1]["id"] if pos > 0 else None, "next": sibs[pos + 1]["id"] if pos + 1 < len(sibs) else None,
                "count": len(sibs), "pos": pos + 1}
         return {"task": t, "steps": steps, "events": events, "run": run[0] if run else None,
-                "baseline": base[0]["data"] if base else None, "children": children, "nav": nav}
+                # the baseline this task was compared with; the type's history when it was scored before 0.9
+                "baseline": t.get("baseline") or (base[0]["data"] if base else None), "children": children, "nav": nav}
 
     def sessions(self, q):
         ts = self.tasks(q)

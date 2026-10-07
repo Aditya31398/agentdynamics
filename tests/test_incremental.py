@@ -251,6 +251,140 @@ class BaselineReuseTest(SameAsRebuild, unittest.TestCase):
         self.check("a spawn step removed")
 
 
+class MultiDayScenario(Scenario):
+    """Traffic over 20 days, two models and two releases: tasks are scored against recent baselines (the 14 days
+    before their own, per type, model and release), whose windows must be kept and dropped exactly right."""
+
+    def run(self, rid=None, **over):
+        rng = self.rng
+        day = rng.randint(0, 20)
+        over.setdefault("version", rng.choice([None, "v1", "v2"]))
+        rid = super().run(rid, **over)
+        p = self.runs[rid]
+        shift = day * 86400
+        model = rng.choice(["claude-sonnet-5", "claude-haiku-4-5"])
+        for st in p["steps"]:
+            st["ts"] -= shift
+            if "end_ts" in st:
+                st["end_ts"] -= shift
+            if st["kind"] == "llm":
+                st["model"] = model
+        p["workflow"] = "support" if rng.random() < 0.8 else "billing"
+        self.eng.ingest(p)
+        return rid
+
+
+class RecentBaselinesTest(SameAsRebuild, unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def test_random_multi_day_histories(self):
+        windows = 0
+        for seed in range(4):
+            with self.subTest(seed=seed):
+                sc = MultiDayScenario(seed, os.path.join(self.tmp, f"m{seed}"))
+                try:
+                    sc.eng.refresh(force=True)
+                    for i in range(1, 181):
+                        sc.step()
+                        if i % 45 == 0:
+                            inc = sc.snapshot()
+                            sc.eng.refresh(force=True)
+                            self.assert_same(inc, sc.snapshot(), f"seed {seed}, step {i}")
+                    windows += sc.eng.con.execute(
+                        "SELECT COUNT(*) FROM tasks WHERE baseline LIKE '%last 14 days%'").fetchone()[0]
+                finally:
+                    sc.eng.con.close()
+        self.assertGreater(windows, 50, "the histories have to reach recent baselines, or this proves nothing")
+
+    def engine(self):
+        clock = 1_900_000_000.0
+        eng = Engine(os.path.join(self.tmp, "data"), None)
+        eng._clock = lambda: clock
+        self.addCleanup(eng.con.close)
+        return eng, clock
+
+    def payload(self, rid, ts, model="claude-sonnet-5", tokens=1000, version=None):
+        p = {"id": rid, "project": "p", "workflow": "support", "status": "ok", "complete": True, "steps": [
+            {"kind": "prompt", "ts": ts, "text": "Where is my refund?"},
+            {"kind": "llm", "ts": ts, "end_ts": ts + 2, "model": model, "input_tokens": tokens, "output_tokens": 100}]}
+        if version:
+            p["version"] = version
+        return p
+
+    def task(self, eng, rid):
+        row = eng.con.execute("SELECT cost_vs_baseline, baseline FROM tasks WHERE id = ?", (f"{rid}#0",)).fetchone()
+        return row[0], json.loads(row[1])
+
+    def test_a_model_change_is_compared_with_its_own_model(self):
+        eng, now = self.engine()
+        for i in range(30):          # three weeks ago and before: the cheap model
+            eng.ingest(self.payload(f"old{i}", now - 40 * 86400 + i * 3600, "claude-haiku-4-5", 1000))
+        for i in range(30):          # the last 13 days: the dear one, at ten times the tokens
+            eng.ingest(self.payload(f"new{i}", now - 13 * 86400 + i * 36000, "claude-opus-5", 10000))
+        eng.ingest(self.payload("today", now, "claude-opus-5", 10000))
+        eng.refresh(force=True)
+        ratio, b = self.task(eng, "today")
+        self.assertEqual(b["basis"], "support · claude-opus-5, last 14 days")
+        self.assertAlmostEqual(ratio, 1.0, places=2, msg="normal for this model, not 10x the old one")
+        self.assertGreaterEqual(b["n"], 10)
+        self.assertTrue(0 <= b["cost_rank"] <= 1)
+        ratio, b = self.task(eng, "old0")
+        self.assertEqual(b["basis"], "support, all history", "nothing recent before it: the type's history")
+
+    def test_a_new_release_starts_from_the_broader_baseline(self):
+        eng, now = self.engine()
+        for i in range(20):
+            eng.ingest(self.payload(f"v1-{i}", now - 10 * 86400 + i * 3600, version="v1", tokens=1000 + i))
+        for i in range(3):
+            eng.ingest(self.payload(f"v2-{i}", now - 2 * 86400 + i * 3600, version="v2"))
+        eng.ingest(self.payload("v2-today", now, version="v2"))
+        eng.ingest(self.payload("v1-today", now, version="v1"))
+        eng.refresh(force=True)
+        self.assertEqual(self.task(eng, "v2-today")[1]["basis"], "support · claude-sonnet-5, last 14 days",
+                         "three v2 tasks aren't a baseline: the type and model's, across releases")
+        self.assertEqual(self.task(eng, "v1-today")[1]["basis"], "support · claude-sonnet-5 · v1, last 14 days")
+
+    def test_a_late_task_that_moves_no_figure_still_counts(self):
+        """Identical tasks: a backfilled one changes no percentile of the window it lands in, only its size --
+        which the task page shows. An incremental refresh has to rewrite it all the same."""
+        eng, now = self.engine()
+        for i in range(12):
+            eng.ingest(self.payload(f"same{i}", now - 5 * 86400 + i * 3600))
+        eng.ingest(self.payload("today", now))
+        eng.refresh(force=True)
+        self.assertEqual(self.task(eng, "today")[1]["n"], 12)
+        eng.ingest(self.payload("backfill", now - 3 * 86400))
+        eng.refresh()
+        inc = snapshot(eng)
+        self.assertEqual(self.task(eng, "today")[1]["n"], 13)
+        eng.refresh(force=True)
+        self.assert_same(inc, snapshot(eng), "a backfill that moves no percentile")
+
+    def test_a_cost_rank_is_where_the_cost_falls_in_the_sample(self):
+        q = [float(i) for i in range(1, 22)]                  # 21 quantiles: 1 .. 21
+        self.assertEqual(analysis.cost_rank(q, 11.0), 0.5)
+        self.assertEqual(analysis.cost_rank(q, 11.5), 0.525)
+        self.assertEqual((analysis.cost_rank(q, 0.5), analysis.cost_rank(q, 99.0)), (0.0, 1.0))
+        self.assertIsNone(analysis.cost_rank([], 3.0))
+
+    def test_old_behaviour_ages_out(self):
+        """The history baseline is anchored to the earliest tasks: after an agent got ten times cheaper, every task
+        stayed at 0.1x "normal" for as long as the old ones were held. A recent baseline forgets them."""
+        eng, now = self.engine()
+        for i in range(60):          # the long history: most of what is held
+            eng.ingest(self.payload(f"dear{i}", now - 60 * 86400 + i * 3600, tokens=20000))
+        for i in range(40):
+            eng.ingest(self.payload(f"cheap{i}", now - 14 * 86400 + i * 25000, tokens=2000))
+        eng.ingest(self.payload("today", now, tokens=2000))
+        eng.refresh(force=True)
+        ratio, b = self.task(eng, "today")
+        self.assertAlmostEqual(ratio, 1.0, places=2)
+        hist = json.loads(eng.con.execute("SELECT data FROM baselines WHERE task_type = 'support'").fetchone()[0])
+        self.assertGreater(hist["cost_p50"], 2 * b["cost_p50"], "the history baseline still says otherwise")
+
+
 class TimeSettlesOutcomesTest(unittest.TestCase):
     """An "in progress" task settles as time passes. A refresh with no new traffic returned early, so on a
     quiet install it stayed "in progress" until something else arrived -- while a rebuild said "unknown".
@@ -309,8 +443,10 @@ class OnlyNewTrafficIsScoredTest(unittest.TestCase):
 
 
 def otlp_traces(first, n):
-    """n OTLP traces of one workflow, each a single model call with a varying cost."""
-    now = time.time() - 3600
+    """n OTLP traces of one workflow, each a single model call with a varying cost -- all yesterday, around noon
+    UTC: tasks on two days would be scored against a recent baseline from the first, which new traffic on the
+    second day doesn't move."""
+    now = (int(time.time() // 86400) - 1) * 86400 + 43200
     spans = []
     for i in range(first, first + n):
         tid = f"{i + 1:032x}"
@@ -340,7 +476,9 @@ class SettledFieldsTest(unittest.TestCase):
             runs = list(sc.eng._runs.values())
             fresh = {r["id"]: analysis.run_tasks(r) for r in runs}
             before = {t["id"]: dict(t) for ts in fresh.values() for t in ts}
-            scored = {"scores", "score", "apdex", "cost_vs_baseline", "duration_vs_baseline", "failed", "_sdk_grade"}
+            # written while scoring, from inputs the scoring signature holds (the chosen baseline among them)
+            scored = {"scores", "score", "apdex", "cost_vs_baseline", "duration_vs_baseline", "failed", "_sdk_grade",
+                      "baseline"}
             analysis.finalize(runs, fresh, now=sc.clock, grades={"r1#0": {"outcome": "failed"}})
             written = set()
             for ts in fresh.values():

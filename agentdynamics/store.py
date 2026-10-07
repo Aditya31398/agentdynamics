@@ -18,7 +18,7 @@ import time
 
 from .privacy import TASK_TEXT_FIELDS
 
-SCHEMA_VERSION = 14   # 6: outcome_source / outcome_reason (graded outcomes)
+SCHEMA_VERSION = 15   # 6: outcome_source / outcome_reason (graded outcomes)
                      # 7: tokens_unverified (cache accounting that rests on a guess)
                      # 8: steps.governed (did this call go through an Aegis kernel)
                      # 9: task_type_source / task_type_match (how a task type was decided)
@@ -27,6 +27,7 @@ SCHEMA_VERSION = 14   # 6: outcome_source / outcome_reason (graded outcomes)
                      # 12: steps.args_json redacted (a rebuild drops arguments stored before)
                      # 13: tasks.agents names the tools each agent misused
                      # 14: agent time from step intervals; cost attributed by the context a result adds
+                     # 15: tasks.baseline (recent baselines per type, model and release)
 
 RUN_COLS = ["id", "source", "project", "environment", "framework", "workflow", "cwd", "title", "agent_name", "parent_id",
             "parent_task_id", "is_subagent", "thread_id", "user_id", "tags", "root_status", "complete", "version", "git_branch",
@@ -50,7 +51,9 @@ TASK_COLS = ["id", "run_id", "idx", "project", "environment", "source", "framewo
              # governance (Aegis)
              "governed", "policy_version", "policy_denials", "spend_denials", "budget_denials", "repeated_denials",
              "revocations", "blocked_cost", "tripwires", "tripwire_what"]
-TASK_JSON = ["phase_calls", "phase_cost", "scores", "path", "denied_rules", "agents"]
+TASK_JSON = ["phase_calls", "phase_cost", "scores", "path", "denied_rules", "agents",
+             # the baseline the task was compared with: basis, sample size, its figures, the task's cost rank in it
+             "baseline"]
 # an incident: security signals about one agent (or, without an agent name, one workflow) in one project
 INCIDENT_COLS = ["id", "project", "agent", "workflow", "opened", "updated", "status", "severity", "signals",
                  "verdict", "note", "resolved_by", "resolved_at", "alerted"]

@@ -162,8 +162,8 @@
     const d = await api("types");
     if (!alive()) return;
     host.innerHTML = head("Task Types", "The agent equivalent of business transactions. Requests are grouped by intent. Each group gets a learned baseline (median and p90 cost/time) that individual tasks are judged against.") +
-      card("All task types", `<div class="table-wrap"><table><thead><tr><th>Health</th><th>Type</th><th class="num">Tasks</th><th class="num">Spend</th><th class="num">Baseline cost (p50 / p90)</th>
-      <th class="num">Baseline time (p50)</th><th class="num">Apdex</th><th class="num">Clean completion</th><th class="num">Tool errors</th><th class="num">Verified</th><th class="num">Avg score</th><th class="num">Events</th><th>Trend</th></tr></thead><tbody>
+      card("All task types", `<div class="table-wrap"><table><thead><tr><th>Health</th><th>Type</th><th class="num">Tasks</th><th class="num">Spend</th><th class="num">History cost (p50 / p90)</th>
+      <th class="num">History time (p50)</th><th class="num">Apdex</th><th class="num">Clean completion</th><th class="num">Tool errors</th><th class="num">Verified</th><th class="num">Avg score</th><th class="num">Events</th><th>Trend</th></tr></thead><tbody>
       ${d.types.map((t) => `<tr class="click" data-href="#/tasks?type=${encodeURIComponent(t.type)}">
         <td>${pill(t.health)}</td><td><b>${esc(t.type)}</b><div class="small muted">${typedBy(t)}</div></td><td class="num">${t.tasks}</td><td class="num">${usd(t.cost)}</td>
         <td class="num">${t.baseline ? usd(t.baseline.cost_p50) + " / " + usd(t.baseline.cost_p90) : "–"}</td>
@@ -171,7 +171,7 @@
         <td class="num">${t.apdex == null ? "–" : t.apdex.toFixed(2)}</td><td class="num">${pct(t.success_rate)}</td><td class="num">${pct(t.tool_error_rate, 1)}</td>
         <td class="num">${pct(t.verification_rate)}</td><td class="num" style="color:${scoreColor(t.avg_score)};font-weight:600">${t.avg_score == null ? "–" : Math.round(t.avg_score)}</td>
         <td class="num">${t.events}</td><td>${C.sparkline(t.daily.map((x) => x.cost))}</td></tr>`).join("")}</tbody></table></div>`) +
-      `<p class="small muted">A traced app's type is its workflow name, which is a fact. Coding sessions have none, so their type is guessed from intent keywords in the request (fix/bug → bugfix, create/build → feature, and so on); each type says which it was. Baselines need at least 3 tasks; smaller groups fall back to the global baseline.</p>`;
+      `<p class="small muted">A traced app's type is its workflow name, which is a fact. Coding sessions have none, so their type is guessed from intent keywords in the request (fix/bug → bugfix, create/build → feature, and so on); each type says which it was. The baselines here cover each type's whole history. A task is compared with something closer: the tasks of its type, model and release in the 14 days before it, when there are 10 or more (then type and model, then type), and with the type's history only when nothing recent is enough. Its page says which. A type's history baseline needs 3 tasks, or the global one is used.</p>`;
     bindRows(host);
   };
 
@@ -224,7 +224,7 @@
         <div class="prompt-box">${esc(t.prompt) || "<span class='muted'>(no prompt)</span>"}</div></div>` +
       `<div class="kpis">
         ${kpi("Cost", usd(t.cost + (t.subagent_cost || 0)), t.subagent_cost ? `${usd(t.subagent_cost)} in ${t.subagents} subagents` : `baseline ${usd(b.cost_p50)}`)}
-        ${kpi("vs baseline", t.cost_vs_baseline == null ? "–" : t.cost_vs_baseline.toFixed(1) + "×", `p90 ${usd(b.cost_p90)} for ${esc(t.task_type)}`)}
+        ${kpi("vs baseline", t.cost_vs_baseline == null ? "–" : t.cost_vs_baseline.toFixed(1) + "×", `${b.cost_rank != null ? `dearer than ${Math.round(b.cost_rank * 100)}% · ` : `p90 ${usd(b.cost_p90)} · `}<span title="the tasks this one is compared with">${esc(b.basis || t.task_type)}${b.n ? ` (${b.n})` : ""}</span>`)}
         ${kpi("Agent time", dur(t.duration_s), `wall clock ${dur(t.wall_s)}`)}
         ${kpi("Model turns", num(t.llm_calls), `${t.parallelism || 0} tools per turn`)}
         ${kpi("Tool calls", num(t.tool_calls), t.tool_errors ? `<span style="color:var(--critical-text)">${t.tool_errors} failed</span>` : "no failures")}

@@ -8,8 +8,9 @@ bumps the minor version.
 
 ## [Unreleased]
 
-**Upgrading.** `SCHEMA_VERSION` 14: tasks and steps record tripwires and what each agent did in a task, tool
-arguments are stored redacted, and agent time and cost attribution are computed the new way. The derived tables are rebuilt from the
+**Upgrading.** `SCHEMA_VERSION` 15: tasks and steps record tripwires and what each agent did in a task, tool
+arguments are stored redacted, agent time and cost attribution are computed the new way, and each task records
+the baseline it was compared with. The derived tables are rebuilt from the
 sources on first start, as after any schema change; nothing to migrate. The new durable `incidents` tables are
 created then too, and the first refresh opens incidents from the security events already held -- without
 alerting, as history never is.
@@ -88,6 +89,14 @@ alerting, as history never is.
   the move.
 
 ### Changed
+- **Baselines follow recent behaviour.** A task was compared with its type's whole history (in practice its
+  earliest tasks), so after a model switch or a deploy that halved cost, every task read 0.5x "normal" for as long
+  as the old ones were held. Now each task is compared with the tasks like it in the 14 days before its day --
+  same type, model and release (an app's `version`, else its Aegis policy version), then type and model, then type,
+  whichever first has 10 tasks -- and with the type's history only when nothing recent is enough. Every task
+  records which and how many (`tasks.baseline`: `basis`, `n`, the figures, and `cost_rank`, where its cost falls
+  among them), and the task page shows it: "1.1× · dearer than 66% · support_agent · claude-sonnet-5, last 14
+  days (39)". A recent baseline only changes when a task inside it does, so new traffic today re-scores nothing.
 - **Agent time is what steps covered.** It summed the gaps between timestamps, each capped at 5 minutes, so a
   20-minute build counted 5 and a person deciding for 4 counted 4. Now each step's own interval counts in full,
   gaps of up to 5 minutes between events still count (a model call logged only when it ends), parallel calls count
