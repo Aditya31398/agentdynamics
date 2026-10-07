@@ -11,6 +11,21 @@ from .base import DAY
 
 
 class AssessMixin:
+    def calibration(self, q):
+        """Do the process scores predict success? Fitted over the tasks in view whose outcome somebody stated
+        (calibrate.py), with which weights the overall score uses now."""
+        from .. import calibrate
+        from ..analysis import SCORE_WEIGHTS
+        rep = calibrate.fit(self.tasks(dict(q, sub="0")))
+        used = self.e.score_weights()
+        rep["in_use"] = {"mode": "fitted" if used else "default", "weights": used or SCORE_WEIGHTS,
+                         "configured": (self.e.cfg.get("scores") or {}).get("weights") or "default"}
+        if self.projects is None:                  # fitted over every project: not for a key scoped to some
+            fit = self.e._setting("score_fit") or {}
+            rep["in_use"].update(fitted_at=fit.get("ts"), fit_n=fit.get("n"), fit_auc=fit.get("auc_fitted"),
+                                 fit_auc_default=fit.get("auc_default"))
+        return rep
+
     def process(self, q):
         ts = self.tasks(q)
         from ..analysis import process_insights

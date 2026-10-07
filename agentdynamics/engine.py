@@ -816,6 +816,25 @@ class Engine:
     def slos(self):
         return self._setting("slos") or slomod.DEFAULT_SLOS
 
+    def score_weights(self):
+        """The fitted weights of the overall process score, when [scores] weights = "fitted" and the last fit
+        predicted stated outcomes better than the defaults (calibrate.py); else None: the defaults."""
+        if (self.cfg.get("scores") or {}).get("weights") != "fitted":
+            return None
+        fit = self._setting("score_fit") or {}
+        return fit.get("weights") if fit.get("adopted") else None
+
+    def fit_scores(self, tasks=None):
+        """Fit the overall score's weights to the stated outcomes and save the fit (the writer, daily; or on
+        demand). Adopted only if it predicts them better than the defaults, out of sample. Returns the report."""
+        from . import calibrate
+        if tasks is None:
+            tasks = [t for ts in self._tasks.values() for t in ts]
+        rep = calibrate.fit(tasks)
+        self._save_setting("score_fit", {"weights": rep["weights"], "adopted": rep["adopt"], "ts": self._clock(),
+                                         "n": rep["n"], "auc_default": rep["auc_default"], "auc_fitted": rep["auc_fitted"]})
+        return rep
+
     def apdex_targets(self):
         """{task type: {"latency_s", "cost"}}: what people say a satisfying task is, per type."""
         return self._setting("apdex_targets") or {}
@@ -957,7 +976,7 @@ class Engine:
                 self._regrade = self._grades_sig is not None or self._regrade
                 self._grades_sig = gsig
             # rules and Apdex targets: either can be saved on another instance
-            rsig = hashlib.sha1(json.dumps([self.rules(), self.apdex_targets()], sort_keys=True,
+            rsig = hashlib.sha1(json.dumps([self.rules(), self.apdex_targets(), self.score_weights()], sort_keys=True,
                                            default=str).encode()).hexdigest()
             rules_changed = self._rules_sig is not None and rsig != self._rules_sig
             self._rules_sig = rsig
@@ -1021,7 +1040,13 @@ class Engine:
                                                          redact=self.redactor.text, targets=self.apdex_targets(),
                                                          keyed=store.get_keyed_grades(self.con),
                                                          model_grades=store.get_model_grades(self.con),
-                                                         promote=checkmod.promotion(self.cfg))
+                                                         promote=checkmod.promotion(self.cfg),
+                                                         weights=self.score_weights())
+            sc = self.cfg.get("scores") or {}
+            if sc.get("weights") == "fitted" and self.writer:
+                last = (self._setting("score_fit") or {}).get("ts") or 0
+                if self._clock() - last >= float(sc.get("refit_hours", 24)) * 3600:
+                    self.fit_scores(tasks)        # applied from the next refresh, which re-scores everything once
             self._settle_due = min((t["ended"] + analysis.IN_PROGRESS_S for t in tasks
                                     if t.get("outcome") == "in progress" and t.get("ended")), default=None)
             # Process Review insights are computed when the page asks, over the tasks it shows: every

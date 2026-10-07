@@ -4,11 +4,26 @@
   const { $, $$, esc, usd, tok, dur, ms, pct, num, dt, ago, dayLabel, pill, scoreColor, statusOfRate, store, toast, F, qs, authHeaders, api, post, showLogin, NAV, ALIAS, renderNav, initFilters, showRefreshed, persist, route, head, kpi, card, typedBy, coverageBlock, spendCaveats, sourceMark, evidence, healthOfApdex, taskTable, bindRows, PHASE_ORDER, phaseParts, SCORE_HELP, PAGES } = window.AD;
 
   // ------------------------------------------------------------------ process review
+  function calibrationCard(c) {
+    const fmt = (v) => v == null ? "–" : v.toFixed(2);
+    const use = c.in_use;
+    const status = use.mode === "fitted" ? `The overall score uses <b>fitted weights</b>${use.fitted_at ? ` (fitted ${ago(use.fitted_at)} on ${num(use.fit_n)} tasks: AUC ${fmt(use.fit_auc)} against ${fmt(use.fit_auc_default)} for the defaults)` : ""}.`
+      : use.configured === "fitted" ? "Fitted weights are switched on, and not in use: they haven't yet predicted stated outcomes better than the defaults."
+      : `The overall score uses the default weights (<code>[scores] weights = "fitted"</code> uses fitted ones once they predict better).`;
+    const body = !c.n ? `<p class="small muted" style="margin:0">No task in view has a stated outcome yet. Grade some (by task id, or by your own key from a ticket system), or collect feedback, and this shows which scores predict success.</p>`
+      : `<p class="small" style="margin:0 0 8px">Over the ${num(c.n)} tasks in view whose outcome somebody stated (${num(c.worked)} worked, ${num(c.failed)} didn't). AUC is the chance a score ranks a task that worked above one that didn't: 0.5 is a coin toss.
+          The overall score with the default weights: <b>${fmt(c.auc_default)}</b>${c.auc_fitted != null ? `; with weights fitted to these outcomes, out of sample: <b>${fmt(c.auc_fitted)}</b>` : c.enough ? "" : ` (fitting needs ${50} tasks and 10 of each outcome)`}.</p>
+        <div class="table-wrap"><table id="calib-list"><thead><tr><th>Score</th><th class="num">Tasks</th><th class="num">AUC alone</th><th class="num">Default weight</th><th class="num">Fitted weight</th></tr></thead><tbody>
+        ${c.components.map((x) => `<tr><td>${esc(x.name)}</td><td class="num">${num(x.tasks)}</td><td class="num" style="color:${x.auc == null ? "inherit" : x.auc >= 0.6 ? "var(--good-text, inherit)" : x.auc <= 0.52 ? "var(--text-3)" : "inherit"}">${fmt(x.auc)}</td>
+          <td class="num">${pct(x.default_weight)}</td><td class="num">${x.fitted_weight == null ? "–" : pct(x.fitted_weight)}</td></tr>`).join("")}</tbody></table></div>`;
+    return card("Do the scores predict success?", `<div id="calib-card">${body}<p class="small muted" style="margin:8px 0 0">${status} Scores are computed here without the terms that restate the outcome, so the test isn't circular.</p></div>`, "calibrated on stated outcomes");
+  }
+
   PAGES.process = async (host, _a, _p, alive) => {
-    const d = await api("process");
+    const [d, cal] = await Promise.all([api("process"), api("calibration")]);
     if (!alive()) return;
     const dims = ["efficiency", "focus", "reliability", "verification", "context", "autonomy", "compliance"];
-    host.innerHTML = head("Process Review", "How the agent works, not just what it costs. Each task is scored on six process dimensions. These findings are meant to help you judge the agent's habits and fix them (usually with better prompts or a CLAUDE.md).") +
+    host.innerHTML = head("Process Review", "How the agent works, not just what it costs. Each task is scored on seven process dimensions. These findings are meant to help you judge the agent's habits and fix them (usually with better prompts or a CLAUDE.md).") +
       `<div class="kpis">${kpi("Overall process score", d.avg.overall == null ? "–" : Math.round(d.avg.overall), "average across tasks", "")}${dims.map((k) => kpi(k[0].toUpperCase() + k.slice(1), `<span style="color:${scoreColor(d.avg[k])}">${d.avg[k] == null ? "–" : Math.round(d.avg[k])}</span>`, esc(SCORE_HELP[k]))).join("")}</div>` +
       `<h2 style="margin:18px 0 10px">Findings</h2><div class="grid g3">${d.insights.map((i) => `<div class="insight ${i.severity}"><div class="between"><b>${esc(i.title)}</b>${pill(i.severity === "ok" ? "ok" : i.severity, i.severity)}</div>
         <div class="metric">${esc(i.metric)}</div><div class="small">${esc(i.detail)}</div><div class="advice">💡 ${esc(i.advice)}</div>
@@ -18,6 +33,7 @@
           ${d.per_type.map((r) => `<tr class="click" data-href="#/tasks?type=${encodeURIComponent(r.type)}&sort=score"><td>${esc(r.type)}</td><td class="num">${r.n}</td>${[...dims, "overall"].map((k) => `<td class="num" style="color:${scoreColor(r[k])};font-weight:600">${r[k] == null ? "–" : Math.round(r[k])}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`)}
         ${card("Phase mix by task type", `<div id="pmix"></div>`, "share of model spend")}
       </div>
+      <div style="margin-top:14px">${calibrationCard(cal)}</div>
       <div style="margin-top:14px">${card("Process score over time", `<div id="ch-score"></div>`)}</div>
       <div style="margin-top:14px">${card("Lowest-scoring tasks: start your review here", taskTable(d.worst, { compact: true }))}</div>`;
     $("#pmix").innerHTML = d.per_type.map((r, i) => `<div style="margin:8px 0"><div class="small" style="margin-bottom:3px">${esc(r.type)} <span class="muted">(${r.n})</span></div><div id="pm-${i}"></div></div>`).join("") +

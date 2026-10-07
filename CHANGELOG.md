@@ -16,6 +16,12 @@ created then too, and the first refresh opens incidents from the security events
 alerting, as history never is.
 
 ### Added
+- **Do the process scores predict success?** The Process Review page fits the scores to the outcomes somebody
+  stated (`GET /api/calibration`, `calibrate.py`): each score's AUC alone, the overall's with the default weights,
+  and a logistic regression's out of sample. Scores are computed without the terms that restate the outcome, so
+  the test isn't circular. With `[scores] weights = "fitted"` the overall score uses the fitted weights once they
+  predict better than the defaults (refit daily, re-scoring once); a score gets weight only if it also predicts
+  on its own.
 - **Outcomes stated by your own key.** A business system knows its ticket and order ids, not task ids. Traces now
   carry their metadata (`agentdynamics.trace("support", ticket_id="T-123")`; LangSmith, Langfuse and OpenTelemetry
   metadata too; `runs.metadata`, secrets in it masked), and `POST /api/outcomes` accepts

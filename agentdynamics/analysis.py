@@ -577,16 +577,15 @@ def apdex_targets(target, b):
     return t_cost, t_lat, "targets" if (target.get("cost") or target.get("latency_s")) else "baseline"
 
 
-def score_task(t, b, target=None):
-    """Scores, Apdex and the comparison with `b`, the baseline chosen for this task; `target`, the Apdex target
-    set for its type ({"latency_s", "cost"}), if any."""
+SCORE_WEIGHTS = {"efficiency": 0.25, "focus": 0.15, "reliability": 0.2, "verification": 0.15, "context": 0.1,
+                 "autonomy": 0.15, "compliance": 0.15}
+
+
+def components(t, ratio, outcome=True):
+    """The seven process scores, 0-100 each, None where one doesn't apply. `ratio`: cost against the baseline.
+    With outcome=False, without the terms that restate the outcome (failed: -40 on reliability, rework: -35 on
+    autonomy): what calibrate.py predicts the outcome from, which it couldn't fairly do from the outcome itself."""
     s = {}
-    b = b or {}
-    med_cost = b.get("cost_p50") or 0
-    ratio = (t["cost"] + t["subagent_cost"]) / med_cost if med_cost else 1
-    t["cost_vs_baseline"] = round(ratio, 2)
-    med_dur = b.get("duration_p50") or 0
-    t["duration_vs_baseline"] = round(t["duration_s"] / med_dur, 2) if med_dur else 1
     waste_share = t["waste_cost"] / t["cost"] if t["cost"] else 0
     s["efficiency"] = clamp(100 - 35 * math.log2(max(ratio, 1)) - 100 * waste_share)
     focus = 100 - 6 * t["redundant_reads"] - 10 * t["duplicate_calls"] - 4 * max(0, t["max_edits_one_file"] - 4)
@@ -595,7 +594,7 @@ def score_task(t, b, target=None):
     focus -= 8 * max(0, (t.get("max_node_visits") or 0) - 3) + 10 * (t.get("pingpong") or 0)
     s["focus"] = clamp(focus) if (t["tool_calls"] or t.get("nodes")) else None
     llm_pen = 8 * min(t.get("llm_errors") or 0, 5) + 6 * min(t.get("truncations") or 0, 5) + 10 * min(t.get("refusals") or 0, 3)
-    llm_pen += 40 if t.get("outcome") == "failed" else 0
+    llm_pen += 40 if outcome and t.get("outcome") == "failed" else 0
     if t["tool_calls"]:
         s["reliability"] = clamp(100 * (1 - t["tool_error_rate"]) - 12 * max(0, t["max_error_streak"] - 1) - 15 * t["api_errors"] - llm_pen)
     else:
@@ -609,16 +608,33 @@ def score_task(t, b, target=None):
         s["context"] = clamp(ctx)
     else:
         s["context"] = None
-    s["autonomy"] = clamp(100 - 45 * min(t["interrupts"], 2) - (35 if t.get("outcome") == "rework" else 0))
+    s["autonomy"] = clamp(100 - 45 * min(t["interrupts"], 2) - (35 if outcome and t.get("outcome") == "rework" else 0))
     if t.get("governed"):
         s["compliance"] = clamp(100 - 12 * (t.get("policy_denials") or 0) - 20 * max(0, (t.get("repeated_denials") or 0) - 1)
                                 - 40 * (t.get("revocations") or 0) - 15 * (t.get("budget_denials") or 0))
     else:
         s["compliance"] = None
-    weights = {"efficiency": 0.25, "focus": 0.15, "reliability": 0.2, "verification": 0.15, "context": 0.1, "autonomy": 0.15,
-               "compliance": 0.15}
-    tot = sum(weights[k] for k, v in s.items() if v is not None)
-    s["overall"] = round(sum(weights[k] * v for k, v in s.items() if v is not None) / tot, 1) if tot else None
+    return s
+
+
+def overall(s, weights=None):
+    """The weighted mean of the scores that apply (SCORE_WEIGHTS, or fitted ones -- calibrate.py)."""
+    weights = weights or SCORE_WEIGHTS
+    tot = sum(weights.get(k, 0) for k, v in s.items() if v is not None)
+    return round(sum(weights.get(k, 0) * v for k, v in s.items() if v is not None) / tot, 1) if tot else None
+
+
+def score_task(t, b, target=None, weights=None):
+    """Scores, Apdex and the comparison with `b`, the baseline chosen for this task; `target`, the Apdex target
+    set for its type ({"latency_s", "cost"}), if any; `weights`, fitted score weights in use, if any."""
+    b = b or {}
+    med_cost = b.get("cost_p50") or 0
+    ratio = (t["cost"] + t["subagent_cost"]) / med_cost if med_cost else 1
+    t["cost_vs_baseline"] = round(ratio, 2)
+    med_dur = b.get("duration_p50") or 0
+    t["duration_vs_baseline"] = round(t["duration_s"] / med_dur, 2) if med_dur else 1
+    s = components(t, ratio)
+    s["overall"] = overall(s, weights)
     t["scores"] = {k: (round(v, 1) if v is not None else None) for k, v in s.items()}
     t["score"] = t["scores"]["overall"]
 
@@ -989,7 +1005,7 @@ def baseline_sample_size(n):
 
 
 def finalize(runs, tasks_by_run, rules=None, now=None, grades=None, cache=None, dirty=(), redact=None, targets=None,
-             keyed=None, model_grades=None, promote=None):
+             keyed=None, model_grades=None, promote=None, weights=None):
     """Cross-run analysis: outcomes, subagent roll-up, baselines, scores, events. `targets`: Apdex targets per task
     type, {type: {"latency_s", "cost"}}.
 
@@ -1204,7 +1220,7 @@ def finalize(runs, tasks_by_run, rules=None, now=None, grades=None, cache=None, 
                       "baseline": None, "apdex_basis": None})
             ev = []
         else:
-            score_task(t, b, target)
+            score_task(t, b, target, weights)
             t["baseline"] = {"basis": basis, "n": b.get("sample"),
                              **{k: b.get(k) for k in ("cost_p50", "cost_p90", "duration_p50", "duration_p90")},
                              "cost_rank": cost_rank(b.get("cost_q"), t["cost"] + t["subagent_cost"])} if b else None

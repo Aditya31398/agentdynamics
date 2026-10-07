@@ -193,7 +193,7 @@ class Handler(BaseHTTPRequestHandler):
             routes = {"/api/filters": api.filters, "/api/overview": api.overview, "/api/types": api.types,
                       "/api/tasks": api.task_list, "/api/sessions": api.sessions, "/api/flowmap": api.flowmap,
                       "/api/tools": api.tools, "/api/models": api.models, "/api/events": api.events,
-                      "/api/process": api.process, "/api/analytics": api.analytics, "/api/compare": api.compare,
+                      "/api/process": api.process, "/api/calibration": api.calibration, "/api/analytics": api.analytics, "/api/compare": api.compare,
                       "/api/workflows": api.workflows, "/api/workflow": api.workflow, "/api/slos": api.slos,
                       "/api/sources": api.sources, "/api/config": api.config, "/api/connect": api.connect,
                       "/api/alerts": api.alerts, "/api/revocations": api.revocations, "/api/incidents": api.incidents,

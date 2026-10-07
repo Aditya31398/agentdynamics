@@ -61,6 +61,10 @@ Example agentdynamics.toml:
     window_minutes = 60
     revoke_minutes = 60             # 0: events and alerts only
 
+    [scores]                        # the overall process score's weights (calibrate.py)
+    weights = "default"             # "fitted": weights fitted to stated outcomes, used once they predict better
+    refit_hours = 24
+
     [retention]
     days = 90                       # spans/runs older than this are purged; daily totals are kept
 
