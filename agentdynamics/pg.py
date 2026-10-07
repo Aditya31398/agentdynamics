@@ -360,6 +360,12 @@ def ddl(schema_version, derived):
         "CREATE TABLE IF NOT EXISTS incident_signals (" + ", ".join(
             f"{c} {NUM if c == 'ts' else 'TEXT'}" for c in s.SIGNAL_COLS) + ", PRIMARY KEY (ref))",
         "CREATE INDEX IF NOT EXISTS incident_signals_incident ON incident_signals (incident_id)",
+        "CREATE TABLE IF NOT EXISTS incident_reviews (" + ", ".join(
+            f"{c} {NUM if c in ('ts', 'signals', 'input_tokens', 'output_tokens') else 'TEXT'}" for c in s.REVIEW_COLS)
+        + ", PRIMARY KEY (id))",
+        "CREATE TABLE IF NOT EXISTS model_grades (" + ", ".join(
+            f"{c} {NUM if c in ('ts', 'input_tokens', 'output_tokens') else 'TEXT'}" for c in s.MODEL_GRADE_COLS)
+        + ", PRIMARY KEY (task_id))",
     ]
 
 
@@ -391,7 +397,8 @@ def connect_store(url, schema, schema_version, derived):
 PRIMARY_KEYS = {"runs": ("id",), "tasks": ("id",), "baselines": ("task_type",), "meta": ("k",),
                 "spans_raw": ("source", "span_id"), "source_state": ("name",), "alerts_sent": ("event_id",),
                 "grades": ("task_id",), "alert_state": ("key",), "revocations": ("id",), "alert_outbox": ("id",),
-                "incidents": ("id",), "incident_signals": ("ref",)}
+                "incidents": ("id",), "incident_signals": ("ref",), "incident_reviews": ("id",),
+                "model_grades": ("task_id",)}
 
 _WEEK = ("(to_char({d}, 'YYYY') || '-W' || "
          "lpad(floor((extract(doy from {d}) + 7 - extract(isodow from {d})) / 7)::int::text, 2, '0'))")

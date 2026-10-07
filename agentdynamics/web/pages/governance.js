@@ -127,9 +127,34 @@ governance.instrument(kernel, root, watchdog=governance.Watchdog(max_repeated_de
       "lowest first · every task still held");
   }
 
+  // ------------------------------------------------------------------ the checker (checker.py), shadow mode
+  const CLASS = { prompt_injection: "prompt injection", policy_probing: "probing", exfiltration_attempt: "exfiltration attempt",
+    misconfigured_policy: "policy too narrow", benign_error: "honest error", unclear: "unclear" };
+  const RECO = { revoke: "revoke", restrict: "restrict", tighten_policy: "tighten the policy", dismiss: "dismiss", watch: "watch" };
+  function checkerCard(c) {
+    if (!c.configured && !c.incidents.reviewed && !c.outcomes.graded) return "";
+    const i = c.incidents, o = c.outcomes;
+    const vs = (x) => x.compared ? `${x.agreed} of ${x.compared}` : "none yet";
+    return card("Checker (shadow mode)", `<div id="checker-card" class="small">
+        <p style="margin:0 0 6px">${c.model ? `<span class="mono">${esc(c.model)}</span> reads` : "A model read"} each incident's stored, redacted evidence and says what it thinks happened. Nothing it says is acted on: its record against your verdicts is what would justify ever letting it act.</p>
+        <div><b>Incidents:</b> reviewed ${num(i.reviewed)}; of those you judged, it agreed with ${i.judged ? `${i.agreed} of ${i.judged}` : "none yet"}${i.disagreed ? ` (${i.disagreed} disagreed)` : ""}.</div>
+        ${o.graded || c.configured ? `<div><b>Outcomes:</b> graded ${num(o.graded)}; agreed with people on ${vs(o.vs_people)}, with the inferred outcome on ${vs(o.vs_inferred)}.</div>` : ""}
+        <div class="muted">${num(c.tokens)} tokens${c.errors ? ` · ${c.errors} failed (refused, or an answer outside the schema)` : ""}</div></div>`, "configured in [checker]");
+  }
+  function reviewCard(r) {
+    if (!r) return "";
+    if (!r.review) return card("The checker's view", `<div class="small muted" id="inc-review">No review: ${esc(r.error || "")}</div>`, "shadow mode");
+    const v = r.review;
+    return card("The checker's view", `<div id="inc-review"><div class="row" style="gap:6px;flex-wrap:wrap"><span class="tag ${["prompt_injection", "policy_probing", "exfiltration_attempt"].includes(v.classification) ? "bad" : ""}">${esc(CLASS[v.classification] || v.classification)}</span>
+        <span class="small muted">${esc(v.confidence)} confidence · would ${esc(RECO[v.recommendation] || v.recommendation)}</span></div>
+        <p class="small" style="margin:8px 0 4px">${esc(v.summary)}</p>
+        ${v.evidence.length ? `<ul class="small" style="margin:0;padding-left:18px">${v.evidence.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}
+        <div class="small muted" style="margin-top:6px">${esc(r.model)} · ${dt(r.ts)} · reviewed at ${r.signals} signal(s). Shadow mode: a recommendation, not an action.</div></div>`, "shadow mode");
+  }
+
   PAGES.incidents = async (host, _a, p, alive) => {
     const status = p.status || "";
-    const [d, tr] = await Promise.all([api("incidents", status ? { status } : {}), api("trust")]);
+    const [d, tr, ck] = await Promise.all([api("incidents", status ? { status } : {}), api("trust"), api("checker")]);
     if (!alive()) return;
     const tabs = [["", "All"], ["open", `Open (${d.open})`], ["resolved", "Resolved"]].map(([v, l]) =>
       `<button class="${v === status ? "on" : ""}" data-status="${v}">${l}</button>`).join("");
@@ -137,11 +162,13 @@ governance.instrument(kernel, root, watchdog=governance.Watchdog(max_repeated_de
         <td>${pill(SEVERITY[i.severity] || "unknown", i.severity)}</td>
         <td><b>${esc(i.subject)}</b><div class="small muted">${esc(i.project || "every project")}${i.workflows.length ? " · " + esc(i.workflows.join(", ")) : ""}</div></td>
         <td>${Object.entries(i.counts).map(([k, n]) => `<span class="tag ${k === "tripwire" || k === "probing" ? "bad" : ""}">${esc(k)}${n > 1 ? " ×" + n : ""}</span>`).join("")}
-          ${i.what.length ? `<div class="small muted">${esc(i.what.join(", "))}</div>` : ""}</td>
+          ${i.what.length ? `<div class="small muted">${esc(i.what.join(", "))}</div>` : ""}
+          ${i.review ? `<div class="small muted">checker: ${esc(CLASS[i.review.classification] || i.review.classification)}</div>` : ""}</td>
         <td class="num">${num(i.tasks)}</td><td class="small muted" style="white-space:nowrap">${dt(i.opened)}</td>
         <td class="small muted" style="white-space:nowrap">${ago(i.updated)}</td><td>${incStatus(i)}</td></tr>`).join("");
     host.innerHTML = head("Incidents", "Security signals about one agent -- a tripwire touched, probing, refused calls, a revocation -- grouped into one thing to judge. Resolve each as <b>real</b> or a <b>false alarm</b>: the verdict is kept, counts in the agent's trust, and alert destinations that take <code>incidents</code> are resolved too.") +
       (tr.agents.length ? `<div style="margin-bottom:14px" id="trust-card">${trustCard(tr.agents)}</div>` : "") +
+      (checkerCard(ck) ? `<div style="margin-bottom:14px">${checkerCard(ck)}</div>` : "") +
       `<div class="seg" id="inc-tabs" style="margin-bottom:12px">${tabs}</div>` +
       (rows ? `<div class="card"><div class="table-wrap"><table id="inc-list"><thead><tr><th>Severity</th><th>Agent</th><th>Signals</th><th class="num">Tasks</th><th>Opened</th><th>Last</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></div>
           <p class="small muted" style="margin:8px 0 0">Open incidents are listed whatever the time window; resolved ones within it.</p></div>`
@@ -204,6 +231,7 @@ governance.instrument(kernel, root, watchdog=governance.Watchdog(max_repeated_de
         ${resolved ? `<p class="small" style="margin-top:8px">${resolved}</p>` : ""}
         ${d.trust ? `<div id="inc-trust" style="margin-top:10px"><span class="small muted">${esc(i.agent)}'s trust</span> ${trustCell(d.trust)}<div class="small muted">${trustWhy(d.trust)}</div></div>` : ""}</div>
       ${card("What to do", `<div id="inc-actions" style="display:flex;flex-direction:column;gap:8px">${acts || `<span class="small muted">No agent name to act on: the signals came from ${esc(i.subject)}.</span>`}</div>${verdict}`, "needs an admin key")}</div>
+      ${d.review ? `<div style="margin-top:14px">${reviewCard(d.review)}</div>` : ""}
       <div style="margin-top:14px">${card("Signals", `<div class="table-wrap"><table id="inc-signals"><thead><tr><th>When</th><th>Signals</th><th>Task, or directive</th></tr></thead><tbody>${sigs}</tbody></table></div>`, "by task, oldest first")}</div>
       <div style="margin-top:14px">${card("Evidence", ev ? `<div class="table-wrap"><table><thead><tr><th>When</th><th>Step</th><th>Agent</th><th>Why</th></tr></thead><tbody>${ev}</tbody></table></div>
           ${d.evidence_total > d.evidence.length ? `<p class="small muted">${d.evidence.length} of ${d.evidence_total} steps shown.</p>` : ""}`

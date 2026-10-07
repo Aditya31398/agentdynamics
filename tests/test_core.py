@@ -110,6 +110,17 @@ class CoreTest(unittest.TestCase):
         self.assertEqual(llm[0]["output_tokens"], 100)
         self.assertAlmostEqual(llm[0]["cost"], pricing.cost("claude-opus-5", 10, 100, 1000, 200))
 
+    def test_each_current_model_has_its_own_list_price(self):
+        """Prices match by longest prefix, so a point release missing from the table silently took an older
+        model's price: claude-opus-5-5 was billed as claude-opus-5."""
+        for model, (inp, out, read) in {"claude-opus-5-5": (4.0, 20.0, 0.20), "claude-opus-5": (5.0, 25.0, 0.5),
+                                        "claude-sonnet-5-5": (2.0, 10.0, 0.20), "claude-fable-5-1": (10.0, 50.0, 0.25),
+                                        "claude-haiku-4-5": (1.0, 5.0, 0.1)}.items():
+            r = pricing.rates(model)
+            self.assertEqual((r["input"], r["output"]), (inp, out), model)
+            self.assertAlmostEqual(r["cache_read"], read, msg=model)
+        self.assertIsNone(pricing.rates("gpt-5"), "unknown models are unpriced, never guessed")
+
     def test_segmentation_and_types(self):
         t0, t1 = self.by_id["sess-1#0"], self.by_id["sess-1#1"]
         self.assertEqual(t0["task_type"], "bugfix")

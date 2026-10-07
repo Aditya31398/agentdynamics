@@ -76,6 +76,13 @@ class ConsoleInteractionTest(unittest.TestCase):
                     p["steps"][-1]["tripwire"] = "canary vault_token"
                 eng.ingest(p)
         eng.refresh(force=True)
+        # what the checker said about that incident (checker.py; no model here, just its stored review)
+        from agentdynamics import store
+        iid = eng.con.execute("SELECT id FROM incidents WHERE agent = 'support'").fetchone()[0]
+        store.add_review(eng.con, iid, 1, NOW - 60, "claude-opus-5-5",
+                         {"classification": "prompt_injection", "confidence": "high",
+                          "summary": "A canary was read during a refund request.", "evidence": ["canary vault_token"],
+                          "recommendation": "restrict"}, usage={"input_tokens": 1500, "output_tokens": 90})
         eng.con.close()
         cls.srv, cls.url = cdp.serve(data)
         cls.browser = cdp.Browser(BROWSER)
@@ -300,6 +307,19 @@ class ConsoleInteractionTest(unittest.TestCase):
         self.page.click("#inc-list tr.click")
         self.page.wait("!!document.querySelector('#inc-trust')", what="the agent's trust on its incident")
         self.assertIn("support's trust", self.page.text("#inc-trust"))
+        self.assertNothingWentWrong()
+
+    def test_the_checkers_view_is_shown_and_nothing_more(self):
+        self.open("incidents", days="")
+        self.page.wait("!!document.querySelector('#checker-card')", what="the checker's record")
+        self.assertIn("reviewed 1", self.page.text("#checker-card"))
+        self.assertIn("checker: prompt injection", self.page.text("#inc-list"))
+        self.page.click("#inc-list tr.click")
+        self.page.wait("!!document.querySelector('#inc-review')", what="the checker's view of the incident")
+        view = self.page.text("#inc-review")
+        self.assertIn("A canary was read during a refund request.", view)
+        self.assertIn("would restrict", view)
+        self.assertIn("Shadow mode", view)
         self.assertNothingWentWrong()
 
     def test_resolve_an_incident_then_reopen_it(self):

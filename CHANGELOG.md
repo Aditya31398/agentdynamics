@@ -15,6 +15,13 @@ created then too, and the first refresh opens incidents from the security events
 alerting, as history never is.
 
 ### Added
+- **The checker: a model's view of each incident, in shadow mode** (`[checker]`, `pip install anthropic`). For each
+  incident a model (`claude-opus-5-5` by default) says what it thinks happened -- prompt injection, probing, an
+  exfiltration attempt, a policy too narrow for the agent, an honest error -- and what it would do; with
+  `grade_outcomes` it also grades tasks whose outcome was only inferred. Nothing acts on it: reviews are shown on
+  the incident and in the list, grades sit beside the outcome, and the Incidents page keeps its record against
+  your verdicts and grades. It sees the stored, redacted copy, gets the evidence as one fenced JSON document its
+  instructions call data, must answer in a fixed schema, and is held to `max_per_hour`. `GET /api/checker`.
 - **Restrict instead of revoke.** A directive can now take some of an agent's authority away and leave it the rest:
   tools, and all but a share of what remains of its budget (`agentdynamics revoke --tools ... / --budget ...`,
   `{"tools": [...], "budget": ...}` in `POST /api/revocations`, the directives card, or **Take ... away** on an
@@ -88,6 +95,8 @@ alerting, as history never is.
   off; `SCHEMA_VERSION` 12 rebuilds existing stores without the old values. Policy export treats a redacted
   value as unknowable: it no longer learns `one_of: ["[REDACTED]"]` (which would refuse every real address), and
   its coverage check no longer counts a call as refused on the strength of a placeholder.
+- **Claude Opus 5.5 was priced as Claude Opus 5.** Prices match by longest prefix, so `claude-opus-5-5` took
+  Opus 5's $5 / $25 instead of its own $4 / $20 (cache reads $0.20). It and Claude Sonnet 5.5 are now listed.
 - **Policy export answered 500** when the governed runs in view named no policy (an Aegis audit log, an older
   integration). It now builds a policy from scratch, as it does with no base.
 

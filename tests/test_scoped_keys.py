@@ -76,6 +76,11 @@ class ScopedKeysTest(unittest.TestCase):
         cls.eng.revoke(agent=f"{MARK}_agent", project=MARK, reason=f"{SECRET} probing", minutes=60)
         # ... which opens an incident about that agent (incidents.py)
         cls.bravo_incident = cls.eng.con.execute("SELECT id FROM incidents WHERE project = ?", (MARK,)).fetchone()[0]
+        # ... which the checker reviewed (checker.py), in the other team's words
+        from agentdynamics import store
+        store.add_review(cls.eng.con, cls.bravo_incident, 1, T, "claude-opus-5-5",
+                         {"classification": "policy_probing", "confidence": "high", "summary": f"{SECRET} probing",
+                          "evidence": [f"{MARK}_agent refused"], "recommendation": "restrict"})
         # install-wide config can name the other project too: an SLO on it, and one on its workflow
         slo.save(cls.eng.data_dir, slo.DEFAULT_SLOS + [
             {"id": "b1", "name": f"{MARK} latency", "metric": "p95_seconds", "op": "<=", "target": 60,

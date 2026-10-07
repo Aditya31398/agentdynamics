@@ -11,19 +11,23 @@ BASE = {
     "claude-fable-5-1": (10.0, 50.0),
     "claude-mythos-5-1": (10.0, 50.0),
     "claude-fable-5": (10.0, 50.0),
+    # a newer point release must be listed before anyone relies on it: by longest prefix, "claude-opus-5-5" was
+    # priced as Claude Opus 5 ($5 / $25) until it was
+    "claude-opus-5-5": (4.0, 20.0),
     "claude-opus-5": (5.0, 25.0),
     "claude-opus-4-8": (5.0, 25.0),
     "claude-opus-4-7": (5.0, 25.0),
     "claude-opus-4-6": (5.0, 25.0),
     "claude-opus-4-5": (5.0, 25.0),
     "claude-opus-4": (15.0, 75.0),
+    "claude-sonnet-5-5": (2.0, 10.0),
     "claude-sonnet-5": (2.0, 10.0),
     "claude-sonnet-4": (3.0, 15.0),
     "claude-haiku-4-5": (1.0, 5.0),
     "claude-3-5-haiku": (0.8, 4.0),
 }
 # Explicit cache-read overrides where the rate is not 0.1x input.
-CACHE_READ_OVERRIDE = {"claude-fable-5-1": 0.25}
+CACHE_READ_OVERRIDE = {"claude-fable-5-1": 0.25, "claude-opus-5-5": 0.20}
 
 _overrides = {}
 

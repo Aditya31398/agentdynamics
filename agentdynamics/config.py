@@ -35,6 +35,12 @@ Example agentdynamics.toml:
     restrict_below = 50
     minutes = 60
 
+    [checker]                       # a model reviews each incident, shadow mode (checker.py): off unless set
+    model = "claude-opus-5-5"       # pip install anthropic; ANTHROPIC_API_KEY or an `ant auth login` profile
+    effort = "medium"
+    max_per_hour = 20
+    grade_outcomes = false          # also grade inferred outcomes (stored beside them, never applied)
+
     [trust]                         # each agent's trust score (trust.py): points for evidence, halved weekly
     half_life_days = 7
     tripwire = 40                   # a task in which the agent touched a tripwire

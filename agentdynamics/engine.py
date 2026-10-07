@@ -19,7 +19,8 @@ import time
 import traceback
 from collections import Counter, defaultdict
 
-from . import alerts as alertmod, analysis, config as cfgmod, incidents as incmod, pricing, slo as slomod, store
+from . import alerts as alertmod, analysis, checker as checkmod, config as cfgmod, incidents as incmod, pricing
+from . import slo as slomod, store
 from . import tripwires as tripmod, trust as trustmod
 from .collectors import aegis_audit, claude_code, generic, inbox, langfuse, langsmith, otlp, spans as spanmod
 from .privacy import Redactor
@@ -158,6 +159,7 @@ class Engine:
         self.alert_log = {}        # destination id -> recent delivery results, for /api/alerts and the console
         self._alert_wake = threading.Event()
         self._alert_problems = set()
+        self._checker_client, self._checker_warned, self._checker_backoff = None, False, 0.0
         self._alerts_pruned = 0.0
         self.sources = {}
         if claude_root:
@@ -669,6 +671,69 @@ class Engine:
                                             now + float(t.get("minutes", 60)) * 60, kind="restrict", spec=spec))
         return out
 
+    # ------------------------------------------------------------------ the checker (checker.py), shadow mode
+    CHECKER_TICK_S = 60
+
+    def run_checker(self, cl=None):
+        """One pass: review the open incidents that need it, then (grade_outcomes) grade inferred outcomes, within
+        the hourly budget. Only the writer, and only when [checker] is set. Returns what it did."""
+        conf = checkmod.settings(self.cfg)
+        did = {"reviewed": 0, "graded": 0, "errors": 0}
+        if not conf or not self.writer or self._clock() < self._checker_backoff:
+            return did
+        if cl is None:
+            cl, why = self._checker_client or checkmod.client()
+            self._checker_client = (cl, why)
+            if cl is None:
+                if not self._checker_warned:
+                    print(f"[agentdynamics] checker off: {why}", file=sys.stderr)
+                    self._checker_warned = True
+                return did
+        from .server import Api
+        api = Api(self)
+        budget = int(conf["max_per_hour"]) - store.checker_calls_since(self.con, self._clock() - 3600)
+        open_ = store.incidents(self.con, status="open", limit=200)
+        latest = store.latest_reviews(self.con, [i["id"] for i in open_])
+        for inc in sorted(open_, key=lambda i: (-(i["updated"] or 0), i["id"])):
+            last = latest.get(inc["id"])
+            # once per incident, and again when it has twice the signals it was reviewed with
+            if budget <= 0 or (last and inc["signals"] < 2 * (last["signals"] or 0)):
+                continue
+            detail = api.incident(inc["id"])
+            answer, error, use, transient = checkmod.ask(cl, conf, checkmod.REVIEW_SYSTEM,
+                                                         checkmod.incident_evidence(detail), checkmod.REVIEW_SCHEMA)
+            if transient:
+                self._checker_backoff = self._clock() + 300     # overloaded or unreachable: try again later
+                did["errors"] += 1
+                return did
+            store.add_review(self.con, inc["id"], inc["signals"], self._clock(), use.get("model", conf["model"]),
+                             answer, error, use)
+            did["reviewed" if answer else "errors"] += 1
+            budget -= 1
+        if conf.get("grade_outcomes") and budget > 0:
+            from .store import rows
+            for t in rows(self.con, "SELECT * FROM tasks WHERE outcome_source = 'inferred' AND outcome <> 'in progress' "
+                                    "AND id NOT IN (SELECT task_id FROM model_grades) ORDER BY ended DESC, id LIMIT ?",
+                          (budget,)):
+                steps = rows(self.con, "SELECT error FROM steps WHERE task_id = ? ORDER BY seq", (t["id"],))
+                answer, error, use, transient = checkmod.ask(cl, conf, checkmod.GRADE_SYSTEM,
+                                                             checkmod.task_evidence(t, steps), checkmod.GRADE_SCHEMA)
+                if transient:
+                    self._checker_backoff = self._clock() + 300
+                    did["errors"] += 1
+                    break
+                store.add_model_grade(self.con, t["id"], self._clock(), use.get("model", conf["model"]), answer, error, use)
+                did["graded" if answer else "errors"] += 1
+        return did
+
+    def _checker_loop(self):
+        while True:
+            time.sleep(self.CHECKER_TICK_S)
+            try:
+                self.run_checker()
+            except Exception:
+                traceback.print_exc()
+
     def _alert_new_revocations(self):
         """Alert on directives issued since the last look, from wherever they came (this process, another
         instance, the CLI): an agent was stopped, and someone should know why. On the alert tick, so a
@@ -972,6 +1037,8 @@ class Engine:
                     traceback.print_exc()
         threading.Thread(target=loop, daemon=True, name="analyzer").start()
         threading.Thread(target=self._alert_loop, daemon=True, name="alerts").start()
+        if checkmod.settings(self.cfg):
+            threading.Thread(target=self._checker_loop, daemon=True, name="checker").start()
         self.start_pullers()
 
     # ------------------------------------------------------------------ alerting (alerts.py)

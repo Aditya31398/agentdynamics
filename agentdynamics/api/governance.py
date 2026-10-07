@@ -1,11 +1,13 @@
 """Governance (Aegis): decisions, policies in use, policy export and coverage."""
+import json
 import statistics
 import time
 from collections import Counter, defaultdict
 
-from .. import incidents as incmod, trust as trustmod
+from .. import checker as checkmod, incidents as incmod, trust as trustmod
 from ..analysis import pct
-from ..store import incident_signals, incident_verdicts, incidents as list_incidents, revocations as list_revocations, rows
+from ..store import (incident_signals, incident_verdicts, incidents as list_incidents, latest_reviews,
+                     revocations as list_revocations, rows)
 
 DAY = 86400
 
@@ -92,7 +94,8 @@ class GovernanceMixin:
             found += list_incidents(self.con, status="resolved", since=since, project=q.get("project"))
         found.sort(key=lambda r: (r["status"] != "open", -(r["updated"] or 0), r["id"]))
         sig = incident_signals(self.con, [r["id"] for r in found])
-        out = [self._incident_row(r, sig[r["id"]]) for r in found]
+        rev = latest_reviews(self.con, [r["id"] for r in found])
+        out = [dict(self._incident_row(r, sig[r["id"]]), review=(rev.get(r["id"]) or {}).get("review")) for r in found]
         return {"incidents": out, "open": sum(1 for r in out if r["status"] == "open"),
                 "critical_open": sum(1 for r in out if r["status"] == "open" and r["severity"] == "critical")}
 
@@ -147,7 +150,34 @@ class GovernanceMixin:
         trust = next((a for a in self._trust(inc["project"]) if a["agent"] == inc["agent"]), None) \
             if inc["agent"] and inc["project"] else None
         return {"incident": inc, "signals": sig, "evidence": [{k: s[k] for k in s} for s in evidence[:100]],
-                "evidence_total": len(evidence), "actions": actions, "trust": trust}
+                "evidence_total": len(evidence), "actions": actions, "trust": trust,
+                "review": latest_reviews(self.con, [iid]).get(iid)}
+
+    def checker(self, q):
+        """The checker's record (shadow mode): its reviews against the verdicts people gave, its grades against
+        people's grades and the inferred outcomes, and what it cost. Nothing here acted on anything."""
+        conf = checkmod.settings(self.e.cfg)
+        revs = rows(self.con, "SELECT r.incident_id, r.review, r.error, r.ts, r.input_tokens, r.output_tokens, i.verdict "
+                              "FROM incident_reviews r JOIN incidents i ON i.id = r.incident_id ORDER BY r.ts, r.id")
+        latest = {}
+        for r in revs:
+            r["review"] = json.loads(r["review"]) if isinstance(r["review"], str) else r["review"]
+            latest[r["incident_id"]] = r
+        grades = rows(self.con, "SELECT m.task_id, m.outcome, m.error, m.input_tokens, m.output_tokens, g.outcome AS person, "
+                                "t.outcome AS inferred, t.outcome_source FROM model_grades m JOIN tasks t ON t.id = m.task_id "
+                                "LEFT JOIN grades g ON g.task_id = m.task_id ORDER BY m.ts, m.task_id")
+        decided = [g for g in grades if g["outcome"] and g["outcome"] != "unclear"]
+        vs_people = [g for g in decided if g["person"]]
+        vs_inferred = [g for g in decided if g["outcome_source"] == "inferred" and g["inferred"]]
+        spent = sum((r["input_tokens"] or 0) + (r["output_tokens"] or 0) for r in revs + grades)
+        return {"configured": bool(conf), "model": conf["model"] if conf else None, "mode": "shadow",
+                "incidents": checkmod.agreement(list(latest.values())),
+                "outcomes": {"graded": len(decided),
+                             "vs_people": {"compared": len(vs_people),
+                                           "agreed": sum(1 for g in vs_people if g["outcome"] == g["person"])},
+                             "vs_inferred": {"compared": len(vs_inferred),
+                                             "agreed": sum(1 for g in vs_inferred if g["outcome"] == g["inferred"])}},
+                "errors": sum(1 for r in revs + grades if r["error"]), "tokens": spent}
 
     def governance(self, q):
         ts = self._governed(q)

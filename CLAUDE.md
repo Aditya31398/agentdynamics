@@ -138,6 +138,7 @@ agentdynamics/
   tripwires.py        decoy tools and canary values: matching and step marks, shared by the server and the SDK
   incidents.py        security signals about one agent grouped into incidents (durable, with verdicts)
   trust.py            each agent's trust score from its evidence (tasks.agents), decayed, verdicts applied
+  checker.py          a model's review of each incident and of inferred outcomes, shadow mode (anthropic SDK, lazy)
   govern.py           observed behaviour -> tightened Aegis policy (+ minimal YAML emitter)
   collectors/         claude_code, spans (canonical assembler), otlp, langsmith, langfuse, inbox, generic, aegis_audit
   analysis.py         segment -> task_metrics -> flow_metrics / governance_metrics -> finalize (baselines, scores, events)
@@ -153,7 +154,7 @@ agentdynamics/
 tests/                test_core, test_integrations, test_autotrace, test_aegis_integration, test_ecosystem, test_live_anthropic,
                       test_console_ui, test_outcomes, test_token_accounting, test_policy_coverage, test_incremental,
                       test_scoped_keys, test_alerts, test_rollups, test_postgres, test_revocations, test_tripwires,
-                      test_incidents, test_trust,
+                      test_incidents, test_trust, test_checker,
                       test_console_interaction (+ cdp.py, its Chrome DevTools driver)
 bench/                bench.py: ingest / rebuild / incremental timings and the CI scaling gate
 examples/             langgraph_style_app, otel_multiagent, governed_agent, demo_agent
@@ -169,7 +170,9 @@ deploy/               Dockerfile companion: compose, OTel Collector config, exam
    ([docs/BENCHMARKS.md](docs/BENCHMARKS.md)). Next is a store backend (#7); making the rest of that pass
    incremental needs dependency tracking for threads and time-dependent outcomes.
 2. **Most outcomes are still inferred.** They *can* be graded now (`agentdynamics.outcome`, `/api/outcomes`)
-   and every task says which (`outcome_source`), but nothing grades them automatically.
+   and every task says which (`outcome_source`). The checker can grade them with a model (`[checker]
+   grade_outcomes`), but only in shadow mode: its grades sit beside the outcome, with its agreement record, and
+   nothing applies them yet.
 3. **Coding-task typing is still keyword rules.** Traced apps use the workflow name; every task records
    which (`task_type_source`) and the matched word. Follow-ups inherit the previous task's type, so a
    "continue" after a slash command is typed "slash command".

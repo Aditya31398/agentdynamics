@@ -280,6 +280,34 @@ The kernel refuses those calls with `integrity.untrusted_input`, which the Gover
 count like any other refusal. The governed demo's phishing scenario shows it: the agent fetches the page a ticket
 links to, then does what the page says, and the call is refused though the policy allows it otherwise.
 
+### 3g. The checker: a model's view of each incident, in shadow mode
+
+The detectors above are rules: certain, cheap, and blind to meaning. The checker asks a model what an incident
+looks like -- prompt injection, probing, an exfiltration attempt, a policy too narrow for the agent's real work,
+an honest error -- and what it would do about it, and optionally grades tasks whose outcome was only inferred.
+
+```toml
+[checker]
+model = "claude-opus-5-5"     # pip install anthropic; ANTHROPIC_API_KEY (or an `ant auth login` profile)
+effort = "medium"
+max_per_hour = 20             # model calls, reviews and grades together
+grade_outcomes = false
+```
+
+- **Shadow mode is the only mode.** A review is shown on the incident and in the incident list, and nothing acts
+  on it; a grade is stored beside the task's own outcome, never in its place. The Incidents page keeps its record:
+  how often its call agreed with the verdict you gave, and its grades with yours. That record -- not the model's
+  stated confidence -- is what would justify ever letting it act.
+- **It sees the stored copy.** The evidence is built from what the console shows (redacted, or no content at all
+  with `store_content = false`), never from the raw telemetry.
+- **It reads attacker-written text safely.** A prompt, a document, a tool's output can carry instructions aimed at
+  whoever reads them next. The evidence goes to the model as one fenced JSON document that its instructions call
+  data, and the answer must fit a fixed schema; an answer outside it is discarded.
+- **It holds no authority, and costs what it says.** One call per incident, again when the incident has twice the
+  signals, within `max_per_hour`; the writer instance makes them in the background. A refusal or a bad answer is
+  recorded; an overloaded API is retried five minutes later. Tokens spent are on the card. A safety classifier
+  that declines (security text trips them more than most) falls back to Anthropic's recommended model.
+
 ### 4. Observe → govern: least-privilege policy from real behaviour
 
 ```bash

@@ -54,6 +54,9 @@ TASK_JSON = ["phase_calls", "phase_cost", "scores", "path", "denied_rules", "age
 INCIDENT_COLS = ["id", "project", "agent", "workflow", "opened", "updated", "status", "severity", "signals",
                  "verdict", "note", "resolved_by", "resolved_at", "alerted"]
 SIGNAL_COLS = ["ref", "incident_id", "kind", "ts", "rule", "severity", "task_id", "run_id", "detail"]
+# the checker's work, shadow mode (checker.py): a review per incident and signal count, a grade per task
+REVIEW_COLS = ["id", "incident_id", "ts", "model", "signals", "review", "error", "input_tokens", "output_tokens"]
+MODEL_GRADE_COLS = ["task_id", "ts", "model", "outcome", "confidence", "reason", "error", "input_tokens", "output_tokens"]
 STEP_COLS = ["run_id", "seq", "task_id", "kind", "name", "model", "phase", "target", "ts", "start_ts", "end_ts",
              "duration_ms", "cost", "attributed_cost", "input_tokens", "output_tokens", "cache_read", "cache_write",
              "context_tokens", "thinking_tokens", "is_error", "output_chars", "text", "input_preview", "error",
@@ -107,6 +110,8 @@ CREATE TABLE IF NOT EXISTS revocations (id PRIMARY KEY, project, agent, reason, 
 CREATE TABLE IF NOT EXISTS rollup_daily ({", ".join(ROLLUP_DIMS + ROLLUP_SUMS)}, PRIMARY KEY({", ".join(ROLLUP_DIMS)})) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS incidents ({", ".join(INCIDENT_COLS)}, PRIMARY KEY(id));
 CREATE TABLE IF NOT EXISTS incident_signals ({", ".join(SIGNAL_COLS)}, PRIMARY KEY(ref));
+CREATE TABLE IF NOT EXISTS incident_reviews ({", ".join(REVIEW_COLS)}, PRIMARY KEY(id));
+CREATE TABLE IF NOT EXISTS model_grades ({", ".join(MODEL_GRADE_COLS)}, PRIMARY KEY(task_id));
 CREATE INDEX IF NOT EXISTS incident_signals_incident ON incident_signals(incident_id);
 """
 
@@ -189,6 +194,9 @@ SCOPED_VIEWS = {
     "incidents": "SELECT * FROM main.incidents WHERE project IN ({p}) OR project IS NULL",
     "incident_signals": "SELECT * FROM main.incident_signals WHERE incident_id IN "
                         "(SELECT id FROM main.incidents WHERE project IN ({p}) OR project IS NULL)",
+    "incident_reviews": "SELECT * FROM main.incident_reviews WHERE incident_id IN "
+                        "(SELECT id FROM main.incidents WHERE project IN ({p}) OR project IS NULL)",
+    "model_grades": "SELECT * FROM main.model_grades WHERE task_id IN (SELECT id FROM main.tasks WHERE project IN ({p}))",
 }
 
 
@@ -598,6 +606,42 @@ def set_incident_verdict(con, iid, verdict, note, who, now):
     if not n:
         return None
     return dict(con.execute("SELECT * FROM incidents WHERE id = ?", (iid,)).fetchone())
+
+
+def add_review(con, incident_id, signals, ts, model, review=None, error=None, usage=None):
+    u = usage or {}
+    with con:
+        con.execute(f"INSERT OR REPLACE INTO incident_reviews ({', '.join(REVIEW_COLS)}) VALUES "
+                    f"({', '.join('?' * len(REVIEW_COLS))})",
+                    (f"{incident_id}:{signals}", incident_id, ts, model, signals,
+                     json.dumps(review) if review else None, error, u.get("input_tokens", 0), u.get("output_tokens", 0)))
+
+
+def latest_reviews(con, ids):
+    """{incident id: its latest review (decoded)}."""
+    out = {}
+    for i in range(0, len(ids), 500):
+        chunk = ids[i:i + 500]
+        for r in con.execute(f"SELECT * FROM incident_reviews WHERE incident_id IN ({','.join('?' * len(chunk))}) "
+                             "ORDER BY ts, id", chunk):
+            d = dict(r)
+            d["review"] = json.loads(d["review"]) if d["review"] else None
+            out[d["incident_id"]] = d
+    return out
+
+
+def add_model_grade(con, task_id, ts, model, grade=None, error=None, usage=None):
+    g, u = grade or {}, usage or {}
+    with con:
+        con.execute(f"INSERT OR REPLACE INTO model_grades ({', '.join(MODEL_GRADE_COLS)}) VALUES "
+                    f"({', '.join('?' * len(MODEL_GRADE_COLS))})",
+                    (task_id, ts, model, g.get("outcome"), g.get("confidence"), g.get("reason"), error,
+                     u.get("input_tokens", 0), u.get("output_tokens", 0)))
+
+
+def checker_calls_since(con, since):
+    return sum(con.execute(f"SELECT COUNT(*) FROM {t} WHERE ts >= ?", (since,)).fetchone()[0]
+               for t in ("incident_reviews", "model_grades"))
 
 
 def incident_verdicts(con):
