@@ -7,6 +7,7 @@ events and baselines from these sources, as any process's first refresh does.
   runs/*.json     SDK runs -- files with SQLite, documents in spans_raw (source "sdk") on Postgres
   grades          outcomes stated after the fact
   outcome_keys    outcomes stated by your own key (a ticket or order id in the trace's metadata)
+  billing_daily   what the provider billed, per day (collectors/billing.py)
   rollup_daily    the only copy of days retention has purged
   revocations     server-side revocation directives
   incidents, incident_signals   security incidents, and the verdicts people gave them
@@ -33,7 +34,8 @@ import time
 from . import store
 
 DURABLE = ["spans_raw", "source_state", "alerts_sent", "grades", "alert_outbox", "alert_state", "rollup_daily",
-           "revocations", "incidents", "incident_signals", "incident_reviews", "model_grades", "outcome_keys"]
+           "revocations", "incidents", "incident_signals", "incident_reviews", "model_grades", "outcome_keys",
+           "billing_daily"]
 MARKER = "copied_from"
 
 

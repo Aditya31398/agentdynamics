@@ -1,4 +1,5 @@
 """Diagnose: tools, models and health events."""
+import calendar
 import statistics
 import time
 from collections import Counter, defaultdict
@@ -33,6 +34,55 @@ class DiagnoseMixin:
                         "sample_errors": [{"error": (s["error"] or "")[:200], "task_id": s["task_id"]} for s in errs[-4:]]})
         out.sort(key=lambda x: -x["calls"])
         return {"tools": out}
+
+    def billing(self, q):
+        """Estimated against billed, per day and model (UTC days, the provider's). Only the days the bill and the held
+        steps both cover. The bill is the organization's: a key scoped to projects gets nothing from it (an empty
+        answer, not a refusal, so the Models page loads clean for it)."""
+        from .. import pricing
+        if self.projects is not None:
+            return {"configured": False, "scoped": True, "days": [], "models": [], "other": {}, "totals": None,
+                    "fetched": None}
+        days = int(q.get("days") or 30)
+        since = time.strftime("%Y-%m-%d", time.gmtime(time.time() - days * 86400))
+        billed = rows(self.con, "SELECT day, model, cost_type, token_type, SUM(usd) usd, MAX(fetched) fetched "
+                                "FROM billing_daily WHERE provider = 'anthropic' AND day >= ? "
+                                "GROUP BY day, model, cost_type, token_type ORDER BY day, model, cost_type, token_type", (since,))
+        if not billed:
+            return {"configured": any(sc.get("type") == "anthropic_costs" for sc in self.e.cfg.get("sources") or []),
+                    "days": [], "models": [], "other": {}, "totals": None, "fetched": None}
+        first = min(r["day"] for r in billed)
+        start = calendar.timegm(time.strptime(first, "%Y-%m-%d"))
+        est = defaultdict(float)
+        for s in rows(self.con, "SELECT s.model, s.ts, s.cost FROM steps s WHERE s.kind = 'llm' AND s.ts >= ? "
+                                "AND s.cost > 0 ORDER BY s.ts", (start,)):
+            key = pricing.entry(s["model"])
+            if key:                                   # an Anthropic model the price table knows
+                est[(time.strftime("%Y-%m-%d", time.gmtime(s["ts"])), key)] += s["cost"]
+        bill, other = defaultdict(float), defaultdict(float)
+        for r in billed:
+            if r["cost_type"] == "tokens":
+                bill[(r["day"], pricing.entry(r["model"]) or r["model"] or "other")] += r["usd"]
+            else:
+                other[r["cost_type"] or "other"] += r["usd"]
+        # only the days both cover: from the first the bill and the held steps both reach, to the bill's last
+        lo = max(first, min((d for d, _ in est), default=first))
+        hi = max(r["day"] for r in billed)
+        keys = {k for k in set(bill) | set(est) if lo <= k[0] <= hi}
+
+        def line(b, e):
+            return {"billed": round(b, 4), "estimated": round(e, 4), "gap": round(b - e, 4),
+                    "gap_share": round((b - e) / b, 4) if b else None}
+        by_day, by_model = defaultdict(lambda: [0.0, 0.0]), defaultdict(lambda: [0.0, 0.0])
+        for k in keys:
+            for agg, kk in ((by_day, k[0]), (by_model, k[1])):
+                agg[kk][0] += bill.get(k, 0.0)
+                agg[kk][1] += est.get(k, 0.0)
+        tb, te = sum(v[0] for v in by_day.values()), sum(v[1] for v in by_day.values())
+        return {"configured": True, "fetched": max(r["fetched"] or 0 for r in billed),
+                "days": [dict(day=d, **line(*by_day[d])) for d in sorted(by_day)],
+                "models": sorted((dict(model=m, **line(*by_model[m])) for m in by_model), key=lambda x: (-x["billed"], x["model"])),
+                "other": {k: round(v, 4) for k, v in sorted(other.items())}, "totals": line(tb, te)}
 
     def models(self, q):
         cond, args = self.where(dict(q, sub=q.get("sub", "1")))

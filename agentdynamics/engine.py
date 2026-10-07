@@ -197,6 +197,12 @@ class Engine:
                 items = [s for tr in traces for s in langfuse.trace_to_spans(tr)]
                 self.ingest_spans(items, "langfuse", count_source=False)
                 st.ok(len(traces))
+            elif t == "anthropic_costs":
+                from .collectors import billing
+                first, last, rows_ = billing.AnthropicCostPuller(sc, state, self._clock).pull()
+                with self.lock:
+                    store.replace_billing(self.con, "anthropic", first, last, rows_, self._clock())
+                st.ok(len(rows_))
             elif t == "inbox":
                 recs = inbox.Inbox(sc["path"], state).poll()
                 self.ingest_records(recs)

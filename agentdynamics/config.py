@@ -99,6 +99,10 @@ Example agentdynamics.toml:
     public_key_env = "LANGFUSE_PUBLIC_KEY"
     secret_key_env = "LANGFUSE_SECRET_KEY"
     [[sources]]
+    type = "anthropic_costs"        # what Anthropic billed, beside the estimate (collectors/billing.py)
+    admin_key_env = "ANTHROPIC_ADMIN_KEY"   # an Admin API key (sk-ant-admin...)
+    interval = 3600
+    [[sources]]
     type = "inbox"                  # tail *.jsonl / *.json dropped by Fluent Bit, Vector, S3 sync...
     path = "/var/log/agent-traces"
 """

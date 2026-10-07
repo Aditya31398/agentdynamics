@@ -16,6 +16,11 @@ created then too, and the first refresh opens incidents from the security events
 alerting, as history never is.
 
 ### Added
+- **Estimated beside billed.** A new source, `[[sources]] type = "anthropic_costs"` (an Admin API key in
+  `ANTHROPIC_ADMIN_KEY`), pulls Anthropic's Usage & Cost Admin API cost report daily by description into a durable
+  `billing_daily` table, replacing the days it re-reads. The Models page (`GET /api/billing`) sets it beside the
+  estimate per model and UTC day, over the days both cover, with the gap; costs that aren't tokens (web search,
+  code execution) are listed, not compared. A key scoped to projects gets nothing from the organization's bill.
 - **Percentiles across rolled-up history.** A median doesn't add across days, so once retention purged tasks, the
   Overview's median cost and p95 covered only the tasks still held. Each daily rollup row now also keeps a quantile
   sketch (`sketch.py`, DDSketch: within 1% relative, mergeable) of its tasks' cost, wall clock and agent time, and

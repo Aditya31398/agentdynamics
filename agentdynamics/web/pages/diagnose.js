@@ -28,13 +28,26 @@
   };
 
   // ------------------------------------------------------------------ models
+  function billingCard(b) {
+    if (!b || !b.configured) return "";
+    if (!b.totals) return card("Estimated vs billed", `<p class="small muted" id="billing-card" style="margin:0">The cost report hasn't been pulled yet (Integrations shows the source's status).</p>`);
+    const signed = (v) => (v < 0 ? "−" : "+") + usd(Math.abs(v));
+    const gap = (x) => `<span style="color:${Math.abs(x.gap_share || 0) > 0.05 ? "var(--warning-text, inherit)" : "inherit"}">${signed(x.gap)}${x.gap_share == null ? "" : ` (${pct(x.gap_share, 1)})`}</span>`;
+    return card("Estimated vs billed", `<div id="billing-card"><p class="small" style="margin:0 0 8px">Over the days both cover: billed <b>${usd(b.totals.billed)}</b>, estimated from traces <b>${usd(b.totals.estimated)}</b>, a gap of ${gap(b.totals)}. A bill above the estimate can be traffic nobody traced, a price the table lacks, or a modifier the trace didn't carry; below it, a discount.</p>
+      <div class="table-wrap"><table><thead><tr><th>Model</th><th class="num">Billed</th><th class="num">Estimated</th><th class="num">Gap</th></tr></thead><tbody>
+      ${b.models.map((m) => `<tr><td class="mono small">${esc(m.model)}</td><td class="num">${usd(m.billed)}</td><td class="num">${usd(m.estimated)}</td><td class="num">${gap(m)}</td></tr>`).join("")}</tbody></table></div>
+      ${Object.keys(b.other).length ? `<p class="small muted" style="margin:6px 0 0">Not token costs, so not estimated: ${Object.entries(b.other).map(([k, v]) => `${esc(k)} ${usd(v)}`).join(" · ")}.</p>` : ""}</div>`,
+      `Anthropic cost report · pulled ${ago(b.fetched)}`);
+  }
+
   PAGES.models = async (host, _a, _p, alive) => {
-    const d = await api("models", { sub: "1" });
+    const [d, bill] = await Promise.all([api("models", { sub: "1" }), api("billing").catch(() => null)]);
     if (!alive()) return;
     const ms_ = d.models.filter((m) => m.calls);
     host.innerHTML = head("Models", "The agent's infrastructure: spend, latency, token mix, context pressure and cache efficiency for each model. Includes subagents.") +
       card("Daily spend by model", `<div id="ch-mdaily"></div>`) +
-      `<div style="margin-top:14px">${card("Model details", `<div class="table-wrap"><table><thead><tr><th>Model</th><th class="num">Calls</th><th class="num">Spend</th><th class="num">Avg latency</th><th class="num">p95</th><th class="num">Avg context</th><th class="num">Max context</th><th class="num">Cache hit</th><th class="num">Avg output</th><th class="num">Thinking</th><th class="num">Errors</th><th class="num">Rate-limited</th><th class="num">Truncated</th><th class="num">TTFT p50 / p95</th><th class="num">Tokens/s</th><th style="min-width:220px">Token mix (input side + output)</th></tr></thead><tbody>
+      (billingCard(bill) ? `<div style="margin-top:14px">${billingCard(bill)}</div>` : "") +
+      `<div style="margin-top:14px">${card("Model details", `<div class="table-wrap"><table id="model-details"><thead><tr><th>Model</th><th class="num">Calls</th><th class="num">Spend</th><th class="num">Avg latency</th><th class="num">p95</th><th class="num">Avg context</th><th class="num">Max context</th><th class="num">Cache hit</th><th class="num">Avg output</th><th class="num">Thinking</th><th class="num">Errors</th><th class="num">Rate-limited</th><th class="num">Truncated</th><th class="num">TTFT p50 / p95</th><th class="num">Tokens/s</th><th style="min-width:220px">Token mix (input side + output)</th></tr></thead><tbody>
       ${ms_.map((m, i) => `<tr><td><b>${esc(m.model)}</b><div class="small muted">${Object.entries(m.effort).map(([k, v]) => `${k}:${v}`).join(" ")}</div></td><td class="num">${num(m.calls)}</td><td class="num">${usd(m.cost)}</td><td class="num">${ms(m.avg_ms)}</td><td class="num">${ms(m.p95_ms)}</td>
         <td class="num">${tok(m.avg_context)}</td><td class="num">${tok(m.max_context)}</td><td class="num">${pct(m.cache_hit)}</td><td class="num">${tok(m.avg_output)}</td><td class="num">${tok(m.thinking_tokens)}</td>
         <td class="num" style="color:${m.errors ? "var(--critical-text)" : "inherit"}">${num(m.errors)}</td><td class="num">${num(m.rate_limited)}</td><td class="num">${pct(m.truncation_rate, 1)}</td>
@@ -45,7 +58,7 @@
     ms_.forEach((m, i) => C.stack100($(`#mix-${i}`), [
       { key: "cr", label: "cache read", value: m.cache_read, color: "var(--s1)" }, { key: "cw", label: "cache write", value: m.cache_write, color: "var(--s2)" },
       { key: "in", label: "uncached input", value: m.input_tokens, color: "var(--s3)" }, { key: "out", label: "output", value: m.output_tokens, color: "var(--s4)" }], { legend: false, fmt: tok }));
-    host.querySelector("table").insertAdjacentHTML("afterend", `<div class="legend"><span><i style="background:var(--s1)"></i>cache read</span><span><i style="background:var(--s2)"></i>cache write</span><span><i style="background:var(--s3)"></i>uncached input</span><span><i style="background:var(--s4)"></i>output</span></div>`);
+    host.querySelector("#model-details").insertAdjacentHTML("afterend", `<div class="legend"><span><i style="background:var(--s1)"></i>cache read</span><span><i style="background:var(--s2)"></i>cache write</span><span><i style="background:var(--s3)"></i>uncached input</span><span><i style="background:var(--s4)"></i>output</span></div>`);
   };
 
   // ------------------------------------------------------------------ events

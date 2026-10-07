@@ -113,6 +113,8 @@ CREATE INDEX IF NOT EXISTS spans_updated ON spans_raw(updated);
 CREATE TABLE IF NOT EXISTS source_state (name PRIMARY KEY, data);
 CREATE TABLE IF NOT EXISTS alerts_sent (event_id PRIMARY KEY, ts REAL);
 CREATE TABLE IF NOT EXISTS grades (task_id PRIMARY KEY, outcome, reason, graded_by, ts REAL);
+CREATE TABLE IF NOT EXISTS billing_daily (provider, day, line INTEGER, description, model, cost_type, token_type,
+                                          service_tier, usd REAL, fetched REAL, PRIMARY KEY(provider, day, line));
 CREATE TABLE IF NOT EXISTS outcome_keys (key, value, scope, outcome, reason, graded_by, ts REAL, match, projects,
                                          PRIMARY KEY(key, value, scope));
 CREATE TABLE IF NOT EXISTS alert_outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, dest, body, created REAL,
@@ -483,6 +485,21 @@ def get_keyed_grades(con):
         d["projects"] = json.loads(d["projects"]) if d.get("projects") else None
         out.append(d)
     return out
+
+
+def replace_billing(con, provider, first_day, last_day, rows, fetched):
+    """What `provider` billed for each day from `first_day` to `last_day` (UTC, inclusive), replacing what was
+    held for those days: a re-pull never double-counts, and a cost that moved or went is gone."""
+    by_day = {}
+    for r in rows:
+        by_day.setdefault(r["day"], []).append(r)
+    with con:
+        con.execute("DELETE FROM billing_daily WHERE provider = ? AND day >= ? AND day <= ?", (provider, first_day, last_day))
+        con.executemany("INSERT INTO billing_daily (provider, day, line, description, model, cost_type, token_type, "
+                        "service_tier, usd, fetched) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        [(provider, day, i, r["description"], r["model"], r["cost_type"], r["token_type"],
+                          r["service_tier"], r["usd"], fetched)
+                         for day, rs in by_day.items() for i, r in enumerate(rs)])
 
 
 def get_model_grades(con):

@@ -348,6 +348,8 @@ def ddl(schema_version, derived):
         "CREATE TABLE IF NOT EXISTS source_state (name TEXT PRIMARY KEY, data TEXT)",
         f"CREATE TABLE IF NOT EXISTS alerts_sent (event_id TEXT PRIMARY KEY, ts {NUM})",
         f"CREATE TABLE IF NOT EXISTS grades (task_id TEXT PRIMARY KEY, outcome TEXT, reason TEXT, graded_by TEXT, ts {NUM})",
+        f"CREATE TABLE IF NOT EXISTS billing_daily (provider TEXT, day TEXT, line {NUM}, description TEXT, model TEXT, "
+        f"cost_type TEXT, token_type TEXT, service_tier TEXT, usd {NUM}, fetched {NUM}, PRIMARY KEY (provider, day, line))",
         f"CREATE TABLE IF NOT EXISTS outcome_keys (key TEXT, value TEXT, scope TEXT, outcome TEXT, reason TEXT, graded_by TEXT, "
         f"ts {NUM}, match TEXT, projects TEXT, PRIMARY KEY (key, value, scope))",
         f"CREATE TABLE IF NOT EXISTS alert_outbox (id BIGSERIAL PRIMARY KEY, dest TEXT, body TEXT, created {NUM}, "
@@ -401,7 +403,8 @@ PRIMARY_KEYS = {"runs": ("id",), "tasks": ("id",), "baselines": ("task_type",), 
                 "spans_raw": ("source", "span_id"), "source_state": ("name",), "alerts_sent": ("event_id",),
                 "grades": ("task_id",), "alert_state": ("key",), "revocations": ("id",), "alert_outbox": ("id",),
                 "incidents": ("id",), "incident_signals": ("ref",), "incident_reviews": ("id",),
-                "model_grades": ("task_id",), "outcome_keys": ("key", "value", "scope")}
+                "model_grades": ("task_id",), "outcome_keys": ("key", "value", "scope"),
+                "billing_daily": ("provider", "day", "line")}
 
 _WEEK = ("(to_char({d}, 'YYYY') || '-W' || "
          "lpad(floor((extract(doy from {d}) + 7 - extract(isodow from {d})) / 7)::int::text, 2, '0'))")
