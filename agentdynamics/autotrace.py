@@ -167,6 +167,10 @@ class _Run:
                "environment": _cfg["environment"], "source": "sdk", "framework": "agentdynamics-sdk",
                "thread_id": self.thread_id, "user_id": self.user_id, "status": "error" if self.error else "ok",
                "error": self.error, "complete": True, "feedback": self.feedback, "steps": self.steps}
+        if self.metadata:                # your own keys -- a ticket or order id, a release -- for outcomes posted by key
+            out["metadata"] = {k: v for k, v in self.metadata.items() if isinstance(v, (str, int, float, bool))}
+            if "version" in out["metadata"]:
+                out["version"] = str(out["metadata"]["version"])
         if self.parent_id:
             out["parent_id"] = self.parent_id
         for hook in list(_hooks["run_meta"]):

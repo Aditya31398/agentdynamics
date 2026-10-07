@@ -45,7 +45,9 @@ def handle_ticket(question):
 
 Without `outcome()`, success is inferred from errors, interrupts and follow-ups. The console always shows
 which outcomes were stated and which were guessed; grades can also be posted afterwards by a person or an
-eval pipeline (`POST /api/outcomes`).
+eval pipeline (`POST /api/outcomes`), or by your own systems using your own ids: trace with
+`agentdynamics.trace("support", ticket_id="T-123")` and post `{"key": {"ticket_id": "T-123"}, "outcome": "rework"}`
+when the ticket is reopened.
 
 ### 2. Python, zero code changes
 

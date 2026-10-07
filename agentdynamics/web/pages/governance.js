@@ -135,10 +135,14 @@ governance.instrument(kernel, root, watchdog=governance.Watchdog(max_repeated_de
     if (!c.configured && !c.incidents.reviewed && !c.outcomes.graded) return "";
     const i = c.incidents, o = c.outcomes;
     const vs = (x) => x.compared ? `${x.agreed} of ${x.compared}` : "none yet";
-    return card("Checker (shadow mode)", `<div id="checker-card" class="small">
-        <p style="margin:0 0 6px">${c.model ? `<span class="mono">${esc(c.model)}</span> reads` : "A model read"} each incident's stored, redacted evidence and says what it thinks happened. Nothing it says is acted on: its record against your verdicts is what would justify ever letting it act.</p>
+    const cal = o.calibration || {};
+    const applied = cal.applied ? `Its grades <b>are applied</b> to outcomes that would otherwise be inferred: it agreed with people's grades at κ ${cal.kappa} over ${cal.pairs} tasks (needs ${cal.min_kappa} over ${cal.min_pairs}).`
+      : cal.apply_grades ? `Its grades will be applied once it agrees with people's at κ ${cal.min_kappa} over ${cal.min_pairs} tasks; so far ${cal.kappa == null ? "–" : `κ ${cal.kappa}`} over ${num(cal.pairs || 0)}.`
+      : `Its grades are not applied (<code>[checker] apply_grades</code> is off).`;
+    return card(`Checker (${cal.applied ? "grades applied" : "shadow mode"})`, `<div id="checker-card" class="small">
+        <p style="margin:0 0 6px">${c.model ? `<span class="mono">${esc(c.model)}</span> reads` : "A model read"} each incident's stored, redacted evidence and says what it thinks happened. Nothing it says about an incident is acted on: its record against your verdicts is what would justify ever letting it act.</p>
         <div><b>Incidents:</b> reviewed ${num(i.reviewed)}; of those you judged, it agreed with ${i.judged ? `${i.agreed} of ${i.judged}` : "none yet"}${i.disagreed ? ` (${i.disagreed} disagreed)` : ""}.</div>
-        ${o.graded || c.configured ? `<div><b>Outcomes:</b> graded ${num(o.graded)}; agreed with people on ${vs(o.vs_people)}, with the inferred outcome on ${vs(o.vs_inferred)}.</div>` : ""}
+        ${o.graded || c.configured ? `<div><b>Outcomes:</b> graded ${num(o.graded)}; agreed with people on ${vs(o.vs_people)}, with the inferred outcome on ${vs(o.vs_inferred)}. ${applied}</div>` : ""}
         <div class="muted">${num(c.tokens)} tokens${c.errors ? ` · ${c.errors} failed (refused, or an answer outside the schema)` : ""}</div></div>`, "configured in [checker]");
   }
   function reviewCard(r) {

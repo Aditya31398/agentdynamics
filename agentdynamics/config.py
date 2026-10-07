@@ -39,7 +39,10 @@ Example agentdynamics.toml:
     model = "claude-opus-5-5"       # pip install anthropic; ANTHROPIC_API_KEY or an `ant auth login` profile
     effort = "medium"
     max_per_hour = 20
-    grade_outcomes = false          # also grade inferred outcomes (stored beside them, never applied)
+    grade_outcomes = false          # also grade inferred outcomes, and a sample of the ones people graded (blind)
+    apply_grades = false            # apply its grades to inferred outcomes once they agree with people's:
+    min_kappa = 0.6                 #   Cohen's kappa at least this,
+    min_pairs = 30                  #   over at least this many tasks graded by both
 
     [trust]                         # each agent's trust score (trust.py): points for evidence, halved weekly
     half_life_days = 7

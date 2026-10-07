@@ -792,22 +792,81 @@ def _outcome_trace(t, run, now):
     t["root_error"] = run.get("root_error")
 
 
-def _apply_grades(tasks, grades):
+def keyed_matches(runs, tasks_by_run, keyed):
+    """task id -> the outcome stated for it by key (store.set_keyed_grade): runs whose metadata holds key=value,
+    their latest top-level task (or all of them), within the stating key's projects. The newest statement wins."""
+    out = {}
+    if not keyed:
+        return out
+    want = defaultdict(list)
+    for g in keyed:
+        want[(g["key"], str(g["value"]))].append(g)
+    hits = defaultdict(list)
+    for run in runs:
+        if run.get("is_subagent"):
+            continue
+        for k, v in (run.get("metadata") or {}).items():
+            for i, g in enumerate(want.get((k, str(v)), ())):
+                for t in tasks_by_run.get(run["id"], ()):
+                    if g.get("projects") is None or t["project"] in g["projects"]:
+                        hits[(k, str(v), i)].append(t)
+    for (k, v, i), ts in hits.items():
+        g = want[(k, v)][i]
+        chosen = ts if g.get("match") == "all" else [max(ts, key=lambda t: (t["started"] or 0, t["id"]))]
+        for t in chosen:
+            prev = out.get(t["id"])
+            if prev is None or (g["ts"] or 0, g["key"], g["value"]) > (prev["ts"] or 0, prev["key"], prev["value"]):
+                out[t["id"]] = g
+    return out
+
+
+def kappa(pairs):
+    """Cohen's kappa of (a, b) labels: agreement beyond chance. None when it can't say (no pairs, or every label
+    the same, where chance agreement is total)."""
+    n = len(pairs)
+    if not n:
+        return None
+    po = sum(1 for a, b in pairs if a == b) / n
+    ca, cb = Counter(a for a, _ in pairs), Counter(b for _, b in pairs)
+    pe = sum(ca[c] * cb[c] for c in ca) / (n * n)
+    return None if pe >= 1 else round((po - pe) / (1 - pe), 3)
+
+
+def grade_agreement(tasks, model_grades):
+    """The checker's grades against people's, on tasks with both: what would justify applying its grades."""
+    pairs = [(model_grades[t["id"]]["outcome"], t["outcome"]) for t in tasks
+             if t.get("outcome_source") == "graded" and t["id"] in model_grades
+             and model_grades[t["id"]].get("outcome") in OUTCOMES]
+    return {"pairs": len(pairs), "agreed": sum(1 for a, b in pairs if a == b), "kappa": kappa(pairs)}
+
+
+def promoted(agreement, promote):
+    """Whether the checker's grades are applied: switched on, on enough pairs, and agreeing well enough."""
+    return bool(promote) and agreement["pairs"] >= promote["min_pairs"] and (agreement["kappa"] or 0) >= promote["min_kappa"]
+
+
+def _apply_grades(tasks, grades, keyed=None, model_grades=None, promote=None):
     """Settle each outcome by the strongest evidence available, and record which one it was.
 
-    stated after the fact (API)  >  stated in the run (agentdynamics.outcome)  >  recorded feedback
-    >  inference from signals.
+    stated after the fact (API, by task id)  >  stated by your own key (a ticket reopened, a refund reversed)
+    >  stated in the run (agentdynamics.outcome)  >  recorded feedback  >  the checker's grade, once it has
+    earned it (`promote`: on, and agreeing with people's grades to `min_kappa` over `min_pairs`)  >  inference.
 
     Inference is a guess built from errors, interrupts and corrections. Apdex, success rate and the
     process score all inherit it, so anything that states the outcome outright must win, and the
     console has to be able to say how much of a success rate is guessed. Idempotent: the cached
     per-run tasks are re-finalized on every refresh, so nothing here may consume its input.
     """
+    keyed = keyed or {}
     for t in tasks:
-        api, sdk = grades.get(t["id"]), t.get("_sdk_grade")
+        api, sdk, by_key = grades.get(t["id"]), t.get("_sdk_grade"), keyed.get(t["id"])
         if api:
             t["outcome"], t["outcome_source"] = api["outcome"], "graded"
             t["outcome_reason"] = api.get("reason") or f"graded by {api.get('graded_by') or 'api'}"
+        elif by_key:
+            t["outcome"], t["outcome_source"] = by_key["outcome"], "graded"
+            t["outcome_reason"] = (f"{by_key['key']}={by_key['value']}: " + (by_key.get("reason") or
+                                   f"graded by {by_key.get('graded_by') or 'api'}"))[:500]
         elif sdk:
             t["outcome"], t["outcome_source"] = sdk["outcome"], "graded"
             t["outcome_reason"] = sdk.get("reason") or "graded in the run"
@@ -817,6 +876,13 @@ def _apply_grades(tasks, grades):
             t["outcome_source"], t["outcome_reason"] = "feedback", f"feedback score {t['feedback_score']:g}"
         else:
             t["outcome_source"], t["outcome_reason"] = "inferred", None
+    if model_grades and promoted(grade_agreement(tasks, model_grades), promote):
+        for t in tasks:
+            mg = model_grades.get(t["id"])
+            if (mg and mg.get("outcome") in OUTCOMES and t["outcome_source"] == "inferred"
+                    and t.get("outcome") != "in progress"):
+                t["outcome"], t["outcome_source"] = mg["outcome"], "model"
+                t["outcome_reason"] = f"graded by {mg.get('model') or 'the checker'}: {mg.get('reason') or ''}"[:500]
 
 
 # Everything finalize writes onto a task *before* scoring, for tasks whose run did not change. If one of
@@ -919,7 +985,8 @@ def baseline_sample_size(n):
         m = nxt
 
 
-def finalize(runs, tasks_by_run, rules=None, now=None, grades=None, cache=None, dirty=(), redact=None, targets=None):
+def finalize(runs, tasks_by_run, rules=None, now=None, grades=None, cache=None, dirty=(), redact=None, targets=None,
+             keyed=None, model_grades=None, promote=None):
     """Cross-run analysis: outcomes, subagent roll-up, baselines, scores, events. `targets`: Apdex targets per task
     type, {type: {"latency_s", "cost"}}.
 
@@ -963,7 +1030,7 @@ def finalize(runs, tasks_by_run, rules=None, now=None, grades=None, cache=None, 
             for t in tasks_by_run[run["id"]]:
                 _outcome_trace(t, run, now)
     # before the roll-up, so baselines, scores and health events all see the settled outcome
-    _apply_grades(all_tasks, grades or {})
+    _apply_grades(all_tasks, grades or {}, keyed_matches(runs, tasks_by_run, keyed), model_grades, promote)
 
     # subagent roll-up: link child runs to the parent task that spawned them
     task_by_id = {t["id"]: t for t in all_tasks}

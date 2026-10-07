@@ -292,6 +292,9 @@ model = "claude-opus-5-5"     # pip install anthropic; ANTHROPIC_API_KEY (or an 
 effort = "medium"
 max_per_hour = 20             # model calls, reviews and grades together
 grade_outcomes = false
+apply_grades = false          # apply its outcome grades once they agree with people's (below)
+min_kappa = 0.6
+min_pairs = 30
 ```
 
 - **Shadow mode is the only mode.** A review is shown on the incident and in the incident list, and nothing acts
@@ -307,6 +310,12 @@ grade_outcomes = false
   signals, within `max_per_hour`; the writer instance makes them in the background. A refusal or a bad answer is
   recorded; an overloaded API is retried five minutes later. Tokens spent are on the card. A safety classifier
   that declines (security text trips them more than most) falls back to Anthropic's recommended model.
+- **Its outcome grades can earn a say.** With `grade_outcomes`, it also grades a sample of the tasks people graded
+  -- blind: the evidence it sees never holds an outcome, inferred or stated -- and the Incidents page keeps its
+  agreement with them as Cohen's κ (agreement beyond chance). With `apply_grades = true`, once κ reaches
+  `min_kappa` over `min_pairs` tasks, its grades replace inferred outcomes (`outcome_source` "model"); a person's,
+  a business system's or a feedback score still wins. If its agreement drops below the bar, they stop applying.
+  Incident reviews stay shadow-only.
 
 ### 3h. A review before calls that can't be undone
 

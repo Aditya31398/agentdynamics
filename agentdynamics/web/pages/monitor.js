@@ -18,7 +18,7 @@
         ${kpi("Tasks", num(k.tasks), `${k.sessions} sessions`)}
         ${kpi("Spend", usd(k.cost), `median ${usd(k.median_cost)} / task${spendCaveats(k)}`)}
         ${kpi("Agent Apdex", k.apdex == null ? "–" : k.apdex.toFixed(2), "satisfied + ½ tolerating", " " + pill(healthOfApdex(k.apdex)))}
-        ${kpi("Completed cleanly", pct(k.success_rate), `${pct(k.rework_rate)} interrupted or corrected${evidence(k.outcomes_by_source, k.tasks)}`)}
+        ${kpi("Completed cleanly", pct(k.success_rate), `${k.success_ci ? `<span title="95% interval: the true rate is likely in this range">${pct(k.success_ci[0])}–${pct(k.success_ci[1])}</span> · ` : ""}${pct(k.rework_rate)} interrupted or corrected${evidence(k.outcomes_by_source, k.tasks)}${k.graded_success && k.graded_success.tasks ? ` · <span title="over the tasks whose outcome someone stated">stated: ${pct(k.graded_success.rate)} of ${k.graded_success.tasks}</span>` : ""}`)}
         ${kpi("Tool error rate", pct(k.tool_error_rate, 1), `${num(k.tool_calls)} tool calls`)}
         ${kpi("Verified code changes", pct(k.verification_rate), "tests/build/run after last edit")}
         ${kpi("Avoidable spend", usd(k.waste_cost), "duplicate calls, redundant reads, error loops")}

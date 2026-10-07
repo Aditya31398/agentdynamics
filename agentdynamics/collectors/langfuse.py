@@ -27,7 +27,8 @@ def trace_to_spans(tr):
         "start": parse_time(tr.get("timestamp")), "end": None, "status": "ok", "error": None,
         "input": tr.get("input"), "output": tr.get("output"), "project": md.get("project") or tr.get("release"),
         "environment": tr.get("environment") or md.get("environment"), "session_id": tr.get("sessionId"), "user_id": tr.get("userId"),
-        "tags": tr.get("tags") or [], "framework": "langfuse", "source": "langfuse",
+        "tags": tr.get("tags") or [], "framework": "langfuse", "source": "langfuse", "metadata": md,
+        "version": tr.get("version") or tr.get("release"),
         "feedback": [{"key": s.get("name"), "score": s.get("value")} for s in tr.get("scores") or [] if isinstance(s.get("value"), (int, float))],
     }
     spans, ends = [root], []

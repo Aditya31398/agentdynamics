@@ -18,7 +18,7 @@ import time
 
 from .privacy import TASK_TEXT_FIELDS
 
-SCHEMA_VERSION = 16   # 6: outcome_source / outcome_reason (graded outcomes)
+SCHEMA_VERSION = 17   # 6: outcome_source / outcome_reason (graded outcomes)
                      # 7: tokens_unverified (cache accounting that rests on a guess)
                      # 8: steps.governed (did this call go through an Aegis kernel)
                      # 9: task_type_source / task_type_match (how a task type was decided)
@@ -29,10 +29,13 @@ SCHEMA_VERSION = 16   # 6: outcome_source / outcome_reason (graded outcomes)
                      # 14: agent time from step intervals; cost attributed by the context a result adds
                      # 15: tasks.baseline (recent baselines per type, model and release)
                      # 16: Apdex judges agent time as well as cost, against targets when set (tasks.apdex_basis)
+                     # 17: runs.metadata (outcomes by key), runs.version from traces
 
 RUN_COLS = ["id", "source", "project", "environment", "framework", "workflow", "cwd", "title", "agent_name", "parent_id",
             "parent_task_id", "is_subagent", "thread_id", "user_id", "tags", "root_status", "complete", "version", "git_branch",
-            "entrypoint", "started", "ended", "file", "policy_version", "policy"]
+            "entrypoint", "started", "ended", "file", "policy_version", "policy",
+            # your own keys from the trace (spans.clean_metadata): outcomes posted by key are matched on them
+            "metadata"]
 TASK_COLS = ["id", "run_id", "idx", "project", "environment", "source", "framework", "workflow", "is_subagent", "parent_task_id",
              "prompt_kind", "prompt", "task_type", "started", "ended", "wall_s", "duration_s", "llm_calls", "tool_calls", "tool_errors",
              "tool_error_rate", "input_tokens", "output_tokens", "cache_read", "cache_write", "thinking_tokens", "total_tokens", "cost",
@@ -109,6 +112,8 @@ CREATE INDEX IF NOT EXISTS spans_updated ON spans_raw(updated);
 CREATE TABLE IF NOT EXISTS source_state (name PRIMARY KEY, data);
 CREATE TABLE IF NOT EXISTS alerts_sent (event_id PRIMARY KEY, ts REAL);
 CREATE TABLE IF NOT EXISTS grades (task_id PRIMARY KEY, outcome, reason, graded_by, ts REAL);
+CREATE TABLE IF NOT EXISTS outcome_keys (key, value, scope, outcome, reason, graded_by, ts REAL, match, projects,
+                                         PRIMARY KEY(key, value, scope));
 CREATE TABLE IF NOT EXISTS alert_outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, dest, body, created REAL,
                                          attempts INTEGER DEFAULT 0, next_try REAL, last_error);
 CREATE TABLE IF NOT EXISTS alert_state (key PRIMARY KEY, since REAL, data);
@@ -265,6 +270,9 @@ def write_runs(con, runs, removed_ids=(), red=None):
         for r in runs:
             row = [r.get(c) for c in RUN_COLS]
             row[RUN_COLS.index("tags")] = json.dumps(r.get("tags") or [])
+            md = r.get("metadata") or {}       # identifiers, kept with content off; secrets in them still masked
+            row[RUN_COLS.index("metadata")] = json.dumps({k: red.rx.sub("[REDACTED]", v) if red else v
+                                                          for k, v in md.items()}) if md else None
             row[RUN_COLS.index("policy")] = json.dumps(r["policy"]) if r.get("policy") else None
             row[RUN_COLS.index("title")] = red.text(r.get("title")) if red else r.get("title")
             rrows.append(row)
@@ -441,11 +449,47 @@ def get_grades(con):
     return {r["task_id"]: dict(r) for r in con.execute("SELECT * FROM grades").fetchall()}
 
 
+def set_keyed_grade(con, key, value, outcome, reason=None, graded_by=None, match="last", projects=None):
+    """State the outcome of whatever ran for `key` = `value` in a trace's metadata (a ticket id, an order id):
+    a business system knows its own ids, not task ids. Applies to the latest task with it ("last") or every one
+    ("all"), now or when it arrives. `projects`: a scoped key's, which it can't reach past; each scope keeps its
+    own row, so one project can't overwrite another's."""
+    if outcome not in OUTCOMES:
+        raise ValueError(f"outcome must be one of {', '.join(OUTCOMES)}")
+    if match not in ("last", "all"):
+        raise ValueError("match must be 'last' or 'all'")
+    scope = ",".join(sorted(projects)) if projects is not None else ""
+    with con:
+        con.execute("INSERT OR REPLACE INTO outcome_keys (key, value, scope, outcome, reason, graded_by, ts, match, projects) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (key, value, scope, outcome, (reason or None) and str(reason)[:500], graded_by, time.time(), match,
+                     json.dumps(sorted(projects)) if projects is not None else None))
+
+
+def delete_keyed_grade(con, key, value, projects=None):
+    scope = ",".join(sorted(projects)) if projects is not None else ""
+    with con:
+        return con.execute("DELETE FROM outcome_keys WHERE key=? AND value=? AND scope=?", (key, value, scope)).rowcount
+
+
+def get_keyed_grades(con):
+    out = []
+    for r in con.execute("SELECT * FROM outcome_keys ORDER BY ts, key, value, scope").fetchall():
+        d = dict(r)
+        d["projects"] = json.loads(d["projects"]) if d.get("projects") else None
+        out.append(d)
+    return out
+
+
+def get_model_grades(con):
+    return {r["task_id"]: dict(r) for r in con.execute("SELECT * FROM model_grades WHERE outcome IS NOT NULL").fetchall()}
+
+
 def rows(con, q, args=()):
     out = []
     for r in con.execute(q, args).fetchall():
         d = dict(r)
-        for k in TASK_JSON + ["flags", "data", "tags", "policy"]:
+        for k in TASK_JSON + ["flags", "data", "tags", "policy", "metadata"]:
             if k in d and isinstance(d[k], str):
                 try:
                     d[k] = json.loads(d[k])

@@ -8,14 +8,28 @@ bumps the minor version.
 
 ## [Unreleased]
 
-**Upgrading.** `SCHEMA_VERSION` 16: tasks and steps record tripwires and what each agent did in a task, tool
+**Upgrading.** `SCHEMA_VERSION` 17: tasks and steps record tripwires and what each agent did in a task, tool
 arguments are stored redacted, agent time and cost attribution are computed the new way, each task records
-the baseline it was compared with, and Apdex judges agent time as well as cost. The derived tables are rebuilt from the
+the baseline it was compared with, Apdex judges agent time as well as cost, and runs keep their metadata. The derived tables are rebuilt from the
 sources on first start, as after any schema change; nothing to migrate. The new durable `incidents` tables are
 created then too, and the first refresh opens incidents from the security events already held -- without
 alerting, as history never is.
 
 ### Added
+- **Outcomes stated by your own key.** A business system knows its ticket and order ids, not task ids. Traces now
+  carry their metadata (`agentdynamics.trace("support", ticket_id="T-123")`; LangSmith, Langfuse and OpenTelemetry
+  metadata too; `runs.metadata`, secrets in it masked), and `POST /api/outcomes` accepts
+  `{"key": {"ticket_id": "T-123"}, "outcome": "rework", "reason": "ticket reopened"}`: it settles the latest task
+  with that key (`"match": "all"` for each), now or when it arrives, after a grade by task id and before one in
+  the run. Statements live in a new durable table (`outcome_keys`, copied by `store copy`); a scoped key's reach
+  stops at its projects, and one project can't overwrite another's. A trace's `version` (from metadata,
+  OpenTelemetry's `service.version`, LangSmith's `revision_id`, Langfuse's release) is now kept, so recent
+  baselines segment traced apps by release.
+- **The checker can earn a say over outcomes.** It grades a sample of the tasks people graded, blind, and keeps
+  its agreement as Cohen's κ; with `[checker] apply_grades = true` its grades replace inferred outcomes once κ
+  reaches `min_kappa` (0.6) over `min_pairs` (30) (`outcome_source` "model"), and stop when it falls below.
+- **Success rate with its uncertainty.** The Overview shows the rate's 95% Wilson interval and the rate over the
+  outcomes somebody stated (`success_ci`, `graded_success`).
 - **A review before calls that can't be undone** (`instrument(..., review={"tools": [...]})`, `pip install
   anthropic`). For the tools listed -- a refund, an email -- a model checks each call against the request the run
   was traced with, as the last guard in the Aegis kernel. It can only refuse (`review.blocked`, audited like any
@@ -123,6 +137,9 @@ alerting, as history never is.
   filtering, were each checked to fail it.
 
 ### Fixed
+- **The checker saw the outcome it was grading.** Its evidence held the task's current outcome: for a task a
+  person had graded, the answer to the calibration question, and for an inferred one an anchor towards agreeing
+  with inference. Its evidence now holds the request, the answer and the signals, and no outcome.
 - **Tool-call arguments were stored unredacted.** A tool's input preview was redacted, but its full arguments
   (`args_json`, which policy export learns from) kept emails, card numbers and keys verbatim, and were kept even
   with `store_content = false`. They are now redacted like the rest of a step, and not stored at all with content

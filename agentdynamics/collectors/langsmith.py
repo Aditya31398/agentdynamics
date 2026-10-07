@@ -149,6 +149,7 @@ def to_span(r):
         "session_id": md.get("thread_id") or md.get("session_id") or md.get("conversation_id"),
         "user_id": md.get("user_id"), "framework": "langgraph" if (node or md.get("langgraph_step") is not None) else "langchain",
         "docs": docs, "feedback": fb, "tags": r.get("tags") or [], "source": "langsmith",
+        "metadata": md, "version": md.get("revision_id") or md.get("version"),
     }
 
 

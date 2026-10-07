@@ -355,7 +355,7 @@ def map_span(res, scope, sp):
         "user_id": _g(a, "user.id", "enduser.id") or md.get("user_id"),
         "framework": fw, "docs": _doc_count(a, kind),
         "feedback": feedback, "tags": a.get("tag.tags") if isinstance(a.get("tag.tags"), list) else [],
-        "source": "otlp",
+        "source": "otlp", "metadata": md, "version": _g(res, "service.version") or md.get("version"),
     }
 
 

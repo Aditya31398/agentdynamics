@@ -312,7 +312,7 @@ def ddl(schema_version, derived):
     from . import store as s
     text = {"runs": {"id", "source", "project", "environment", "framework", "workflow", "cwd", "title", "agent_name",
                      "parent_id", "parent_task_id", "thread_id", "user_id", "tags", "root_status", "version",
-                     "git_branch", "entrypoint", "file", "policy_version", "policy"},
+                     "git_branch", "entrypoint", "file", "policy_version", "policy", "metadata"},
             "tasks": {"id", "run_id", "project", "environment", "source", "framework", "workflow", "parent_task_id",
                       "prompt_kind", "prompt", "task_type", "models", "churn_file", "final_stop", "final_text",
                       "next_prompt", "outcome", "apdex", "outcome_source", "outcome_reason", "task_type_source",
@@ -348,6 +348,8 @@ def ddl(schema_version, derived):
         "CREATE TABLE IF NOT EXISTS source_state (name TEXT PRIMARY KEY, data TEXT)",
         f"CREATE TABLE IF NOT EXISTS alerts_sent (event_id TEXT PRIMARY KEY, ts {NUM})",
         f"CREATE TABLE IF NOT EXISTS grades (task_id TEXT PRIMARY KEY, outcome TEXT, reason TEXT, graded_by TEXT, ts {NUM})",
+        f"CREATE TABLE IF NOT EXISTS outcome_keys (key TEXT, value TEXT, scope TEXT, outcome TEXT, reason TEXT, graded_by TEXT, "
+        f"ts {NUM}, match TEXT, projects TEXT, PRIMARY KEY (key, value, scope))",
         f"CREATE TABLE IF NOT EXISTS alert_outbox (id BIGSERIAL PRIMARY KEY, dest TEXT, body TEXT, created {NUM}, "
         f"attempts {NUM} DEFAULT 0, next_try {NUM}, last_error TEXT)",
         f"CREATE TABLE IF NOT EXISTS alert_state (key TEXT PRIMARY KEY, since {NUM}, data TEXT)",
@@ -399,7 +401,7 @@ PRIMARY_KEYS = {"runs": ("id",), "tasks": ("id",), "baselines": ("task_type",), 
                 "spans_raw": ("source", "span_id"), "source_state": ("name",), "alerts_sent": ("event_id",),
                 "grades": ("task_id",), "alert_state": ("key",), "revocations": ("id",), "alert_outbox": ("id",),
                 "incidents": ("id",), "incident_signals": ("ref",), "incident_reviews": ("id",),
-                "model_grades": ("task_id",)}
+                "model_grades": ("task_id",), "outcome_keys": ("key", "value", "scope")}
 
 _WEEK = ("(to_char({d}, 'YYYY') || '-W' || "
          "lpad(floor((extract(doy from {d}) + 7 - extract(isodow from {d})) / 7)::int::text, 2, '0'))")

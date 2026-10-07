@@ -233,6 +233,20 @@ class Engine:
             self._regrade = True
         self._wake.set()
 
+    def grade_by_key(self, key, value, outcome, reason=None, graded_by=None, match="last", projects=None):
+        """State the outcome of what ran for `key`=`value` in a trace's metadata (store.set_keyed_grade)."""
+        with self.lock:
+            store.set_keyed_grade(self.con, key, value, outcome, reason, graded_by, match, projects)
+            self._regrade = True
+        self._wake.set()
+
+    def ungrade_by_key(self, key, value, projects=None):
+        with self.lock:
+            n = store.delete_keyed_grade(self.con, key, value, projects)
+            self._regrade = True
+        self._wake.set()
+        return n
+
     def ungrade(self, task_id):
         """Drop a stated outcome; the task falls back to feedback, then to inference."""
         with self.lock:
@@ -712,9 +726,18 @@ class Engine:
             budget -= 1
         if conf.get("grade_outcomes") and budget > 0:
             from .store import rows
-            for t in rows(self.con, "SELECT * FROM tasks WHERE outcome_source = 'inferred' AND outcome <> 'in progress' "
-                                    "AND id NOT IN (SELECT task_id FROM model_grades) ORDER BY ended DESC, id LIMIT ?",
-                          (budget,)):
+            # Calibration first: tasks people graded, graded blind (the evidence never holds an outcome), so the
+            # record of agreeing with people -- the only thing that can justify applying its grades -- grows.
+            # Half the budget until min_pairs are graded, a tenth after, to keep watching for drift.
+            pairs = rows(self.con, "SELECT COUNT(*) AS n FROM model_grades m JOIN tasks t ON t.id = m.task_id "
+                                   "WHERE t.outcome_source = 'graded'")[0]["n"]
+            calib = (budget + 1) // 2 if pairs < int(conf["min_pairs"]) else max(1, budget // 10)
+            todo = rows(self.con, "SELECT * FROM tasks WHERE outcome_source = 'graded' AND is_subagent = 0 "
+                                  "AND id NOT IN (SELECT task_id FROM model_grades) ORDER BY ended DESC, id LIMIT ?", (calib,))
+            todo += rows(self.con, "SELECT * FROM tasks WHERE outcome_source = 'inferred' AND outcome <> 'in progress' "
+                                   "AND id NOT IN (SELECT task_id FROM model_grades) ORDER BY ended DESC, id LIMIT ?",
+                         (budget - len(todo),))
+            for t in todo:
                 steps = rows(self.con, "SELECT error FROM steps WHERE task_id = ? ORDER BY seq", (t["id"],))
                 answer, error, use, transient = checkmod.ask(cl, conf, checkmod.GRADE_SYSTEM,
                                                              checkmod.task_evidence(t, steps), checkmod.GRADE_SCHEMA)
@@ -928,7 +951,8 @@ class Engine:
                 if not self.writer:
                     return False          # another instance writes the analysis; this one serves it
             # a grade or a rule change can come from another instance, so it is noticed in the store
-            gsig = tuple(self.con.execute("SELECT COUNT(*), MAX(ts) FROM grades").fetchone())
+            gsig = tuple(v for t in ("grades", "outcome_keys", "model_grades")
+                         for v in self.con.execute(f"SELECT COUNT(*), MAX(ts) FROM {t}").fetchone())
             if gsig != self._grades_sig:
                 self._regrade = self._grades_sig is not None or self._regrade
                 self._grades_sig = gsig
@@ -994,7 +1018,10 @@ class Engine:
             tasks, baselines, events = analysis.finalize(runs, self._tasks, self.rules(), now=self._clock(),
                                                          grades=store.get_grades(self.con),
                                                          cache=self._cache, dirty=dirty.keys(),
-                                                         redact=self.redactor.text, targets=self.apdex_targets())
+                                                         redact=self.redactor.text, targets=self.apdex_targets(),
+                                                         keyed=store.get_keyed_grades(self.con),
+                                                         model_grades=store.get_model_grades(self.con),
+                                                         promote=checkmod.promotion(self.cfg))
             self._settle_due = min((t["ended"] + analysis.IN_PROGRESS_S for t in tasks
                                     if t.get("outcome") == "in progress" and t.get("ended")), default=None)
             # Process Review insights are computed when the page asks, over the tasks it shows: every

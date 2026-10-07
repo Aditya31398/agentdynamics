@@ -19,6 +19,17 @@ def mcp_group(name):
 
 
 
+
+def wilson(k, n, z=1.96):
+    """The 95% Wilson score interval for k successes in n, [low, high]; None for n = 0."""
+    if not n:
+        return None
+    p = k / n
+    d = 1 + z * z / n
+    mid = (p + z * z / (2 * n)) / d
+    half = z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5) / d
+    return [round(max(0.0, mid - half), 3), round(min(1.0, mid + half), 3)]
+
 class ApiBase:
     def __init__(self, engine, projects=None):
         self.e = engine
@@ -91,6 +102,12 @@ class ApiBase:
             "avg_duration": round(statistics.mean([t["duration_s"] for t in ts]), 1) if n else 0,
             "apdex": apdex_score([t for t in ts if t["apdex"]]),
             "success_rate": round(len(ok) / n, 3) if n else None,
+            # 95% Wilson interval: 40 of 50 and 800 of 1000 are both 80%, and say very different things
+            "success_ci": wilson(len(ok), n),
+            # the same over the tasks whose outcome somebody stated (graded or a feedback score)
+            "graded_success": (lambda g: {"tasks": len(g), "rate": round(sum(1 for t in g if t["outcome"] == "completed") / len(g), 3)
+                                          if g else None, "ci": wilson(sum(1 for t in g if t["outcome"] == "completed"), len(g))})(
+                [t for t in ts if t.get("outcome_source") in ("graded", "feedback")]),
             "tool_calls": calls,
             "tool_error_rate": round(sum(t["tool_errors"] for t in ts) / calls, 4) if calls else 0,
             "waste_cost": round(sum(t["waste_cost"] or 0 for t in ts), 4),

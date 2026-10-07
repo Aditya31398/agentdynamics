@@ -170,10 +170,11 @@ deploy/               Dockerfile companion: compose, OTel Collector config, exam
    fixed 100, plus a full garbage collection (0.8 s at 100k) every several refreshes
    ([docs/BENCHMARKS.md](docs/BENCHMARKS.md)). Next is a store backend (#7); making the rest of that pass
    incremental needs dependency tracking for threads and time-dependent outcomes.
-2. **Most outcomes are still inferred.** They *can* be graded now (`agentdynamics.outcome`, `/api/outcomes`)
-   and every task says which (`outcome_source`). The checker can grade them with a model (`[checker]
-   grade_outcomes`), but only in shadow mode: its grades sit beside the outcome, with its agreement record, and
-   nothing applies them yet.
+2. **Most outcomes are still inferred, unless someone wires up ground truth.** They can be graded
+   (`agentdynamics.outcome`, `/api/outcomes` by task id or by the app's own key in trace metadata) and every task
+   says which (`outcome_source`). The checker grades a blind sample of people-graded tasks and, with
+   `apply_grades`, replaces inferred outcomes once its Cohen's kappa against people's grades clears the bar. On
+   an install with no grading at all, "completed" still means "didn't visibly fail".
 3. **Coding-task typing is still keyword rules.** Traced apps use the workflow name; every task records
    which (`task_type_source`) and the matched word. Follow-ups inherit the previous task's type, so a
    "continue" after a slash command is typed "slash command".

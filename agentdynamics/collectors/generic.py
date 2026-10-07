@@ -20,6 +20,7 @@ import uuid
 
 from .. import pricing
 from ..phases import classify
+from .spans import clean_metadata
 
 
 def normalize(payload):
@@ -33,6 +34,7 @@ def normalize(payload):
         "entrypoint": payload.get("entrypoint"), "environment": payload.get("environment") or "default",
         "framework": payload.get("framework") or "sdk", "thread_id": payload.get("thread_id"), "user_id": payload.get("user_id"),
         "feedback": payload.get("feedback") or [], "tags": payload.get("tags") or [],
+        "metadata": clean_metadata(payload.get("metadata")),
         "root_status": payload.get("status"), "root_error": payload.get("error"), "complete": payload.get("complete", True),
         "policy_version": payload.get("policy_version"), "policy": payload.get("policy"),
         "steps": [],

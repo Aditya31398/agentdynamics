@@ -22,6 +22,26 @@ STRUCTURAL = {"agent", "chain", "node", "guardrail", "evaluator", "human", "span
 RATE_LIMIT_HINTS = ("429", "rate limit", "rate_limit", "ratelimit", "overloaded", "529", "too many requests", "quota")
 
 
+META_KEYS, META_LEN = 30, 200
+_FRAMEWORK_META = ("ls_", "langgraph_", "lc_", "checkpoint_", "thread_ts")
+
+
+def clean_metadata(md):
+    """A run's metadata as kept: your own keys (a ticket or order id, a release) with scalar values, as strings.
+    Framework internals are dropped, and so is anything nested or long. Joined on by outcomes posted by key."""
+    out = {}
+    if not isinstance(md, dict):
+        return out
+    for k, v in md.items():
+        if len(out) >= META_KEYS:
+            break
+        if not isinstance(k, str) or not 0 < len(k) <= 64 or k.startswith(_FRAMEWORK_META):
+            continue
+        if isinstance(v, (str, int, float, bool)):
+            out[k] = str(v)[:META_LEN]
+    return out
+
+
 def uncached_input(input_tokens, cache_read, cache_write, convention):
     """Split a reported input count into its uncached part, and say whether we know it's right.
 
@@ -156,13 +176,18 @@ def build_run(trace_id, spans, source):
         "user_id": first("user_id"),
         "parent_id": None,
         "is_subagent": False,
-        "version": None,
+        "version": first("version"),
         "git_branch": None,
         "entrypoint": None,
         "tags": sorted({t for s in spans for t in (s.get("tags") or [])})[:20],
         "feedback": [f for s in spans for f in (s.get("feedback") or [])],
+        "metadata": {},
         "steps": [],
     }
+    for s in sorted(spans, key=lambda s: (depth(s), s.get("start") or 0, s.get("span_id") or "")):   # the root's wins
+        for k, v in clean_metadata(s.get("metadata")).items():
+            if len(run["metadata"]) < META_KEYS:
+                run["metadata"].setdefault(k, v)
     steps = run["steps"]
     prompt_text = extract_prompt(root.get("input"))
     steps.append({"kind": "prompt", "name": "trace", "ts": root.get("start"), "text": prompt_text[:2000] or workflow})

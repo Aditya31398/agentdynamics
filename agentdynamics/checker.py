@@ -25,7 +25,9 @@ Three rules keep the checker from becoming the weak point it is meant to watch f
 """
 import json
 
-DEFAULTS = {"model": "claude-opus-5-5", "effort": "medium", "max_per_hour": 20, "grade_outcomes": False}
+DEFAULTS = {"model": "claude-opus-5-5", "effort": "medium", "max_per_hour": 20, "grade_outcomes": False,
+            # apply its grades to inferred outcomes, once they agree with people's (Cohen's kappa, analysis.kappa)
+            "apply_grades": False, "min_kappa": 0.6, "min_pairs": 30}
 CLASSIFICATIONS = ("prompt_injection", "policy_probing", "exfiltration_attempt", "misconfigured_policy",
                    "benign_error", "unclear")
 RECOMMENDATIONS = ("revoke", "restrict", "tighten_policy", "dismiss", "watch")
@@ -95,6 +97,14 @@ def settings(cfg):
     return dict(DEFAULTS, **c)
 
 
+def promotion(cfg):
+    """{"min_kappa", "min_pairs"} when the checker's grades may be applied ([checker] apply_grades), else None."""
+    c = settings(cfg)
+    if not c or not c.get("grade_outcomes") or not c.get("apply_grades"):
+        return None
+    return {"min_kappa": float(c["min_kappa"]), "min_pairs": int(c["min_pairs"])}
+
+
 def client():
     """The Anthropic client, or None (with the reason) when the SDK isn't installed."""
     try:
@@ -127,8 +137,10 @@ def incident_evidence(detail):
 
 
 def task_evidence(t, steps):
+    """What the grader sees: the request, the answer and the signals -- never an outcome. A person's grade would
+    be the answer to the calibration question, and an inferred one anchors the model to agree with inference."""
     return {"request": _clip(t.get("prompt"), 1500), "final_answer": _clip(t.get("final_text"), 1500),
-            "inferred_outcome": t.get("outcome"), "ended_on_error": bool(t.get("ended_on_error")),
+            "ended_on_error": bool(t.get("ended_on_error")),
             "tool_calls": t.get("tool_calls"), "tool_errors": t.get("tool_errors"), "interrupts": t.get("interrupts"),
             "refusals": t.get("refusals"), "next_user_message": _clip(t.get("next_prompt"), 500),
             "errors": [_clip(s.get("error"), 200) for s in steps if s.get("error")][:10]}

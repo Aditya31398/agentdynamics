@@ -32,6 +32,7 @@ import random
 import re
 import sys
 import time
+import urllib.request
 from types import SimpleNamespace
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -116,8 +117,13 @@ def think(model, prompt, max_tokens, stop="end_turn", out=None):
                 output_tokens=out or random.randint(100, max_tokens), stop_reason=stop)
 
 
-@ad.trace("support_agent")
-def handle(ticket, kind, grant):
+def handle(ticket, kind, grant, ticket_id):
+    # the helpdesk's own ticket id rides in the trace's metadata: it can state the outcome later by that id
+    with ad.trace("support_agent", prompt=ticket, ticket_id=ticket_id):
+        _handle(ticket, kind, grant)
+
+
+def _handle(ticket, kind, grant):
     k = kernel
     with governance.bind(grant):
         with ad.span("plan"):
@@ -191,13 +197,26 @@ def main(n=40):
                   if kind in ("refund", "overreach") else random.choice(TICKETS))
         grant = Grant.root(policy)  # one grant per conversation
         try:
-            handle(ticket, kind, grant)
+            handle(ticket, kind, grant, f"T-{1000 + i}")
         except (PolicyViolation, BudgetExhausted) as ex:
             print(f"{i:>3} {kind:<10} stopped by Aegis: {ex.verdict.rule}")
         else:
             print(f"{i:>3} {kind:<10} ok")
     ad.flush()
     print("audit chain intact:", kernel.audit.verify(), f"({len(kernel.audit)} decisions)")
+    # later, the helpdesk says what happened: some "ok" escalations were reopened. It knows ticket ids, not tasks.
+    reopened = [{"key": {"ticket_id": f"T-{1000 + i}"}, "outcome": "rework", "reason": "ticket reopened by the customer"}
+                for i in range(n) if i % 11 == 7]
+    url = os.environ.get("AGENTDYNAMICS_URL", "http://127.0.0.1:8787").rstrip("/") + "/api/outcomes"
+    try:
+        req = urllib.request.Request(url, data=json.dumps(reopened).encode(), method="POST",
+                                     headers={"Content-Type": "application/json",
+                                              **({"Authorization": "Bearer " + os.environ["AGENTDYNAMICS_API_KEY"]}
+                                                 if os.environ.get("AGENTDYNAMICS_API_KEY") else {})})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            print(f"helpdesk: {json.load(r)['graded']} reopened ticket(s) reported by ticket id")
+    except OSError as ex:
+        print(f"helpdesk: could not report reopened tickets ({ex})")
 
 
 if __name__ == "__main__":

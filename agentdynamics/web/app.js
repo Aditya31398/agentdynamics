@@ -175,7 +175,8 @@
   const evidence = (by, n) => {
     if (!by || !n) return "";
     const stated = (by.graded || 0) + (by.feedback || 0);
-    return stated ? `<br>${pct(stated / n)} graded or rated, ${pct((by.inferred || 0) / n)} inferred` : "<br>all inferred from signals";
+    const model = by.model ? `, ${pct(by.model / n)} graded by the checker` : "";
+    return stated || model ? `<br>${pct(stated / n)} graded or rated${model}, ${pct((by.inferred || 0) / n)} inferred` : "<br>all inferred from signals";
   };
   const healthOfApdex = (a) => a == null ? "unknown" : a >= 0.85 ? "normal" : a >= 0.7 ? "warning" : "critical";
 

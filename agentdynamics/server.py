@@ -9,6 +9,7 @@ import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
+from .analysis import OUTCOMES
 from .api.assess import AssessMixin
 from .api.base import DAY, ApiBase, mcp_group  # noqa: F401  (re-exported)
 from .api.diagnose import DiagnoseMixin
@@ -344,7 +345,17 @@ class Handler(BaseHTTPRequestHandler):
                     items = body if isinstance(body, list) else body.get("grades", [])
                 else:
                     items = [dict(body, task_id=unquote(p[len("/api/tasks/"):-len("/outcome")]))]
-                if self._scope() is not None:
+                # by your own key: {"key": {"ticket_id": "T-1"}, "outcome", "reason", "match": "last" | "all"}
+                by_key, items = [it for it in items if "key" in it], [it for it in items if "key" not in it]
+                for it in by_key:
+                    k = it.get("key")
+                    if (not isinstance(k, dict) or len(k) != 1 or not isinstance(next(iter(k)), str)
+                            or not isinstance(next(iter(k.values())), (str, int, float)) or isinstance(next(iter(k.values())), bool)
+                            or it.get("match", "last") not in ("last", "all")
+                            or (it.get("outcome") is not None and it.get("outcome") not in OUTCOMES)):
+                        return self._send(400, {"error": "an outcome by key is {\"key\": {name: value}, \"outcome\": "
+                                                         f"one of {', '.join(OUTCOMES)} or null, \"match\": \"last\" or \"all\"}}"})
+                if self._scope() is not None and items:
                     # A scoped key grades only tasks that exist in its projects. All or nothing, and the same
                     # answer whether an id is in another project or nowhere, so it can't probe for ids.
                     api = self._scoped_api()
@@ -359,6 +370,13 @@ class Handler(BaseHTTPRequestHandler):
                         return self._send(403, {"error": "this key may only grade tasks in its projects",
                                                 "task_ids": outside})
                 who, graded, cleared = self._key_name(), 0, 0
+                for it in by_key:                            # a scoped key's reach stops at its projects
+                    (k, v), = it["key"].items()
+                    if it.get("outcome") is None:
+                        cleared += e.ungrade_by_key(k, str(v), self._scope())
+                    else:
+                        e.grade_by_key(k, str(v), it["outcome"], it.get("reason"), who, it.get("match", "last"), self._scope())
+                        graded += 1
                 for it in items:
                     if it.get("outcome") is None:          # null clears: back to feedback, then inference
                         cleared += e.ungrade(it["task_id"])

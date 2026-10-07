@@ -4,7 +4,7 @@ import statistics
 import time
 from collections import Counter, defaultdict
 
-from .. import checker as checkmod, incidents as incmod, trust as trustmod
+from .. import analysis, checker as checkmod, incidents as incmod, trust as trustmod
 from ..analysis import pct
 from ..store import (incident_signals, incident_verdicts, incidents as list_incidents, latest_reviews,
                      revocations as list_revocations, rows)
@@ -170,13 +170,21 @@ class GovernanceMixin:
         vs_people = [g for g in decided if g["person"]]
         vs_inferred = [g for g in decided if g["outcome_source"] == "inferred" and g["inferred"]]
         spent = sum((r["input_tokens"] or 0) + (r["output_tokens"] or 0) for r in revs + grades)
-        return {"configured": bool(conf), "model": conf["model"] if conf else None, "mode": "shadow",
+        # the record that decides whether its grades are applied: blind grades of tasks people graded
+        calib = analysis.grade_agreement([{"id": g["task_id"], "outcome": g["inferred"], "outcome_source": g["outcome_source"]}
+                                          for g in grades], {g["task_id"]: g for g in grades})
+        promote = checkmod.promotion(self.e.cfg)
+        calib.update(applied=analysis.promoted(calib, promote), min_kappa=(promote or {}).get("min_kappa"),
+                     min_pairs=(promote or {}).get("min_pairs"), apply_grades=bool(promote))
+        return {"configured": bool(conf), "model": conf["model"] if conf else None,
+                "mode": "applied" if calib["applied"] else "shadow",
                 "incidents": checkmod.agreement(list(latest.values())),
                 "outcomes": {"graded": len(decided),
                              "vs_people": {"compared": len(vs_people),
                                            "agreed": sum(1 for g in vs_people if g["outcome"] == g["person"])},
                              "vs_inferred": {"compared": len(vs_inferred),
-                                             "agreed": sum(1 for g in vs_inferred if g["outcome"] == g["inferred"])}},
+                                             "agreed": sum(1 for g in vs_inferred if g["outcome"] == g["inferred"])},
+                             "calibration": calib},
                 "errors": sum(1 for r in revs + grades if r["error"]), "tokens": spent}
 
     def governance(self, q):
