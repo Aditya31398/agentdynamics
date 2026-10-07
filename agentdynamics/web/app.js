@@ -197,8 +197,10 @@
   }
   function bindRows(host) { $$("tr[data-href]", host).forEach((tr) => tr.addEventListener("click", (e) => { if (e.target.closest("a")) return; location.hash = tr.dataset.href; })); }
 
-  const PHASE_ORDER = ["explore", "plan", "edit", "verify", "execute", "vcs", "delegate", "communicate", "respond", "other"];
-  const phaseParts = (obj) => PHASE_ORDER.filter((p) => obj && obj[p]).map((p) => ({ key: p, label: p, value: obj[p], color: C.phaseColor(p) }));
+  const PHASE_ORDER = ["explore", "retrieve", "plan", "edit", "verify", "execute", "vcs", "delegate", "communicate", "respond", "other", "context"];
+  // "context": the part of each turn's input no tool result accounts for -- instructions, the prompt, the model's own messages
+  const PHASE_LABEL = { context: "re-sent context" };
+  const phaseParts = (obj) => PHASE_ORDER.filter((p) => obj && obj[p]).map((p) => ({ key: p, label: PHASE_LABEL[p] || p, value: obj[p], color: C.phaseColor(p) }));
 
   // ------------------------------------------------------------------ pages
   // Each area of the console lives in web/pages/<area>.js, loaded after this file. They register on

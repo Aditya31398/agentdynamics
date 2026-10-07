@@ -355,6 +355,89 @@ class CoreTest(unittest.TestCase):
             eng.con.close()
 
 
+class TimeAndAttributionTest(unittest.TestCase):
+    """Agent time from the intervals steps covered, and each tool call's cost as writing it plus carrying its result.
+
+    The old rules: agent time summed gaps between timestamps, each capped at 5 minutes, so a 20-minute build
+    counted 5 and a person approving for 4 counted 4; a turn's whole cost was split evenly over the calls it
+    issued, so a 40 kB file read cost the same as a 40-byte one."""
+
+    T0 = 1_790_000_000
+
+    def task(self, steps):
+        for st in steps:
+            for k in ("ts", "end_ts"):
+                if k in st:
+                    st[k] += self.T0
+        run = generic.normalize({"id": "t", "agent": "bot", "steps": steps})
+        self.steps = run["steps"]
+        return analysis.run_tasks(run)[0]
+
+    def tools(self):
+        return [s for s in self.steps if s["kind"] == "tool"]
+
+    def llm(self, ts, inp, out=100, **kw):
+        return dict({"kind": "llm", "ts": ts, "end_ts": ts + 10, "model": "claude-sonnet-5", "input_tokens": inp,
+                     "output_tokens": out}, **kw)
+
+    def read(self, ts, path="a.py", chars=40_000, **kw):
+        return dict({"kind": "tool", "name": "Read", "ts": ts, "end_ts": ts + 1, "input": {"file_path": path},
+                     "output_chars": chars}, **kw)
+
+    def test_agent_time_is_what_steps_covered(self):
+        t = self.task([{"kind": "prompt", "ts": 0, "text": "build it"}, self.llm(0, 100),
+                       {"kind": "tool", "name": "Bash", "ts": 10, "end_ts": 1210, "input": {"command": "make"}},
+                       self.llm(1210, 100), self.llm(4820, 100)])
+        self.assertEqual(t["duration_s"], 10 + 1200 + 10 + 10, "the 20-minute build counts; the hour away doesn't")
+        self.assertEqual(t["wall_s"], 4830)
+
+    def test_parallel_calls_count_once_and_a_persons_time_not_at_all(self):
+        t = self.task([{"kind": "prompt", "ts": 0, "text": "go"}, self.llm(0, 100),
+                       {"kind": "tool", "name": "Bash", "ts": 10, "end_ts": 70, "input": {"command": "a"}},
+                       {"kind": "tool", "name": "Bash", "ts": 20, "end_ts": 80, "input": {"command": "b"}},
+                       {"kind": "span", "name": "approve refund", "ts": 80, "end_ts": 320, "hitl": True},
+                       {"kind": "tool", "name": "Bash", "ts": 320, "end_ts": 380, "input": {"command": "rm"}, "rejected": True},
+                       self.llm(380, 100)])
+        self.assertEqual(t["duration_s"], 10 + 70 + 10, "two overlapping calls are 70 s, the approval and the rejection none")
+
+    def test_a_result_costs_what_carrying_it_cost(self):
+        steps = [{"kind": "prompt", "ts": 0, "text": "fix a.py"},
+                 self.llm(0, 1_000), self.read(10),                 # 40 kB = 10k tokens, carried by every later turn
+                 self.llm(20, 11_000), self.read(30),               # the same file again: a redundant read
+                 self.llm(40, 21_000), self.llm(60, 21_000, out=50)]
+        t = self.task(steps)
+        reads = self.tools()
+        rate_in, rate_out = 2 / 1e6, 10 / 1e6                      # claude-sonnet-5, no cache: 2e-6 per context token
+        self.assertAlmostEqual(reads[0]["attributed_cost"], 100 * rate_out + 3 * 10_000 * rate_in)
+        self.assertAlmostEqual(reads[1]["attributed_cost"], 100 * rate_out + 2 * 10_000 * rate_in)
+        self.assertEqual(t["redundant_reads"], 1)
+        self.assertAlmostEqual(t["waste_cost"], 100 * rate_out + 2 * 10_000 * rate_in, places=5)
+        self.assertAlmostEqual(sum(t["phase_cost"].values()), t["cost"], places=5, msg="every dollar goes somewhere")
+        self.assertAlmostEqual(t["phase_cost"]["respond"], 150 * rate_out, places=5)
+        self.assertAlmostEqual(t["phase_cost"]["context"], (1_000 + 1_000 + 1_000 + 1_000) * rate_in, places=5)
+
+    def test_compaction_ends_the_carry_and_each_agent_carries_its_own(self):
+        steps = [{"kind": "prompt", "ts": 0, "text": "go"}, self.llm(0, 1_000), self.read(10),
+                 {"kind": "notice", "name": "compaction", "ts": 15},
+                 self.llm(20, 11_000), self.llm(40, 11_000)]
+        self.task(steps)
+        self.assertAlmostEqual(self.tools()[0]["attributed_cost"], 100 * 10 / 1e6, msg="dropped from context: nothing after")
+        steps = [{"kind": "prompt", "ts": 0, "text": "go"}, self.llm(0, 1_000, agent="a"), self.read(10, agent="a"),
+                 self.llm(20, 11_000, agent="b"), self.llm(40, 11_000, agent="a")]
+        self.task(steps)
+        self.assertAlmostEqual(self.tools()[0]["attributed_cost"], 100 * 10 / 1e6 + 10_000 * 2 / 1e6,
+                               msg="carried by a's next turn, not by b's")
+        steps = [{"kind": "prompt", "ts": 0, "text": "go"}, self.llm(0, 1_000, agent="a"), self.read(10),
+                 self.llm(20, 11_000, agent="a")]
+        self.task(steps)
+        self.assertAlmostEqual(self.tools()[0]["attributed_cost"], 100 * 10 / 1e6 + 10_000 * 2 / 1e6,
+                               msg="a tool step naming no agent is carried by the one agent taking turns")
+        steps = [{"kind": "prompt", "ts": 0, "text": "go"}, self.llm(0, 1_000),
+                 self.read(10, chars=4_000, denied=True, rule="capability.not_granted"), self.llm(20, 11_000)]
+        t = self.task(steps)
+        self.assertAlmostEqual(t["blocked_cost"], 100 * 10 / 1e6, msg="a refused call cost writing it, and nothing after")
+
+
 def reset(sock):
     """Close with an RST, the way a browser drops a connection it has given up on."""
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))

@@ -18,7 +18,7 @@ import time
 
 from .privacy import TASK_TEXT_FIELDS
 
-SCHEMA_VERSION = 13   # 6: outcome_source / outcome_reason (graded outcomes)
+SCHEMA_VERSION = 14   # 6: outcome_source / outcome_reason (graded outcomes)
                      # 7: tokens_unverified (cache accounting that rests on a guess)
                      # 8: steps.governed (did this call go through an Aegis kernel)
                      # 9: task_type_source / task_type_match (how a task type was decided)
@@ -26,6 +26,7 @@ SCHEMA_VERSION = 13   # 6: outcome_source / outcome_reason (graded outcomes)
                      # 11: tasks.agents (what each agent did: trust.py)
                      # 12: steps.args_json redacted (a rebuild drops arguments stored before)
                      # 13: tasks.agents names the tools each agent misused
+                     # 14: agent time from step intervals; cost attributed by the context a result adds
 
 RUN_COLS = ["id", "source", "project", "environment", "framework", "workflow", "cwd", "title", "agent_name", "parent_id",
             "parent_task_id", "is_subagent", "thread_id", "user_id", "tags", "root_status", "complete", "version", "git_branch",

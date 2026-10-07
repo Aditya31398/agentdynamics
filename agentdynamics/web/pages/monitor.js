@@ -250,7 +250,7 @@
       </div>
       ${d.children.length ? `<div style="margin-top:14px">${card(`Subagents (${d.children.length})`, `<table><thead><tr><th>Delegated task</th><th>Outcome</th><th class="num">Cost</th><th class="num">Time</th><th class="num">Tools / errors</th><th class="num">Score</th></tr></thead><tbody>${d.children.map((c) =>
         `<tr class="click" data-href="#/task/${encodeURIComponent(c.id)}"><td><div class="truncate">${esc(c.title?.agent_name || c.prompt)}</div></td><td>${pill(c.outcome)}</td><td class="num">${usd(c.cost)}</td><td class="num">${dur(c.duration_s)}</td><td class="num">${c.tool_calls} / ${c.tool_errors}</td><td class="num" style="color:${scoreColor(c.score)}">${c.score == null ? "–" : Math.round(c.score)}</td></tr>`).join("")}</tbody></table>`)}</div>` : ""}
-      <div style="margin-top:14px">${card("Execution timeline", `<div class="legend" style="margin:0 0 8px">${PHASE_ORDER.filter((p) => p !== "respond").map((p) => `<span><i style="background:${C.phaseColor(p)}"></i>${p}</span>`).join("")}<span><i style="background:var(--text-3)"></i>model turn</span></div><div class="wf" id="wf"></div>`, `${steps.length} steps · click a row for details`)}</div>`;
+      <div style="margin-top:14px">${card("Execution timeline", `<div class="legend" style="margin:0 0 8px">${PHASE_ORDER.filter((p) => p !== "respond" && p !== "context").map((p) => `<span><i style="background:${C.phaseColor(p)}"></i>${p}</span>`).join("")}<span><i style="background:var(--text-3)"></i>model turn</span></div><div class="wf" id="wf"></div>`, `${steps.length} steps · click a row for details`)}</div>`;
 
     // context chart
     if (llm.length) {

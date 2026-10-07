@@ -17,8 +17,8 @@ These metrics were chosen because each one maps to a decision someone can act on
 
 **Efficiency: did it do the job economically?**
 - ✅ Cost, tokens and steps per task, compared with the baseline for that task type (the multiplier of normal cost).
-- ✅ Avoidable spend: duplicate tool calls, redundant reads and retry streaks, priced at the model turn that issued them.
-- ✅ Cost by phase and by node, showing where the money goes (explore / edit / verify, or per graph node).
+- ✅ Avoidable spend: duplicate tool calls, redundant reads, retry streaks and refused calls, each priced at what it really cost: the output that wrote the call, plus its result's share of every later turn's input while it stayed in context (until a compaction). A result's size in tokens is estimated from its characters (÷ 4).
+- ✅ Cost by phase and by node, showing where the money goes (explore / edit / verify, or per graph node), attributed the same way; the input no tool result accounts for (instructions, the prompt, the model's own messages) is "re-sent context". The parts add up to the task's cost.
 - ✅ Prompt-cache hit rate, context growth per turn, peak context and compactions.
 - ✅ Cost counts each input token once. Uncached input, cache reads and cache writes are priced separately; formats that document their input count as inclusive (OpenTelemetry GenAI, OpenInference, LangChain) have both kinds of cache token taken out of it. Where a format documents no rule, the split is estimated and those calls are shown under Spend as having estimated cache accounting.
 - ✅ Parallelism: tool calls per model turn.
@@ -37,7 +37,7 @@ These metrics were chosen because each one maps to a decision someone can act on
 - ✅ Empty retrievals (retriever returned zero documents).
 
 **Latency: is it fast enough?**
-- ✅ End-to-end p50/p95, active agent time (idle gaps capped), and node p50/p95.
+- ✅ End-to-end p50/p95 and node p50/p95. Agent time is what steps covered: each step's own [start, end] (a 20-minute build counts 20 minutes) and gaps of up to 5 minutes between events, less human-in-the-loop spans and rejected tool calls. An approval wait inside a tool call that was then allowed is counted, unless the source records it.
 - ✅ Time to first token and output tokens/second per model.
 
 **Process quality: is it a good worker?**

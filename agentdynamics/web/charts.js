@@ -4,8 +4,8 @@ const C = (() => {
   const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
   const SERIES = ["--s1", "--s2", "--s3", "--s4", "--s5", "--s6", "--s7", "--s8"];
   // Phase colors follow the entity, never rank.
-  const PHASE = { explore: "--s1", edit: "--s2", verify: "--s3", execute: "--s4", plan: "--s7", delegate: "--s5",
-    vcs: "--s6", communicate: "--s8", respond: "--neutral", other: "--neutral" };
+  const PHASE = { explore: "--s1", retrieve: "--s1", edit: "--s2", verify: "--s3", execute: "--s4", plan: "--s7", delegate: "--s5",
+    vcs: "--s6", communicate: "--s8", respond: "--neutral", other: "--neutral", context: "--text-3" };
   const color = (i) => `var(${SERIES[i % SERIES.length]})`;
   const phaseColor = (p) => `var(${PHASE[p] || "--neutral"})`;
   const tipEl = () => document.getElementById("tip");

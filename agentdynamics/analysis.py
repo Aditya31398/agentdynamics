@@ -15,6 +15,7 @@ import statistics
 import time
 from collections import Counter, defaultdict
 
+from . import pricing
 from .privacy import TASK_TEXT_FIELDS
 
 
@@ -88,12 +89,141 @@ def clamp(x, lo=0.0, hi=100.0):
     return max(lo, min(hi, x))
 
 
-IDLE_CAP = 300  # gaps longer than this (user away, waiting on approval) don't count as agent time
+IDLE_CAP = 300  # a gap between events longer than this, covered by no step, is someone away: not agent time
 
 
-def _active_seconds(tss):
-    v = sorted(x for x in tss if x)
-    return round(sum(min(b - a, IDLE_CAP) for a, b in zip(v, v[1:])), 1)
+def _union(spans):
+    out = []
+    for a, b in sorted(spans):
+        if out and a <= out[-1][1]:
+            if b > out[-1][1]:
+                out[-1][1] = b
+        else:
+            out.append([a, b])
+    return out
+
+
+def _active_seconds(steps):
+    """Agent time: when a step was running, or the agent was between events, less the time a person had it.
+
+    Running: each step's own [start, end] -- a 20-minute build counts 20 minutes. Between events: a gap of up to
+    IDLE_CAP between consecutive timestamps (a model call logged only when it ended, say); a longer gap that no
+    step covers is idle. A person's time: human-in-the-loop spans and tool calls a person rejected. A wait for
+    an approval inside a tool call that was then allowed can't be told apart from the tool running unless the
+    source records it.
+    """
+    pts = sorted({x for s in steps for x in (s.get("ts"), s.get("end_ts")) if x is not None})
+    busy = [(a, b) for a, b in zip(pts, pts[1:]) if b - a <= IDLE_CAP]
+    human = []
+    for s in steps:
+        a = s.get("start_ts") if s.get("start_ts") is not None else s.get("ts")
+        b = s.get("end_ts")
+        if a is None or b is None or b <= a:
+            continue
+        if s.get("hitl") or s.get("rejected"):
+            human.append((a, b))
+        elif s["kind"] in ("llm", "tool", "span"):
+            busy.append((a, b))
+    busy, human = _union(busy), _union(human)
+    total = sum(b - a for a, b in busy)
+    i = 0
+    for a, b in busy:                                  # both sorted: one sweep subtracts the overlap
+        while i < len(human) and human[i][1] <= a:
+            i += 1
+        j = i
+        while j < len(human) and human[j][0] < b:
+            total -= min(b, human[j][1]) - max(a, human[j][0])
+            j += 1
+    return round(max(total, 0.0), 1)
+
+
+CHARS_PER_TOKEN = 4     # a tool result's size in context, estimated from its characters
+
+
+def _split_turn(s):
+    """(input-side cost, output cost) of one model call: its cost, split by its list-price shares."""
+    c = s.get("cost") or 0.0
+    r = pricing.rates(s.get("model")) if c else None
+    if not r:
+        return c, 0.0
+    w1h = s.get("cache_write_1h") or 0
+    inp = (s.get("input_tokens", 0) * r["input"] + s.get("cache_read", 0) * r["cache_read"]
+           + (s.get("cache_write", 0) - w1h) * r["cache_write_5m"] + w1h * r["cache_write_1h"])
+    out = s.get("output_tokens", 0) * r["output"]
+    return (c * inp / (inp + out), c * out / (inp + out)) if inp + out else (c, 0.0)
+
+
+def attribute(steps):
+    """Each model call's cost, charged to what caused it. Returns {phase: cost}, which adds up to the task's cost,
+    and sets each tool step's `attributed_cost`.
+
+    * Output: split evenly over the tool calls the turn issued (writing them), or "respond" if it issued none.
+    * Input: every later turn re-sends what earlier tool results put in the context. A turn's input-side cost is
+      shared by token count among the results it carried (estimated from their size) and the rest of the context
+      -- instructions, the prompt and the model's own messages -- which goes to "context". A result is carried
+      by later turns of the same agent until a compaction.
+
+    So a redundant read costs what it really cost: writing the call, then its output riding along in every turn
+    after it. Linear in the steps: the per-token rate of each turn is summed once (prefix sums per agent).
+    """
+    phase_cost = Counter()
+    F = defaultdict(lambda: [0.0])        # agent -> prefix sums of each turn's input cost per carried token
+    E = defaultdict(float)                # agent -> tokens of tool results it currently carries
+    open_items = defaultdict(list)        # agent -> [(tool step, tokens, prefix index when it entered)]
+    carried = {}                          # id(tool step) -> its carried cost
+    turns = {s.get("agent") for s in steps if s["kind"] == "llm"}
+
+    def carrier(agent):                   # a result's agent, or whoever takes the turns when its agent has none
+        if agent in turns or not turns:
+            return agent
+        return None if None in turns else next(iter(turns)) if len(turns) == 1 else agent
+
+    def close(agent):
+        f = F[agent]
+        for x, e, start in open_items.pop(agent, ()):
+            carried[id(x)] = e * (f[-1] - f[start])
+        E[agent] = 0.0
+
+    for i, s in enumerate(steps):
+        k = s["kind"]
+        if k == "llm":
+            inp, out = _split_turn(s)
+            a = s.get("agent")
+            ctx = (s.get("input_tokens") or 0) + (s.get("cache_read") or 0) + (s.get("cache_write") or 0)
+            denom = max(float(ctx), E[a])
+            per_token = inp / denom if denom else 0.0
+            F[a].append(F[a][-1] + per_token)
+            phase_cost["context"] += inp - per_token * E[a] if denom else inp
+            issued = []
+            for s2 in steps[i + 1:]:
+                if s2["kind"] == "tool":
+                    issued.append(s2)
+                elif s2["kind"] == "llm":
+                    break
+            if issued:                         # only tool steps from the same message
+                mid = issued[0].get("llm_msg")
+                issued = [x for x in issued if x.get("llm_msg") == mid]
+            if issued:
+                for x in issued:
+                    x["_issue_cost"] = out / len(issued)
+            else:
+                phase_cost["respond"] += out
+        elif k == "tool":
+            a = carrier(s.get("agent"))
+            e = 0.0 if s.get("denied") else (s.get("output_chars") or 0) / CHARS_PER_TOKEN
+            if e:
+                open_items[a].append((s, e, len(F[a]) - 1))
+                E[a] += e
+        elif k == "notice" and s.get("name") == "compaction":
+            for a in list(open_items):
+                close(a)
+    for a in list(open_items):
+        close(a)
+    for s in steps:
+        if s["kind"] == "tool":
+            s["attributed_cost"] = s.pop("_issue_cost", 0.0) + carried.get(id(s), 0.0)
+            phase_cost[s["phase"]] += s["attributed_cost"]
+    return phase_cost
 
 
 # ---------------------------------------------------------------- segmentation
@@ -137,7 +267,7 @@ def task_metrics(run, idx, seg):
         "started": started,
         "ended": ended,
         "wall_s": round((ended - started), 1) if started and ended else 0,
-        "duration_s": _active_seconds(tss),
+        "duration_s": _active_seconds(steps),
         "llm_calls": len(llm),
         "tool_calls": len(tools),
         "tool_errors": sum(1 for s in tools if s.get("is_error") and not s.get("denied")),
@@ -165,35 +295,11 @@ def task_metrics(run, idx, seg):
         # traced apps: the entry point names the business transaction, which beats any guess
         t["task_type"], t["task_type_source"], t["task_type_match"] = run["workflow"], "workflow", None
 
-    # --- phase attribution: split each LLM call's cost across the tool calls it issued
+    # --- cost attribution: each tool call's cost is writing it plus carrying its result in later turns
     phase_calls = Counter(s["phase"] for s in tools)
-    phase_cost = Counter()
-    # map llm step -> tool steps that immediately follow it (same llm_msg)
-    for i, s in enumerate(steps):
-        if s["kind"] != "llm":
-            continue
-        issued = []
-        for s2 in steps[i + 1:]:
-            if s2["kind"] == "tool":
-                issued.append(s2)
-            elif s2["kind"] == "llm":
-                break
-            else:
-                continue
-        # only count tool steps sharing the same message id
-        if issued:
-            mid = issued[0].get("llm_msg")
-            issued = [x for x in issued if x.get("llm_msg") == mid]
-        c = s.get("cost", 0)
-        if issued:
-            share = c / len(issued)
-            for x in issued:
-                x["attributed_cost"] = share
-                phase_cost[x["phase"]] += share
-        else:
-            phase_cost["respond"] += c
+    phase_cost = attribute(steps)
     t["phase_calls"] = dict(phase_calls)
-    t["phase_cost"] = {k: round(v, 5) for k, v in phase_cost.items()}
+    t["phase_cost"] = {k: round(v, 5) for k, v in phase_cost.items() if v}
     with_tools = [s for s in llm if s.get("tool_calls")]
     t["parallelism"] = round(sum(s["tool_calls"] for s in with_tools) / len(with_tools), 2) if with_tools else 0
 

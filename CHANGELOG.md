@@ -8,8 +8,8 @@ bumps the minor version.
 
 ## [Unreleased]
 
-**Upgrading.** `SCHEMA_VERSION` 13: tasks and steps record tripwires and what each agent did in a task, and tool
-arguments are stored redacted. The derived tables are rebuilt from the
+**Upgrading.** `SCHEMA_VERSION` 14: tasks and steps record tripwires and what each agent did in a task, tool
+arguments are stored redacted, and agent time and cost attribution are computed the new way. The derived tables are rebuilt from the
 sources on first start, as after any schema change; nothing to migrate. The new durable `incidents` tables are
 created then too, and the first refresh opens incidents from the security events already held -- without
 alerting, as history never is.
@@ -88,6 +88,17 @@ alerting, as history never is.
   the move.
 
 ### Changed
+- **Agent time is what steps covered.** It summed the gaps between timestamps, each capped at 5 minutes, so a
+  20-minute build counted 5 and a person deciding for 4 counted 4. Now each step's own interval counts in full,
+  gaps of up to 5 minutes between events still count (a model call logged only when it ends), parallel calls count
+  once, and human-in-the-loop spans and rejected tool calls are taken out. Baselines, `duration_vs_baseline` and
+  the latency side of everything built on them follow.
+- **A tool call costs what it really cost.** Each model turn's cost used to be split evenly over the calls it
+  issued, so a 40 kB read and a 40-byte one cost the same, and the read cost nothing in the turns that re-sent it.
+  Now a call is charged its share of the output that wrote it plus its result's share of every later turn's input
+  while it stays in context (by size, until a compaction, per agent). Avoidable spend, blocked cost, spend by
+  phase and node, and tool costs all use it; the input no result accounts for is shown as "re-sent context", and
+  the parts add up to the task's cost. Retrieval spend, computed before but never drawn, is now in the chart.
 - **The console is tested by using it.** A new test drives headless Chrome through the console as a person
   would -- every sidebar link, the time-window and project filters (and that they survive a reload), opening a
   task and going back, the task list's filters and search, regrouping Analytics, Refresh, issuing and clearing
