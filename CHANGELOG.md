@@ -16,6 +16,12 @@ created then too, and the first refresh opens incidents from the security events
 alerting, as history never is.
 
 ### Added
+- **Percentiles across rolled-up history.** A median doesn't add across days, so once retention purged tasks, the
+  Overview's median cost and p95 covered only the tasks still held. Each daily rollup row now also keeps a quantile
+  sketch (`sketch.py`, DDSketch: within 1% relative, mergeable) of its tasks' cost, wall clock and agent time, and
+  the Overview reports the median cost and p95 wall clock over the whole window from them. Rows rolled up before
+  this have none; the figure is then left out rather than drawn from half the window. Percentiles show the number
+  of tasks behind them.
 - **Do the process scores predict success?** The Process Review page fits the scores to the outcomes somebody
   stated (`GET /api/calibration`, `calibrate.py`): each score's AUC alone, the overall's with the default weights,
   and a logistic regression's out of sample. Scores are computed without the terms that restate the outcome, so
@@ -154,6 +160,10 @@ alerting, as history never is.
   filtering, were each checked to fail it.
 
 ### Fixed
+- **Retention failed on a task without a workflow.** A rollup row's dimensions are its key and can't be NULL, so a
+  run that named no workflow (an SDK run without one, some OpenTelemetry traces) made the roll-up fail with
+  `IntegrityError` -- and with it every refresh -- once retention reached its day. A missing dimension is now ''
+  in a rollup row and read back as missing.
 - **The checker saw the outcome it was grading.** Its evidence held the task's current outcome: for a task a
   person had graded, the answer to the calibration question, and for an inferred one an anchor towards agreeing
   with inference. Its evidence now holds the request, the answer and the signals, and no outcome.

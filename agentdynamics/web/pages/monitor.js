@@ -16,7 +16,7 @@
       `<span class="small muted">${k.sessions} sessions</span>`) +
       `<div class="kpis">
         ${kpi("Tasks", num(k.tasks), `${k.sessions} sessions`)}
-        ${kpi("Spend", usd(k.cost), `median ${usd(k.median_cost)} / task${spendCaveats(k)}`)}
+        ${kpi("Spend", usd(k.cost), `median ${usd(k.median_cost)} / task <span class="muted">(n=${num(k.tasks)})</span>${spendCaveats(k)}`)}
         ${kpi("Agent Apdex", k.apdex == null ? "–" : k.apdex.toFixed(2), "satisfied + ½ tolerating", " " + pill(healthOfApdex(k.apdex)))}
         ${kpi("Completed cleanly", pct(k.success_rate), `${k.success_ci ? `<span title="95% interval: the true rate is likely in this range">${pct(k.success_ci[0])}–${pct(k.success_ci[1])}</span> · ` : ""}${pct(k.rework_rate)} interrupted or corrected${evidence(k.outcomes_by_source, k.tasks)}${k.graded_success && k.graded_success.tasks ? ` · <span title="over the tasks whose outcome someone stated">stated: ${pct(k.graded_success.rate)} of ${k.graded_success.tasks}</span>` : ""}`)}
         ${kpi("Tool error rate", pct(k.tool_error_rate, 1), `${num(k.tool_calls)} tool calls`)}
@@ -36,7 +36,7 @@
         ${kpi("User feedback", k.feedback_avg == null ? "–" : k.feedback_avg.toFixed(2), "avg score where collected")}
       </div>
       <div class="grid g-3-2">
-        ${card("Daily spend", `<div id="ch-daily"></div>` + (d.history ? `<p class="small muted" style="margin:8px 0 0">Up to ${esc(dayLabel(d.history.through))}: daily totals only (${num(d.history.tasks)} tasks, ${usd(d.history.cost)} over ${d.history.days} days). Retention has removed the tasks themselves, so the figures above cover the tasks still held.</p>` : ""), "click a day to see its tasks")}
+        ${card("Daily spend", `<div id="ch-daily"></div>` + (d.history ? `<p class="small muted" style="margin:8px 0 0">Up to ${esc(dayLabel(d.history.through))}: daily totals only (${num(d.history.tasks)} tasks, ${usd(d.history.cost)} over ${d.history.days} days). Retention has removed the tasks themselves, so the figures above cover the tasks still held${d.history.percentiles ? `; over the whole window, from each day's sketch, the median cost is <b>${usd(d.history.percentiles.median_cost)}</b> and p95 wall clock <b>${dur(d.history.percentiles.p95_wall)}</b> (${num(d.history.percentiles.tasks)} tasks, within 1%)` : ""}.</p>` : ""), "click a day to see its tasks")}
         ${card("Health by task type", `<div id="types-list"></div>`, `<a href="#/types">all types →</a>`)}
       </div>
       <div class="grid g3" style="margin-top:14px">
@@ -167,7 +167,7 @@
       <th class="num">History time (p50)</th><th class="num">Apdex</th><th class="num">Clean completion</th><th class="num">Tool errors</th><th class="num">Verified</th><th class="num">Avg score</th><th class="num">Apdex target</th><th class="num">Events</th><th>Trend</th></tr></thead><tbody>
       ${d.types.map((t) => `<tr class="click" data-href="#/tasks?type=${encodeURIComponent(t.type)}">
         <td>${pill(t.health)}</td><td><b>${esc(t.type)}</b><div class="small muted">${typedBy(t)}</div></td><td class="num">${t.tasks}</td><td class="num">${usd(t.cost)}</td>
-        <td class="num">${t.baseline ? usd(t.baseline.cost_p50) + " / " + usd(t.baseline.cost_p90) : "–"}</td>
+        <td class="num">${t.baseline ? usd(t.baseline.cost_p50) + " / " + usd(t.baseline.cost_p90) + ` <span class="muted small" title="tasks in the sample">(${num(t.baseline.sample)})</span>` : "–"}</td>
         <td class="num">${t.baseline ? dur(t.baseline.duration_p50) : "–"}</td>
         <td class="num">${t.apdex == null ? "–" : t.apdex.toFixed(2)}</td><td class="num">${pct(t.success_rate)}</td><td class="num">${pct(t.tool_error_rate, 1)}</td>
         <td class="num">${pct(t.verification_rate)}</td><td class="num" style="color:${scoreColor(t.avg_score)};font-weight:600">${t.avg_score == null ? "–" : Math.round(t.avg_score)}</td>

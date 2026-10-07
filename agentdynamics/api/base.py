@@ -179,6 +179,31 @@ class ApiBase:
                         "rolled_up": True})
         return out
 
+    def window_percentiles(self, ts, q):
+        """Median cost and p95 wall clock over the whole window: the rolled-up days' sketches merged with the tasks
+        still held after the boundary (sketch.py). None when no rolled-up day is in the window -- then the KPIs,
+        computed exactly from the tasks, already cover it."""
+        from ..sketch import Sketch
+        through, since = self.boundary()
+        if not through:
+            return None
+        w, a = self.rollup_where(q)
+        cost, wall, n = Sketch(), Sketch(), 0
+        for r in rows(self.con, f"SELECT tasks, cost_q, wall_q FROM rollup_daily r{w}", a):
+            if r["cost_q"] is None:
+                return None                      # rolled up before sketches were kept: say nothing rather than half
+            cost.merge(Sketch.from_json(r["cost_q"]))
+            wall.merge(Sketch.from_json(r["wall_q"]))
+            n += r["tasks"] or 0
+        if not n:
+            return None
+        held = [t for t in ts if t["started"] and t["started"] >= since]
+        for t in held:
+            cost.add(t["cost"] + (t["subagent_cost"] or 0))
+            wall.add(t["wall_s"] or 0)
+        return {"tasks": n + len(held), "median_cost": round(cost.quantile(0.5), 6),
+                "p95_wall": round(wall.quantile(0.95), 1)}
+
     def daily(self, ts, q=None):
         """Per-day totals of `ts`. With `q`, days that retention rolled up come from rollup_daily instead."""
         hist, since = [], 0

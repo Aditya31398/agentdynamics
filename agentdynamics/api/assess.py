@@ -85,7 +85,9 @@ class AssessMixin:
                "avg_context": "1.0 * SUM(context) / NULLIF(SUM(context_n), 0)",
                "cache_hit": "1.0 * SUM(cache_read) / MAX(1, SUM(cache_read + cache_write + input_tokens))"}
     # the same groups over rollup_daily; a group it can't express (per-task detail) is live tasks only
-    ROLLUP_GROUPS = {"task_type": "r.task_type", "project": "r.project", "outcome": "r.outcome", "source": "r.source",
+    # a dimension a task lacked is '' in a rollup row (store._rollup_dims): NULL again here, like the task's
+    ROLLUP_GROUPS = {"task_type": "NULLIF(r.task_type, '')", "project": "NULLIF(r.project, '')",
+                     "outcome": "NULLIF(r.outcome, '')", "source": "NULLIF(r.source, '')",
                      "day": "r.day", "week": "strftime('%Y-W%W', r.day)"}
 
     def analytics(self, q):

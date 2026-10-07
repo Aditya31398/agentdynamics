@@ -155,6 +155,45 @@ class RollupTest(unittest.TestCase):
         self.assertEqual(e.con.execute("SELECT COUNT(*) FROM runs WHERE id = 'late'").fetchone()[0], 0)
         self.assertSameTotals(before, self.totals(e))
 
+    def test_percentiles_reach_back_past_the_purge(self):
+        """A median doesn't add across days. Each rollup row keeps a sketch of its tasks (sketch.py), so after a
+        purge the median cost and p95 wall clock over the whole window are still there, within 1%."""
+        from agentdynamics.analysis import pct
+        e = self.engine()
+        self.seed(e)
+        for i in range(120):                         # recent and dearer: the whole-window median needs both halves
+            e.ingest(run(f"recent{i}", self.now - 3600 * (i % 20 + 1), "shop", calls=3 + i % 5))
+        e.refresh(force=True)
+        held = [tuple(r) for r in e.con.execute("SELECT cost + subagent_cost, wall_s FROM tasks "
+                                                "WHERE (llm_calls > 0 OR tool_calls > 0) AND is_subagent = 0")]
+        exact_cost, exact_wall = pct([c for c, _ in held], 0.5), pct([w for _, w in held], 0.95)
+        e.refresh()                                  # roll up and purge
+        p = Api(e).overview({"days": ""})["history"]["percentiles"]
+        self.assertEqual(p["tasks"], len(held))
+        self.assertLess(abs(p["median_cost"] - exact_cost) / exact_cost, 0.011)
+        self.assertLess(abs(p["p95_wall"] - exact_wall) / exact_wall, 0.011)
+        kept = Api(e).overview({"days": ""})["kpis"]["tasks"]
+        self.assertLess(kept, len(held), "the KPIs cover the tasks still held; the sketches, all of them")
+        # rows rolled up before sketches were kept: no figure rather than one from half the window
+        e.con.execute("UPDATE rollup_daily SET cost_q = NULL WHERE day = (SELECT MIN(day) FROM rollup_daily)")
+        e.con.commit()
+        self.assertIsNone(Api(e).overview({"days": ""})["history"]["percentiles"])
+
+    def test_a_task_without_a_workflow_rolls_up(self):
+        """A rollup row's dimensions are its key, which can't be NULL: a run naming no workflow made the roll-up --
+        and the refresh -- fail with IntegrityError until retention passed it."""
+        e = self.engine()
+        self.seed(e)
+        for i, age in enumerate((40, 41, 2)):
+            p = run(f"nowf{i}", self.now - age * DAY, "shop")
+            p.pop("workflow")
+            e.ingest(p)
+        e.refresh(force=True)
+        before = self.totals(e)
+        e.refresh()                                  # roll up and purge: no error
+        self.assertSameTotals(before, self.totals(e))
+        self.assertGreater(e.con.execute("SELECT COUNT(*) FROM rollup_daily WHERE workflow = ''").fetchone()[0], 0)
+
     def test_a_scoped_key_sees_only_its_projects_history(self):
         e = self.engine()
         self.seed(e)

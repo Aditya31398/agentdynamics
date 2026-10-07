@@ -57,7 +57,9 @@ class MonitorMixin:
         old = [d for d in daily if d.get("rolled_up")]
         # the KPIs are the tasks still held; days retention rolled up are totals only, and said to be
         history = {"through": self.boundary()[0], "days": len(old), "tasks": sum(d["tasks"] for d in old),
-                   "cost": round(sum(d["cost"] for d in old), 4)} if old else None
+                   "cost": round(sum(d["cost"] for d in old), 4),
+                   # percentiles over the whole window, rolled-up days included (sketch.py)
+                   "percentiles": self.window_percentiles(ts, q)} if old else None
         return {"kpis": k, "daily": daily, "history": history, "events": events[:12], "severity": dict(sev), "types": types,
                 "models": models, "phase_cost": {p: round(v, 4) for p, v in phase.items()},
                 "outcomes": dict(Counter(t["outcome"] for t in ts)),

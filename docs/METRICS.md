@@ -39,7 +39,7 @@ These metrics were chosen because each one maps to a decision someone can act on
 - ✅ Empty retrievals (retriever returned zero documents).
 
 **Latency: is it fast enough?**
-- ✅ End-to-end p50/p95 and node p50/p95. Agent time is what steps covered: each step's own [start, end] (a 20-minute build counts 20 minutes) and gaps of up to 5 minutes between events, less human-in-the-loop spans and rejected tool calls. An approval wait inside a tool call that was then allowed is counted, unless the source records it.
+- ✅ End-to-end p50/p95 and node p50/p95, each with the number of tasks behind it. After retention purges tasks, each day's rollup keeps a quantile sketch (DDSketch, within 1% relative) of its tasks' cost, wall clock and agent time, so the Overview's median cost and p95 wall clock still cover the whole window. Agent time is what steps covered: each step's own [start, end] (a 20-minute build counts 20 minutes) and gaps of up to 5 minutes between events, less human-in-the-loop spans and rejected tool calls. An approval wait inside a tool call that was then allowed is counted, unless the source records it.
 - ✅ Time to first token and output tokens/second per model.
 
 **Process quality: is it a good worker?**

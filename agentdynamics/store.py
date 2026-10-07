@@ -131,7 +131,10 @@ CREATE INDEX IF NOT EXISTS incident_signals_incident ON incident_signals(inciden
 
 # Columns added to a durable table after it shipped. CREATE TABLE IF NOT EXISTS leaves an existing table as it
 # was, and a durable table outlives every schema version, so they are added to it on connect. Never remove one.
-ADDED_COLUMNS = {"revocations": ("kind", "spec")}        # restrict directives (kind, what they take away)
+ADDED_COLUMNS = {"revocations": ("kind", "spec"),        # restrict directives (kind, what they take away)
+                 # quantile sketches (sketch.py) of each rollup row's tasks: percentiles across rolled-up history
+                 "rollup_daily": ("cost_q", "wall_q", "duration_q")}
+ROLLUP_SKETCHES = {"cost_q": "cost + subagent_cost", "wall_q": "wall_s", "duration_q": "duration_s"}
 
 
 def _add_columns(con):
@@ -545,15 +548,40 @@ def set_alert_state(con, firing, resolved, now):
 def freeze_days(con, days, through, through_end):
     """Write the daily totals of `days` [(label, start, end)] from the tasks table, and record that every
     day up to `through` (ending at `through_end`) is frozen. One transaction: a day is rolled up exactly once."""
-    dims = ", ".join(ROLLUP_DIMS[1:])
+    dims = ", ".join(_rollup_dims())
     with con:
         for label, start, end in days:
             con.execute(f"INSERT OR REPLACE INTO rollup_daily ({', '.join(ROLLUP_DIMS + ROLLUP_SUMS)}) "
                         f"SELECT ?, {dims}, {_ROLLUP_SELECT} FROM tasks INDEXED BY tasks_started "
                         f"WHERE started >= ? AND started < ? AND (llm_calls > 0 OR tool_calls > 0) GROUP BY {dims}",
                         (label, start, end))
+            _sketch_day(con, label, start, end)
         con.execute("INSERT OR REPLACE INTO source_state (name, data) VALUES ('rollups', ?)",
                     (json.dumps({"through": through, "through_end": through_end}),))
+
+
+def _rollup_dims():
+    """The dimensions as rolled up. A dimension a task lacks (a run that names no workflow) is '' in a rollup row:
+    its key can't be NULL, and that failed the whole roll-up -- and with it the refresh. Readers map '' back."""
+    return ["COALESCE(is_subagent, 0)" if d == "is_subagent" else f"COALESCE({d}, '')" for d in ROLLUP_DIMS[1:]]
+
+
+def _sketch_day(con, label, start, end):
+    """Each rollup row of the day gets sketches of its tasks' cost, wall clock and agent time (sketch.py)."""
+    from .sketch import Sketch
+    groups = {}
+    for r in con.execute(f"SELECT {', '.join(_rollup_dims())}, {', '.join(ROLLUP_SKETCHES.values())} FROM tasks "
+                         "INDEXED BY tasks_started WHERE started >= ? AND started < ? AND (llm_calls > 0 OR tool_calls > 0)",
+                         (start, end)).fetchall():
+        r = tuple(r)
+        key, vals = r[:len(ROLLUP_DIMS) - 1], r[len(ROLLUP_DIMS) - 1:]
+        g = groups.setdefault(key, [Sketch() for _ in ROLLUP_SKETCHES])
+        for sk, v in zip(g, vals):
+            sk.add(v)
+    where = " AND ".join(f"{d} = ?" for d in ROLLUP_DIMS[1:])
+    for key, sks in groups.items():
+        con.execute(f"UPDATE rollup_daily SET {', '.join(f'{c} = ?' for c in ROLLUP_SKETCHES)} WHERE day = ? AND {where}",
+                    [sk.to_json() for sk in sks] + [label] + list(key))
 
 
 def rollup_boundary(con):
