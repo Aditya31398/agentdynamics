@@ -8,13 +8,28 @@ bumps the minor version.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-07
+
+Two themes. **Securing agents:** tripwires, incidents with verdicts, a trust score per agent, restricting an agent
+instead of revoking it, a checker that reviews each incident, and a reviewer model in front of calls that can't be
+undone. **Numbers you can trust:** outcomes stated by your own systems' ids, a checker that applies its grades only
+after agreeing with people's, recent baselines per model and release, Apdex against targets you set, the estimate
+beside the bill, cost attributed to what caused it, agent time from what steps covered, scores tested against
+outcomes, a volume-aware trust score, and percentiles that reach past retention. Works with aegis-kernel 0.4.0 and
+later; `Kernel.restrict` and integrity refusals need 0.6.0.
+
 **Upgrading.** `SCHEMA_VERSION` 19: tasks and steps record tripwires and what each agent did in a task, tool
-arguments are stored redacted, agent time and cost attribution are computed the new way, each task records
-the baseline it was compared with, Apdex judges agent time as well as cost, runs keep their metadata, each agent's refusals are counted by rule, and tasks
-record their user and tenant. The derived tables are rebuilt from the
-sources on first start, as after any schema change; nothing to migrate. The new durable `incidents` tables are
-created then too, and the first refresh opens incidents from the security events already held -- without
-alerting, as history never is.
+arguments are stored redacted, agent time and cost attribution are computed the new way, each task records the
+baseline it was compared with, Apdex judges agent time as well as cost, runs keep their metadata, each agent's
+refusals are counted by rule, and tasks record their user and tenant. The derived tables are rebuilt from the
+sources on first start, as after any schema change; nothing to migrate. New durable tables (`incidents`,
+`incident_signals`, `incident_reviews`, `model_grades`, `outcome_keys`, `billing_daily`) and columns
+(`revocations.kind`/`spec`, `rollup_daily` sketches) are created in place on start, SQLite and Postgres alike, and
+the first refresh opens incidents from the security events already held -- without alerting, as history never is.
+Figures move by design: costs of models the price table now matches exactly, agent time, avoidable spend, every
+baseline comparison, Apdex and trust. `[trust] tripwire`, `probing` and `denial_rate` now mean bad tasks, not
+points (defaults 10, 3, 1). Rows rolled up before this release have no sketches, so whole-window percentiles start
+with the days rolled up from now on.
 
 ### Added
 - **Cost per user and per tenant.** Analytics groups by the run's user and by a tenant named in the trace's metadata
