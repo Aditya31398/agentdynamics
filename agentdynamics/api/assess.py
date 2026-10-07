@@ -89,8 +89,13 @@ class AssessMixin:
             facts += f" AND t.started >= ? UNION ALL SELECT {self.ROLLUP_GROUPS[group]} AS grp, {old} FROM rollup_daily r{rw}"
             args += [through_end] + ra
         sel = ", ".join(f"{self.METRICS[m]} AS {m}" for m in metrics)
-        order = "grp" if group in ("day", "week", "hour") else f"{metrics[0]} DESC, grp"   # ties: by name
-        data = rows(self.con, f"SELECT grp, {sel} FROM ({facts}) GROUP BY grp ORDER BY {order} LIMIT 200", args)
+        data = rows(self.con, f"SELECT grp, {sel} FROM ({facts}) GROUP BY grp ORDER BY grp", args)
+        if group not in ("day", "week", "hour") and metrics:
+            # by the first metric, ties by name. Sorted here, not in SQL: two groups whose averages are equal come out
+            # of SQLite and Postgres differing in the last bit (sums in another order), so SQL's order flipped with
+            # how the total was reached -- from tasks, or from rolled-up history after a purge.
+            data.sort(key=lambda r: (-round(r[metrics[0]] or 0, 9), str(r["grp"])))
+        data = data[:200]
         return {"rows": data, "metrics": metrics, "group": group,
                 # a grouping by per-task detail (model, hour, ...) can only cover the tasks still held
                 "history": {"through": through, "included": history} if through else None,

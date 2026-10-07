@@ -1053,6 +1053,7 @@ def finalize(runs, tasks_by_run, rules=None, now=None, grades=None, cache=None, 
     if cache is not None and len(cache.spawns) > len(runs):
         held = {r["id"] for r in runs}
         cache.spawns = {k: v for k, v in cache.spawns.items() if k in held}
+    child_costs = defaultdict(list)
     for run in runs:
         if not run.get("is_subagent"):
             continue
@@ -1071,8 +1072,12 @@ def finalize(runs, tasks_by_run, rules=None, now=None, grades=None, cache=None, 
             t["parent_task_id"] = parent_task_id
             pt = task_by_id.get(parent_task_id)
             if pt:
-                pt["subagent_cost"] += t["cost"]
+                child_costs[pt["id"]].append(t["cost"])
                 pt["subagents"] += 1
+    # summed exactly (fsum), so the total doesn't depend on the order runs happen to be held in: an incremental
+    # refresh and a full rebuild hold them in different orders, and a last-bit difference showed in a baseline
+    for tid, costs in child_costs.items():
+        task_by_id[tid]["subagent_cost"] = math.fsum(costs)
 
     # baselines per task type (top-level tasks only)
     main = [t for t in all_tasks if not t["is_subagent"] and t["llm_calls"] > 0]
