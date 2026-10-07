@@ -294,7 +294,7 @@ class ConsoleInteractionTest(unittest.TestCase):
         self.page.wait("!!document.querySelector('#trust-list .trust-detail')", what="the agent's evidence")
         detail = self.page.text("#trust-list .trust-detail")
         self.assertIn("tripwire", detail)
-        self.assertIn("= ", detail, "the arithmetic is shown")
+        self.assertIn("clean task(s) and", detail, "the counts behind the score are shown")
         self.page.click("#trust-list .trust-detail tr.click")
         self.page.wait("location.hash === '#/task/shop-1%230'", what="the task the evidence came from")
         self.page.settle()

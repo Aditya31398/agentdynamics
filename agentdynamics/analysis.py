@@ -439,8 +439,8 @@ def agent_evidence(steps):
             continue
         x = per.get(a)
         if x is None:
-            x = per[a] = {"calls": 0, "denied": 0, "touches": 0, "streak": 0, "_same": 0, "_any": 0, "_last": None,
-                          "_misused": set()}
+            x = per[a] = {"calls": 0, "denied": 0, "touches": 0, "streak": 0, "rules": {}, "_same": 0, "_any": 0,
+                          "_last": None, "_misused": set()}
         if s.get("tripwire"):
             x["touches"] += 1
         if s["kind"] != "tool":
@@ -450,13 +450,16 @@ def agent_evidence(steps):
             x["_misused"].add(s["name"])
         if s.get("denied"):
             x["denied"] += 1
+            r = s.get("rule") or "unknown"          # by rule: one most agents hit is the policy's friction (trust.py)
+            x["rules"][r] = x["rules"].get(r, 0) + 1
             x["_same"] = x["_same"] + 1 if s.get("name") == x["_last"] else 1
             x["_any"] += 1
             x["_last"] = s.get("name")
         else:
             x["_same"], x["_any"], x["_last"] = 0, 0, None
         x["streak"] = max(x["streak"], x["_same"], x["_any"])
-    return {a: dict({k: v for k, v in x.items() if not k.startswith("_")}, misused=sorted(x["_misused"]))
+    return {a: dict({k: v for k, v in x.items() if not k.startswith("_")}, misused=sorted(x["_misused"]),
+                    rules=dict(sorted(x["rules"].items())))
             for a, x in sorted(per.items())}
 
 

@@ -44,12 +44,15 @@ Example agentdynamics.toml:
     min_kappa = 0.6                 #   Cohen's kappa at least this,
     min_pairs = 30                  #   over at least this many tasks graded by both
 
-    [trust]                         # each agent's trust score (trust.py): points for evidence, halved weekly
+    [trust]                         # each agent's trust score (trust.py): a reputation, evidence halved weekly
     half_life_days = 7
-    tripwire = 40                   # a task in which the agent touched a tripwire
-    probing = 15                    # a task in which it had 3+ calls refused in a row
-    denial_rate = 20                # at a 100% refusal rate, pro rata below
+    tripwire = 10                   # a task in which the agent touched a tripwire counts as 10 bad tasks
+    probing = 3                     # one in which it had 3+ calls refused in a row
+    denial_rate = 1                 # one with all its calls refused, pro rata below
     confirmed = 1.5                 # evidence in an incident confirmed as real counts this much more
+    prior_clean = 19                # every agent starts as if it had 19 clean tasks and 1 bad
+    prior_bad = 1
+    friction_share = 0.5            # refusals under a rule half the project's agents hit are policy friction
 
     [enforcement.tripwires]         # decoys no legitimate agent touches: each touch raises a critical event
     tools = ["secrets.vault_export"]

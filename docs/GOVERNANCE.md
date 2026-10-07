@@ -214,36 +214,48 @@ tighten the policy it ran under, or give the verdict.
 ### 3e. Trust: what an agent's own behaviour says about it
 
 Each agent has a trust score from 0 to 100, on the Incidents page (lowest first), on each incident, and in
-Prometheus as `agentdynamics_agent_trust{project, agent}`. It starts at 100 and loses points for evidence of
-trying to exceed what the agent was given:
+Prometheus as `agentdynamics_agent_trust{project, agent}`. It is a reputation: every task the agent works in is
+either a clean task or bad evidence, weighing as many bad tasks as its severity says --
 
-| Evidence | Points |
+| Evidence | Counts as |
 |---|---|
-| a task in which the agent touched a tripwire | 40 |
-| a task in which it had 3 or more calls refused in a row (probing) | 15 |
-| the share of its governed calls the policy refused | up to 20, pro rata |
+| a task in which the agent touched a tripwire | 10 bad tasks |
+| a task in which it had 3 or more calls refused in a row (probing) | 3 bad tasks |
+| a task in which the policy refused its calls | up to 1 bad task, by the share refused |
 
-Evidence counts half as much a week later (`half_life_days`), so an agent earns trust back by behaving. Below
-80 it is on **watch**; below 50, **low**. Click an agent for the arithmetic and the tasks behind each point.
+-- on top of a start of 19 clean tasks and 1 bad one. Trust is the cautious (10th percentile) estimate of the
+share of clean tasks that evidence implies, times 100. So the same evidence weighs more on an agent with little
+history: one tripwire puts a new agent on watch, and barely moves one with thousands of clean tasks behind it.
+A new agent starts near 89 and earns its way up with clean work. Evidence counts half as much a week later
+(`half_life_days`). Below 80 it is on **watch**; below 50, **low**. Click an agent for the counts and the tasks
+behind them. Tripwires act on their own whatever an agent's trust: they stop the run, and revoke an agent that
+touches them repeatedly (3c).
 
 - **Behaviour, not competence.** A failed task or a tool error is a mistake, not an attempt to go further than
   allowed, so neither lowers trust. The agent's success rate is shown beside it instead.
-- **A rate, not a count.** Refused calls count as a share of the agent's calls: a busy agent is not marked down
+- **A share, not a count.** Refused calls count as a share of the task's calls: a busy agent is not marked down
   for being busy, only for being refused more often.
+- **The policy's friction is not the agent's fault.** Refusals under a rule that at least half of a project's
+  agents (and at least 3) run into say the rule is too tight, not that each agent is misbehaving: they are shown
+  as policy friction and don't count against anyone (`friction_share`, `friction_agents`).
 - **Each agent answers for itself.** When a root agent and the sub-agents it spawned act in one task, each is
   scored on its own steps.
-- **A person's verdict wins.** Evidence in a task whose incident was resolved as a false alarm doesn't count;
-  evidence in one confirmed as real counts 1.5 times (`confirmed`).
+- **A person's verdict wins.** A task whose incident was resolved as a false alarm counts as clean; evidence in
+  one confirmed as real counts 1.5 times (`confirmed`).
 - **Computed when read.** From the tasks still held, the verdicts, and the clock -- nothing stored, so it
   follows retention and a changed verdict at once.
 
 ```toml
 [trust]
 half_life_days = 7
-tripwire = 40
-probing = 15
-denial_rate = 20
+tripwire = 10          # bad tasks a tripwire task counts as
+probing = 3
+denial_rate = 1        # a task with every call refused
 confirmed = 1.5
+prior_clean = 19       # where every agent starts
+prior_bad = 1
+friction_share = 0.5
+friction_agents = 3
 watch = 80
 low = 50
 ```

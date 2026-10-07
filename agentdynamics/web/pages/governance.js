@@ -102,15 +102,14 @@ governance.instrument(kernel, root, watchdog=governance.Watchdog(max_repeated_de
   const trustCell = (a) => `<b>${a.trust.toFixed(1)}</b> ${pill(BAND[a.band], a.band)}
     <div class="bar" style="height:4px;margin-top:4px;background:var(--surface-2);border-radius:2px"><div style="width:${a.trust}%;height:100%;border-radius:2px;background:var(--${BAR[a.band]})"></div></div>`;
   const trustWhy = (a) => [a.tripwire_tasks ? `tripwire in ${a.tripwire_tasks} task(s)` : "", a.probing_tasks ? `probing in ${a.probing_tasks}` : "",
-    a.denied ? `${pct(a.denial_rate, 1)} of calls refused` : ""].filter(Boolean).join(" · ") || "nothing against it";
+    a.denied ? `${pct(a.denial_rate, 1)} of calls refused` : "", a.friction_denied ? `<span class="muted">${a.friction_denied} refusal(s) are policy friction</span>` : ""].filter(Boolean).join(" · ") || "nothing against it";
   function trustDetail(a) {
-    const p = a.penalty;
-    const floored = p.tripwire + p.probing + p.denial_rate > 100;
-    return `<div class="small" style="margin-bottom:6px">100 − tripwire ${p.tripwire.toFixed(1)} − probing ${p.probing.toFixed(1)} − refusal rate ${p.denial_rate.toFixed(1)} = <b>${a.trust.toFixed(1)}</b>${floored ? " (it stops at 0)" : ""}
-        <span class="muted"> · each piece of evidence counts half as much a week on; a false-alarm verdict removes it, a confirmed one weighs it more</span></div>
+    const p = a.penalty, bad = p.tripwire + p.probing + p.denial_rate;
+    return `<div class="small" style="margin-bottom:6px">${num(Math.round(a.clean * 10) / 10)} clean task(s) and ${bad.toFixed(1)} bad (tripwire ${p.tripwire.toFixed(1)}, probing ${p.probing.toFixed(1)}, refusals ${p.denial_rate.toFixed(1)}), on a start of ${a.prior[0]} and ${a.prior[1]}: trust <b>${a.trust.toFixed(1)}</b> is the cautious estimate of its share of clean tasks
+        <span class="muted"> · evidence counts half as much a week on; a false-alarm verdict makes a task clean, a confirmed one weighs it more${a.friction_rules.length ? `; refusals under ${a.friction_rules.map(esc).join(", ")} -- hit by most of this project's agents -- are the policy's friction and don't count` : ""}</span></div>
       ${a.evidence.length ? `<table><tbody>${a.evidence.map((e) => `<tr class="click" data-href="#/task/${encodeURIComponent(e.task_id)}">
         <td class="small muted" style="white-space:nowrap">${dt(e.ts)}</td><td><span class="tag bad">${esc(e.kind)}</span>${e.verdict ? ` <span class="tag">${e.verdict === "real" ? "confirmed" : esc(e.verdict)}</span>` : ""}</td>
-        <td class="num small">−${e.now.toFixed(1)} <span class="muted">of ${e.points}</span></td><td class="small mono">${esc(e.task_id)}</td></tr>`).join("")}</tbody></table>
+        <td class="num small">${e.now.toFixed(1)} bad <span class="muted">of ${e.points}</span></td><td class="small mono">${esc(e.task_id)}</td></tr>`).join("")}</tbody></table>
         ${a.tripwire_tasks + a.probing_tasks > a.evidence.length ? `<div class="small muted">The ${a.evidence.length} weightiest of ${a.tripwire_tasks + a.probing_tasks}.</div>` : ""}`
         : `<div class="small muted">No tripwire or probing evidence${a.denied ? `; ${a.denied} of ${a.calls} calls refused` : ""}.</div>`}`;
   }
@@ -123,7 +122,7 @@ governance.instrument(kernel, root, watchdog=governance.Watchdog(max_repeated_de
         <td>${trustCell(a)}</td><td class="small">${trustWhy(a)}</td><td class="num">${num(a.tasks)}</td>
         <td class="num">${a.success_rate == null ? "–" : pct(a.success_rate)}</td><td class="small muted">${a.last_evidence ? ago(a.last_evidence) : "–"}</td></tr>`).join("")}
       </tbody></table></div>${agents.length > shown.length ? `<p class="small muted">…and ${agents.length - shown.length} more, all trusted more.</p>` : ""}
-      <p class="small muted" style="margin:8px 0 0">Behaviour, not competence: failed tasks and tool errors don't lower trust (success is beside it). Click an agent for its evidence.</p>`,
+      <p class="small muted" style="margin:8px 0 0">Behaviour, not competence: failed tasks and tool errors don't lower trust (success is beside it). It grows with clean work and drops with tripwires, probing and refused calls -- more for an agent with little history. Click an agent for its evidence.</p>`,
       "lowest first · every task still held");
   }
 

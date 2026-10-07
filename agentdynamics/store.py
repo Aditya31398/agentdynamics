@@ -18,7 +18,7 @@ import time
 
 from .privacy import TASK_TEXT_FIELDS
 
-SCHEMA_VERSION = 17   # 6: outcome_source / outcome_reason (graded outcomes)
+SCHEMA_VERSION = 18   # 6: outcome_source / outcome_reason (graded outcomes)
                      # 7: tokens_unverified (cache accounting that rests on a guess)
                      # 8: steps.governed (did this call go through an Aegis kernel)
                      # 9: task_type_source / task_type_match (how a task type was decided)
@@ -30,6 +30,7 @@ SCHEMA_VERSION = 17   # 6: outcome_source / outcome_reason (graded outcomes)
                      # 15: tasks.baseline (recent baselines per type, model and release)
                      # 16: Apdex judges agent time as well as cost, against targets when set (tasks.apdex_basis)
                      # 17: runs.metadata (outcomes by key), runs.version from traces
+                     # 18: tasks.agents counts each agent's refusals by rule (policy friction, trust.py)
 
 RUN_COLS = ["id", "source", "project", "environment", "framework", "workflow", "cwd", "title", "agent_name", "parent_id",
             "parent_task_id", "is_subagent", "thread_id", "user_id", "tags", "root_status", "complete", "version", "git_branch",

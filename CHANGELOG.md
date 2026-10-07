@@ -8,9 +8,9 @@ bumps the minor version.
 
 ## [Unreleased]
 
-**Upgrading.** `SCHEMA_VERSION` 17: tasks and steps record tripwires and what each agent did in a task, tool
+**Upgrading.** `SCHEMA_VERSION` 18: tasks and steps record tripwires and what each agent did in a task, tool
 arguments are stored redacted, agent time and cost attribution are computed the new way, each task records
-the baseline it was compared with, Apdex judges agent time as well as cost, and runs keep their metadata. The derived tables are rebuilt from the
+the baseline it was compared with, Apdex judges agent time as well as cost, runs keep their metadata, and each agent's refusals are counted by rule. The derived tables are rebuilt from the
 sources on first start, as after any schema change; nothing to migrate. The new durable `incidents` tables are
 created then too, and the first refresh opens incidents from the security events already held -- without
 alerting, as history never is.
@@ -103,6 +103,17 @@ alerting, as history never is.
   the move.
 
 ### Changed
+- **Trust is a reputation, aware of volume and of the policy's own friction.** It was 100 minus points per piece
+  of evidence, so one tripwire cost 40 whether the agent had 3 tasks or 3,000, clean work earned nothing back
+  but time, and a policy too tight for everyone marked every agent down. Now each task is clean or bad evidence
+  (a tripwire task counts as 10 bad tasks, probing 3, refused calls up to 1 by their share), decayed weekly, on a
+  start of 19 clean and 1 bad; trust is the cautious (10th percentile) estimate of the share of clean tasks. A new
+  agent starts near 89 and earns its way up. Refusals under a rule at least half a project's agents hit (and at
+  least 3) are reported as policy friction and don't count against anyone; `tasks.agents` now counts each
+  agent's refusals by rule. A false-alarm verdict makes a task clean. **Upgrading:** `[trust] tripwire`,
+  `probing` and `denial_rate` now mean bad tasks, not points (defaults 10, 3, 1); a config that set them to the
+  old point values weighs that evidence four times heavier than intended. `penalty` in `/api/trust` now holds
+  bad-task equivalents; `clean`, `prior`, `friction_denied` and `friction_rules` are new.
 - **Apdex judges time too, against targets people set.** It was cost alone against 1.5x the type's median, so it
   measured an agent against its own past, and a uniformly slow or dear one scored well. Now the outcome comes
   first, then the worse of cost and agent time against T, where T is the target set for the type (Task Types page,
