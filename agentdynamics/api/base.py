@@ -4,7 +4,7 @@ import threading
 import time
 from collections import Counter, defaultdict
 
-from ..analysis import apdex_score, pct
+from ..analysis import apdex_score, pct, wilson
 from ..store import connect_reader, rollup_boundary, rows
 
 DAY = 86400
@@ -17,18 +17,6 @@ def mcp_group(name):
         return f"MCP · {parts[1]}" if len(parts) > 2 else name
     return name
 
-
-
-
-def wilson(k, n, z=1.96):
-    """The 95% Wilson score interval for k successes in n, [low, high]; None for n = 0."""
-    if not n:
-        return None
-    p = k / n
-    d = 1 + z * z / n
-    mid = (p + z * z / (2 * n)) / d
-    half = z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5) / d
-    return [round(max(0.0, mid - half), 3), round(min(1.0, mid + half), 3)]
 
 class ApiBase:
     def __init__(self, engine, projects=None):

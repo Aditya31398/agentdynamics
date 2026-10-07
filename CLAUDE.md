@@ -158,7 +158,7 @@ agentdynamics/
 tests/                test_core, test_integrations, test_autotrace, test_aegis_integration, test_ecosystem, test_live_anthropic,
                       test_console_ui, test_outcomes, test_token_accounting, test_policy_coverage, test_incremental,
                       test_scoped_keys, test_alerts, test_rollups, test_postgres, test_revocations, test_tripwires,
-                      test_incidents, test_trust, test_checker, test_apdex, test_ground_truth, test_calibrate, test_sketch, test_billing,
+                      test_incidents, test_trust, test_checker, test_apdex, test_ground_truth, test_calibrate, test_sketch, test_billing, test_allocation,
                       test_console_interaction (+ cdp.py, its Chrome DevTools driver)
 bench/                bench.py: ingest / rebuild / incremental timings and the CI scaling gate
 examples/             langgraph_style_app, otel_multiagent, governed_agent, demo_agent

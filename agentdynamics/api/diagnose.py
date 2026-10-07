@@ -4,7 +4,7 @@ import statistics
 import time
 from collections import Counter, defaultdict
 
-from ..analysis import REFUSAL as REFUSE, TRUNCATION as TRUNC, pct
+from ..analysis import REFUSAL as REFUSE, TRUNCATION as TRUNC, error_cause, pct
 from ..store import rows
 
 
@@ -31,6 +31,7 @@ class DiagnoseMixin:
                         "avg_output_chars": round(statistics.mean([s["output_chars"] or 0 for s in g])),
                         "output_tokens_est": round(sum(s["output_chars"] or 0 for s in g) / 4),
                         "cost": round(sum(s["attributed_cost"] or 0 for s in g), 4), "flags": dict(flags),
+                        "causes": dict(Counter(error_cause(s["error"]) for s in errs).most_common()),
                         "sample_errors": [{"error": (s["error"] or "")[:200], "task_id": s["task_id"]} for s in errs[-4:]]})
         out.sort(key=lambda x: -x["calls"])
         return {"tools": out}

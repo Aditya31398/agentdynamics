@@ -85,6 +85,37 @@ def pct(values, p):
     return v[f] if f == c else v[f] + (v[c] - v[f]) * (k - f)
 
 
+def wilson(k, n, z=1.96):
+    """The 95% Wilson score interval for k successes in n, [low, high]; None for n = 0."""
+    if not n:
+        return None
+    p = k / n
+    d = 1 + z * z / n
+    mid = (p + z * z / (2 * n)) / d
+    half = z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5) / d
+    return [round(max(0.0, mid - half), 3), round(min(1.0, mid + half), 3)]
+
+
+ERROR_CAUSES = (            # first match wins: a tool error's text, sorted into what usually fixes it
+    ("rate limit", re.compile(r"\b429\b|rate.?limit|too many requests|overloaded|\b529\b", re.I)),
+    ("timeout", re.compile(r"time[ds]?\s*out|deadline exceeded|TimeoutError", re.I)),
+    ("permission", re.compile(r"\b40[13]\b|permission|forbidden|unauthori[sz]ed|access denied|EACCES", re.I)),
+    ("not found", re.compile(r"\b404\b|not found|no such file|ENOENT|does not exist", re.I)),
+    ("bad input", re.compile(r"\b4(00|22)\b|invalid|validation|bad request|malformed|missing required|TypeError|"
+                             r"ValueError|KeyError|schema", re.I)),
+    ("upstream", re.compile(r"\b5\d\d\b|connection|unavailable|ECONN|reset by peer|bad gateway|internal server", re.I)),
+)
+
+
+def error_cause(text):
+    """What kind of failure a tool error is, from its text: rate limit, timeout, permission, not found, bad input,
+    upstream, or other. A heuristic on the message, not the source's own classification -- most don't give one."""
+    for name, rx in ERROR_CAUSES:
+        if text and rx.search(text):
+            return name
+    return "other"
+
+
 def clamp(x, lo=0.0, hi=100.0):
     return max(lo, min(hi, x))
 
@@ -484,6 +515,9 @@ def flow_metrics(t, run, steps, llm, tools):
             by_model[s["model"]] += (s.get("cost") or 0) + 1e-12      # most spend; with none priced, most calls
     t["_model"] = min(by_model, key=lambda m: (-by_model[m], m)) if by_model else None
     t["_release"] = run.get("version") or run.get("policy_version")
+    t["user_id"] = run.get("user_id")
+    md = run.get("metadata") or {}
+    t["tenant"] = md.get(run["_tenant_key"]) if run.get("_tenant_key") else (md.get("tenant") or md.get("tenant_id"))
     t["workflow"] = run.get("workflow") or (t["task_type"] if run.get("source") == "claude-code" else None)
     t["steps_total"] = len(llm) + len(tools)
     # model calls whose cache accounting rests on a guess (collectors/spans.uncached_input); None is

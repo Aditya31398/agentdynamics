@@ -65,6 +65,10 @@ Example agentdynamics.toml:
     weights = "default"             # "fitted": weights fitted to stated outcomes, used once they predict better
     refit_hours = 24
 
+    [analysis]
+    tenant_key = "tenant_id"        # the trace metadata key that names the customer: Analytics groups by tenant
+                                    # (unset: "tenant" or "tenant_id")
+
     [retention]
     days = 90                       # spans/runs older than this are purged; daily totals are kept
 

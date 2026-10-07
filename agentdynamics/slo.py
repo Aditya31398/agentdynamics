@@ -4,7 +4,7 @@ import os
 import time
 from collections import defaultdict
 
-from .analysis import apdex_score, pct
+from .analysis import apdex_score, pct, wilson
 
 DEFAULT_SLOS = [
     {"id": "success", "name": "Task success rate", "metric": "success_rate", "op": ">=", "target": 0.95, "window_days": 7, "scope": {}},
@@ -70,6 +70,8 @@ def evaluate(all_tasks, slo, now=None):
     else:
         good = val >= slo["target"] if slo["op"] == ">=" else val <= slo["target"]
     res = {**slo, "value": val, "n": len(win), "met": good if val is not None else None}
+    if slo["metric"] in ("success_rate", "good_task_rate") and val is not None:
+        res["value_ci"] = wilson(round(val * len(win)), len(win))     # 95%: how sure the window's value is
     if slo["metric"] in RATIO and val is not None:
         allowed = 1 - slo["target"]
         bad = 1 - val

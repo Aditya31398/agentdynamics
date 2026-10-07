@@ -8,14 +8,21 @@ bumps the minor version.
 
 ## [Unreleased]
 
-**Upgrading.** `SCHEMA_VERSION` 18: tasks and steps record tripwires and what each agent did in a task, tool
+**Upgrading.** `SCHEMA_VERSION` 19: tasks and steps record tripwires and what each agent did in a task, tool
 arguments are stored redacted, agent time and cost attribution are computed the new way, each task records
-the baseline it was compared with, Apdex judges agent time as well as cost, runs keep their metadata, and each agent's refusals are counted by rule. The derived tables are rebuilt from the
+the baseline it was compared with, Apdex judges agent time as well as cost, runs keep their metadata, each agent's refusals are counted by rule, and tasks
+record their user and tenant. The derived tables are rebuilt from the
 sources on first start, as after any schema change; nothing to migrate. The new durable `incidents` tables are
 created then too, and the first refresh opens incidents from the security events already held -- without
 alerting, as history never is.
 
 ### Added
+- **Cost per user and per tenant.** Analytics groups by the run's user and by a tenant named in the trace's metadata
+  (`[analysis] tenant_key`; "tenant" or "tenant_id" by default), for chargeback (`tasks.user_id`, `tasks.tenant`).
+- **Tool errors by cause.** The Tools page sorts each tool's errors by what their messages say: rate limit,
+  timeout, permission, not found, bad input, upstream, other (`causes` in `/api/tools`).
+- **An objective's value with its interval.** A success-rate or good-task-rate SLO shows its 95% interval
+  (`value_ci`): 9 of 10 and 900 of 1,000 are both 90%.
 - **Estimated beside billed.** A new source, `[[sources]] type = "anthropic_costs"` (an Admin API key in
   `ANTHROPIC_ADMIN_KEY`), pulls Anthropic's Usage & Cost Admin API cost report daily by description into a durable
   `billing_daily` table, replacing the days it re-reads. The Models page (`GET /api/billing`) sets it beside the

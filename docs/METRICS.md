@@ -35,7 +35,7 @@ These metrics were chosen because each one maps to a decision someone can act on
 - ✅ Human-in-the-loop interrupts (LangGraph `interrupt`, human spans).
 
 **Reliability: where does it break?**
-- ✅ Tool error rate, error streaks (the agent retrying the same failure), and failed runs with root error.
+- ✅ Tool error rate, error streaks (the agent retrying the same failure), and failed runs with root error. Each tool's errors are sorted by cause from their messages (rate limit, timeout, permission, not found, bad input, upstream, other).
 - ✅ Model-call errors, rate limits / overloads (429/529), `max_tokens` truncations and refusals / content filters.
 - ✅ Empty retrievals (retriever returned zero documents).
 
@@ -47,7 +47,9 @@ These metrics were chosen because each one maps to a decision someone can act on
 - ✅ Seven scores per task (efficiency, focus, reliability, verification, context, autonomy, compliance) with coaching findings, and an overall weighted mean of those that apply.
 - ✅ Whether they predict success: the Process Review page fits them to the outcomes somebody stated (graded, or a feedback score; never the inferred ones), each computed without the terms that restate the outcome. It shows each score's AUC alone, the overall's AUC with the default weights, and a logistic regression's AUC out of sample (5-fold). With `[scores] weights = "fitted"` the overall uses the fitted weights once they predict stated outcomes better than the defaults by 0.02 out of sample (refit daily): a score gets weight only if it also predicts on its own (AUC 0.55), and a score too rare to judge keeps its default.
 
-**Roadmap (not implemented):** LLM-as-judge grading of outcomes, tool-selection accuracy against labeled datasets, plan adherence (plan steps compared with executed steps), goal drift, semantic loop detection (similar but not identical calls), per-user and per-tenant cost allocation, anomaly detection on time series.
+- ✅ Cost per user and per tenant (Analytics), the tenant named by a key in the trace's metadata.
+
+**Roadmap (not implemented):** tool-selection accuracy against labeled datasets, plan adherence (plan steps compared with executed steps), goal drift, semantic loop detection (similar but not identical calls), a learned task-type classifier for coding sessions, anomaly detection on time series.
 
 
 ## AppDynamics → AgentDynamics mapping

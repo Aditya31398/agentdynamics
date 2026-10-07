@@ -1038,6 +1038,7 @@ class Engine:
                     s.pop("flags", None)
                     s.pop("attributed_cost", None)
                 self._runs[rid] = run
+                run["_tenant_key"] = (self.cfg.get("analysis") or {}).get("tenant_key")   # which metadata key
                 self._tasks[rid] = analysis.run_tasks(run)
             runs = list(self._runs.values())
             tasks, baselines, events = analysis.finalize(runs, self._tasks, self.rules(), now=self._clock(),

@@ -57,7 +57,9 @@ class AssessMixin:
 
     GROUPS = {"task_type": "t.task_type", "project": "t.project", "outcome": "t.outcome", "apdex": "t.apdex",
               "day": "date(t.started, 'unixepoch', 'localtime')", "week": "strftime('%Y-W%W', t.started, 'unixepoch', 'localtime')",
-              "models": "t.models", "source": "t.source", "prompt_kind": "t.prompt_kind", "hour": "strftime('%H', t.started, 'unixepoch', 'localtime')"}
+              "models": "t.models", "source": "t.source", "prompt_kind": "t.prompt_kind", "hour": "strftime('%H', t.started, 'unixepoch', 'localtime')",
+              # who it was for: chargeback by user, or by tenant ([analysis] tenant_key in trace metadata)
+              "user": "t.user_id", "tenant": "t.tenant"}
 
     # Every metric is built from sums, so it can be computed over tasks and rollup_daily alike. FACTS gives
     # each sum's per-task expression and its column in rollup_daily.
