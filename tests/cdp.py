@@ -284,7 +284,11 @@ class Page:
 
     def goto(self, url):
         self.call("Page.navigate", {"url": url})
-        self.wait("document.readyState === 'complete'", what="the page to load")
+        # a new tab's about:blank is already "complete": wait for the document we asked for, or the next step runs
+        # on about:blank (where localStorage throws SecurityError -- a Windows CI run caught it)
+        doc = url.split("#", 1)[0]
+        self.wait(f"location.href.split('#')[0] === {json.dumps(doc)} && document.readyState === 'complete'",
+                  what="the page to load")
 
     def settle(self, timeout=15):
         """Wait until the router has drawn: no 'Loading' placeholder, and no fetch in flight for a moment."""
