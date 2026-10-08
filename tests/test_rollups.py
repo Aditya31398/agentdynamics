@@ -88,8 +88,20 @@ class RollupTest(unittest.TestCase):
                 api.close()
 
     def assertSameTotals(self, before, after):
+        """Equal, except that a float may differ in its last bits: a total summed from tasks and the same total
+        summed from rollup rows add in different orders, and rounding then lands either side of a boundary
+        (0.0015625 read 0.001563 one way and 0.001562 the other on a nightly Windows run)."""
+        def same(a, b):
+            if isinstance(a, float) or isinstance(b, float):
+                return isinstance(a, (int, float)) and isinstance(b, (int, float)) and abs(a - b) <= 2e-6 + 1e-9 * abs(a)
+            if isinstance(a, dict) and isinstance(b, dict):
+                return a.keys() == b.keys() and all(same(a[k], b[k]) for k in a)
+            if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
+                return len(a) == len(b) and all(same(x, y) for x, y in zip(a, b))
+            return a == b
         for k in before:
-            self.assertEqual(before[k], after[k], f"{k} changed")
+            if not same(before[k], after[k]):
+                self.assertEqual(before[k], after[k], f"{k} changed")     # shows the difference
 
     def test_a_purge_changes_no_total(self):
         e = self.engine()
