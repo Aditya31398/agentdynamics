@@ -40,11 +40,23 @@ adds `name` and `via`.
   tasks on the branch: merged `completed`, closed without merging `failed`, reverted `rework`. Claude Code
   sessions carry their branch, so a coding agent's success rate can rest on whether its pull requests landed.
   A generic hook takes `/api/outcomes`' own body, signed, for ticket systems and scripts. `projects` limits a hook.
+- **The API contract is enforced.** `tests/test_api_contract.py` holds every GET route, `/healthz`, the
+  health-rule ids and the Prometheus metric names to `tests/api_contract.json`: a field that disappears or is
+  renamed fails the build. [docs/STABILITY.md](docs/STABILITY.md) says what is a contract, how a breaking change
+  is deprecated first, the limits of one install, and what 1.0 is waiting for.
 - **Chunked uploads** are read (`Transfer-Encoding: chunked`), within the same 64 MB limit.
 - **Startup warnings** for what is unsafe about how the server was started: auth off on a reachable address, keys
   over plain HTTP, a short key, a proxy trusted from anywhere, sign-in with no access rules.
 
 ### Fixed
+- One malformed value in accepted telemetry -- a stop reason that was a number, a token count that was an object,
+  a cost of infinity, a lone surrogate in a string, a tool call with no name -- failed the analysis for the whole
+  install on every refresh, because the payload is stored and re-read on each rebuild. Every collector now hands
+  over runs with the types the analysis expects (`collectors/sanitize.py`): a wrong value is dropped as if never
+  sent, a count or cost that can't be read counts 0. A stored run that still can't be read is skipped and reported
+  on its source instead of stopping the refresh. `tests/test_fuzz.py` feeds the receivers malformed runs, OTLP JSON
+  and truncated or bit-flipped protobuf, and requires the refresh and every page to keep working.
+- A protobuf varint longer than ten bytes was decoded as a number of any size; it is now malformed.
 - A gzip or deflate body was decompressed without a limit: a few kilobytes could become gigabytes in memory. Bodies
   are now limited to 64 MB after decompression too, zstd included.
 - A negative `Content-Length` made the server read until the client hung up.

@@ -20,6 +20,7 @@ import uuid
 
 from .. import pricing
 from ..phases import classify
+from . import sanitize
 from .spans import clean_metadata
 
 
@@ -40,9 +41,12 @@ def normalize(payload):
         "steps": [],
     }
     last_llm = None
-    for i, s in enumerate(payload.get("steps") or []):
-        k = s.get("kind")
-        st = dict(s)
+    steps = payload.get("steps")
+    for i, s in enumerate(steps if isinstance(steps, list) else []):
+        if not isinstance(s, dict) or not isinstance(s.get("kind"), str):
+            continue                                  # a step that says nothing of what it was
+        st = sanitize.step(dict(s))                    # before any arithmetic on its numbers
+        k = st["kind"]
         st["seq"] = i
         st.setdefault("ts", st.get("start_ts"))
         st.setdefault("start_ts", st.get("ts"))
@@ -87,7 +91,7 @@ def normalize(payload):
     tss = [s["ts"] for s in run["steps"] if s.get("ts")]
     run["started"] = min(tss) if tss else None
     run["ended"] = max(tss) if tss else None
-    return run
+    return sanitize.run(run)
 
 
 def load_dir(runs_dir):

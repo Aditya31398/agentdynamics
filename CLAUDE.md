@@ -55,14 +55,18 @@ AGENTDYNAMICS_URL=http://127.0.0.1:8790 python examples/governed_agent.py 45   #
 4. **Ingestion is idempotent and order-independent.** Upserts are keyed by span/run id. LangSmith PATCHes, late
    child spans and feedback before its run must all merge. Re-pulling a window must not double count.
 5. **One canonical model.** Collectors map to canonical spans (`collectors/spans.py`) or the generic run
-   format (`collectors/generic.py`). Analysis never sees vendor formats.
+   format (`collectors/generic.py`). Analysis never sees vendor formats, nor a value of the wrong type: each
+   collector's run passes through `collectors/sanitize.py`, because one bad value in stored telemetry would fail
+   every rebuild. A new step or run field the analysis reads goes into its lists there, and `tests/test_fuzz.py`
+   must still pass.
 6. **Nothing here can loosen Aegis.** The integration only adds correlation data, reserves budget, revokes and
    restricts. Server directives only revoke or restrict (`Kernel.restrict` only narrows); clearing one never gives a
    grant anything back.
    `govern.synthesize` only ever tightens a base policy, and tests verify it with `aegis ratify` and
    `aegis drift` (no widening).
 7. **Health-rule ids and API field names are a contract** for saved `rules.json`, alert consumers and
-   Prometheus labels. Add new ones; don't rename.
+   Prometheus labels. Add new ones; don't rename. `tests/test_api_contract.py` enforces it against
+   `tests/api_contract.json`; a removal is deprecated first (docs/STABILITY.md), then made with `--update`.
 8. **The console works offline.** No CDN assets, all charts are inline SVG. Keep it that way for air-gapped
    installs.
 
@@ -164,7 +168,7 @@ agentdynamics/
   web/                index.html, app.js (helpers, router, boot), pages/<area>.js (each area's pages), charts.js, style.css
 tests/                test_core, test_integrations, test_autotrace, test_aegis_integration, test_ecosystem, test_live_anthropic,
                       test_console_ui, test_outcomes, test_token_accounting, test_policy_coverage, test_incremental,
-                      test_scoped_keys, test_security, test_outcome_hooks, test_alerts, test_rollups, test_postgres, test_revocations, test_tripwires,
+                      test_scoped_keys, test_security, test_outcome_hooks, test_fuzz, test_api_contract, test_alerts, test_rollups, test_postgres, test_revocations, test_tripwires,
                       test_incidents, test_trust, test_checker, test_apdex, test_ground_truth, test_calibrate, test_sketch, test_billing, test_allocation,
                       test_console_interaction (+ cdp.py, its Chrome DevTools driver)
 bench/                bench.py: ingest / rebuild / incremental timings and the CI scaling gate

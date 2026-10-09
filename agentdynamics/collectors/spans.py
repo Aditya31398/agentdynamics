@@ -251,4 +251,5 @@ def build_run(trace_id, spans, source):
     run["root_status"] = root.get("status")
     run["root_error"] = preview(root.get("error"), 400) if root.get("error") else None
     run["complete"] = root.get("end") is not None
-    return run
+    from . import sanitize
+    return sanitize.run(run)

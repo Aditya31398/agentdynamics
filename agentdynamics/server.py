@@ -46,6 +46,9 @@ class ClientGone(Exception):
     """The client hung up while its request body was being read: there is no one left to answer."""
 
 
+INGEST_PATHS = ("/v1/traces", "/otlp/v1/traces", "/api/ingest", "/api/ingest/records")
+
+
 class BadRequest(ValueError):
     """A request body that can't be read as sent (its length, its encoding, its size): the client's error,
     answered 400 without a traceback in the server's log."""
@@ -714,7 +717,12 @@ class Handler(BaseHTTPRequestHandler):
         except BadRequest as ex:
             return self._send(400, {"error": str(ex)})
         except Exception as ex:
-            traceback.print_exc()
+            if p in INGEST_PATHS or p.startswith("/langsmith/"):
+                # telemetry that can't be read: the sender's problem, one line each, so a misbehaving exporter
+                # can't bury the log in tracebacks
+                print(f"[agentdynamics] refused {p}: {type(ex).__name__}: {str(ex)[:200]}", file=sys.stderr)
+            else:
+                traceback.print_exc()
             return self._send(400, {"error": str(ex)})
         self._send(404, {"error": "not found"})
 

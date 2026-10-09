@@ -950,19 +950,30 @@ class Engine:
                 if self._store_sdk_sig.get(trace_id) == sig and trace_id in self._runs:
                     continue
                 self._store_sdk_sig[trace_id] = sig
-                runs.append(generic.normalize(d))
+                try:
+                    runs.append(generic.normalize(d))
+                except Exception as ex:      # one stored run that can't be read must not stop the rest
+                    self.sources["sdk"].fail(f"run {trace_id}: {ex}")
         self._store_sdk_ids.update(r["id"] for r in runs)
         sdk_ids = {f[2]["id"] for f in self._files.values()} | self._store_sdk_ids
         for (source, trace_id), docs in batches([st for st in touched if st[0] != "sdk"]):
             if source == "aegis":
                 if trace_id in sdk_ids:
                     continue  # already recorded in-process by agentdynamics.integrations.aegis
-                run = generic.normalize(aegis_audit.build_payload(trace_id, [d for _, d in docs]))
+                try:
+                    run = generic.normalize(aegis_audit.build_payload(trace_id, [d for _, d in docs]))
+                except Exception as ex:      # noqa: BLE001 -- as below
+                    self.sources["sdk"].fail(f"aegis trace {trace_id}: {ex}")
+                    continue
                 run["source"] = "aegis"
                 runs.append(run)
                 continue
-            canon = [c for c in (langsmith.to_span(d) if fmt == "langsmith" else d for fmt, d in docs) if c]
-            run = spanmod.build_run(trace_id, canon, source)
+            try:
+                canon = [c for c in (langsmith.to_span(d) if fmt == "langsmith" else d for fmt, d in docs) if c]
+                run = spanmod.build_run(trace_id, canon, source)
+            except Exception as ex:          # one trace that can't be assembled must not stop the rest
+                (self.sources.get(source) or self.sources["sdk"]).fail(f"trace {trace_id}: {ex}")
+                continue
             if run:
                 runs.append(run)
         self._span_since = now

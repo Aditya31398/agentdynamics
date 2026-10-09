@@ -211,7 +211,8 @@ An existing install moves with its history: `agentdynamics store copy --to postg
   PagerDuty or any webhook: health-rule events and SLO burn-rate pages, delivered in order with retries
   (`agentdynamics alerts test` checks a destination end to end).
 
-See [deploy/](deploy/) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+See [deploy/](deploy/) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). [docs/STABILITY.md](docs/STABILITY.md) says
+what is a contract while this is 0.x, how breaking changes are handled, and the limits of one install.
 
 ## Development
 

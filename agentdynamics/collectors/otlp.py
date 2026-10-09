@@ -21,6 +21,8 @@ def _varint(buf, i):
         if not b & 0x80:
             return res, i
         shift += 7
+        if shift >= 70:                  # ten bytes encode any 64-bit value; more is a malformed message
+            raise ValueError("malformed protobuf: varint longer than 10 bytes")
 
 
 def _fields(buf):

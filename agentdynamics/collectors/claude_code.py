@@ -11,6 +11,7 @@ from datetime import datetime
 
 from .. import pricing
 from ..phases import classify
+from . import sanitize
 
 DEFAULT_ROOT = os.path.join(os.path.expanduser("~"), ".claude", "projects")
 
@@ -255,7 +256,7 @@ def parse_file(path, root=DEFAULT_ROOT):
         steps[0]["name"] = "delegated"
     # metadata an outcome can be stated by (outcome_hooks.py: a pull request's fate grades its branch)
     run["metadata"] = {"branch": branch} if branch else None
-    return run
+    return sanitize.run(run)
 
 
 def discover(root=DEFAULT_ROOT):
