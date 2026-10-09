@@ -47,7 +47,9 @@ Without `outcome()`, success is inferred from errors, interrupts and follow-ups.
 which outcomes were stated and which were guessed; grades can also be posted afterwards by a person or an
 eval pipeline (`POST /api/outcomes`), or by your own systems using your own ids: trace with
 `agentdynamics.trace("support", ticket_id="T-123")` and post `{"key": {"ticket_id": "T-123"}, "outcome": "rework"}`
-when the ticket is reopened.
+when the ticket is reopened. Or let those systems tell it directly, with no code at all: a signed
+[outcome webhook](docs/METRICS.md) takes GitHub's pull request events (merged: the work on the branch
+held up; closed: it didn't; reverted: rework), which grades Claude Code sessions by the branch they worked on.
 
 ### 2. Python, zero code changes
 

@@ -86,6 +86,17 @@ Example agentdynamics.toml:
     window_minutes = 60
     revoke_minutes = 60             # 0: events and alerts only
 
+    [[outcomes.webhooks]]           # outcomes from the systems that know them (outcome_hooks.py): POST /hooks/<name>
+    name = "github"
+    provider = "github"             # a pull request merged: its branch's tasks completed; closed: failed; reverted: rework
+    secret_env = "GITHUB_WEBHOOK_SECRET"   # the webhook's secret: deliveries are signed, no API key needed
+    key = "branch"                  # the trace metadata key holding the branch (Claude Code sessions carry it)
+    [[outcomes.webhooks]]
+    name = "support"
+    provider = "generic"            # /api/outcomes' own body, signed: X-AgentDynamics-Signature: sha256=<hex HMAC>
+    secret_env = "SUPPORT_HOOK_SECRET"
+    projects = ["support"]          # optional: grade only tasks in these projects
+
     [scores]                        # the overall process score's weights (calibrate.py)
     weights = "default"             # "fitted": weights fitted to stated outcomes, used once they predict better
     refit_hours = 24
@@ -247,6 +258,9 @@ def public_view(cfg):
         w["url"] = (w.get("url") or "")[:28] + "…"     # a Slack webhook URL is itself the secret
         if w.get("routing_key"):
             w["routing_key"] = "…"
+    for h in (v.get("outcomes") or {}).get("webhooks") or []:
+        if isinstance(h, dict) and h.get("secret"):
+            h["secret"] = "…"
     tw = (v.get("enforcement") or {}).get("tripwires") or {}
     if isinstance(tw.get("canaries"), dict):       # a canary's value tells whoever sees it what to avoid
         tw["canaries"] = {name: "…" for name in tw["canaries"]}

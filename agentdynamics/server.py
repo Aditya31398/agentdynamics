@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
 from . import auth as authn
+from . import outcome_hooks
 from .analysis import OUTCOMES
 from .api.assess import AssessMixin
 from .api.base import DAY, ApiBase, mcp_group  # noqa: F401  (re-exported)
@@ -507,6 +508,50 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(400, {"error": str(ex)})
         self._send(404, {"error": "not found"})
 
+    def _grade(self, items, who, scope):
+        """State outcomes (by task id, or by the app's own key in trace metadata) with `who`'s authority, within
+        `scope` (projects, or None for all). (status, body)."""
+        e = self.api.e
+        # by your own key: {"key": {"ticket_id": "T-1"}, "outcome", "reason", "match": "last" | "all"}
+        by_key, items = [it for it in items if "key" in it], [it for it in items if "key" not in it]
+        for it in by_key:
+            k = it.get("key")
+            if (not isinstance(k, dict) or len(k) != 1 or not isinstance(next(iter(k)), str)
+                    or not isinstance(next(iter(k.values())), (str, int, float)) or isinstance(next(iter(k.values())), bool)
+                    or it.get("match", "last") not in ("last", "all")
+                    or (it.get("outcome") is not None and it.get("outcome") not in OUTCOMES)):
+                return 400, {"error": "an outcome by key is {\"key\": {name: value}, \"outcome\": "
+                                      f"one of {', '.join(OUTCOMES)} or null, \"match\": \"last\" or \"all\"}}"}
+        if scope is not None and items:
+            # A scoped caller grades only tasks that exist in its projects. All or nothing, and the same
+            # answer whether an id is in another project or nowhere, so it can't probe for ids.
+            api = type(self.api)(e, projects=scope)
+            try:
+                ids = [str(it.get("task_id")) for it in items]
+                seen = {r[0] for i in range(0, len(ids), 500) for r in api.con.execute(
+                    f"SELECT id FROM tasks WHERE id IN ({','.join('?' * len(ids[i:i + 500]))})", ids[i:i + 500])}
+            finally:
+                api.close()
+            outside = sorted(set(ids) - seen)
+            if outside:
+                return 403, {"error": "this key may only grade tasks in its projects", "task_ids": outside}
+        graded, cleared = 0, 0
+        for it in by_key:                            # a scoped caller's reach stops at its projects
+            (k, v), = it["key"].items()
+            if it.get("outcome") is None:
+                cleared += e.ungrade_by_key(k, str(v), scope)
+            else:
+                e.grade_by_key(k, str(v), it["outcome"], it.get("reason"), who, it.get("match", "last"), scope)
+                graded += 1
+        for it in items:
+            if it.get("outcome") is None:          # null clears: back to feedback, then inference
+                cleared += e.ungrade(it["task_id"])
+            else:
+                e.grade(it["task_id"], it["outcome"], it.get("reason"), who)
+                graded += 1
+        e.refresh()                                  # one re-finalize for the whole request
+        return 200, {"ok": True, "graded": graded, "cleared": cleared}
+
     def do_POST(self):
         return self._unread_body_closes(self._post)
 
@@ -585,46 +630,20 @@ class Handler(BaseHTTPRequestHandler):
                     items = body if isinstance(body, list) else body.get("grades", [])
                 else:
                     items = [dict(body, task_id=unquote(p[len("/api/tasks/"):-len("/outcome")]))]
-                # by your own key: {"key": {"ticket_id": "T-1"}, "outcome", "reason", "match": "last" | "all"}
-                by_key, items = [it for it in items if "key" in it], [it for it in items if "key" not in it]
-                for it in by_key:
-                    k = it.get("key")
-                    if (not isinstance(k, dict) or len(k) != 1 or not isinstance(next(iter(k)), str)
-                            or not isinstance(next(iter(k.values())), (str, int, float)) or isinstance(next(iter(k.values())), bool)
-                            or it.get("match", "last") not in ("last", "all")
-                            or (it.get("outcome") is not None and it.get("outcome") not in OUTCOMES)):
-                        return self._send(400, {"error": "an outcome by key is {\"key\": {name: value}, \"outcome\": "
-                                                         f"one of {', '.join(OUTCOMES)} or null, \"match\": \"last\" or \"all\"}}"})
-                if self._scope() is not None and items:
-                    # A scoped key grades only tasks that exist in its projects. All or nothing, and the same
-                    # answer whether an id is in another project or nowhere, so it can't probe for ids.
-                    api = self._scoped_api()
-                    try:
-                        ids = [str(it.get("task_id")) for it in items]
-                        seen = {r[0] for i in range(0, len(ids), 500) for r in api.con.execute(
-                            f"SELECT id FROM tasks WHERE id IN ({','.join('?' * len(ids[i:i + 500]))})", ids[i:i + 500])}
-                    finally:
-                        api.close()
-                    outside = sorted(set(ids) - seen)
-                    if outside:
-                        return self._send(403, {"error": "this key may only grade tasks in its projects",
-                                                "task_ids": outside})
-                who, graded, cleared = self._key_name(), 0, 0
-                for it in by_key:                            # a scoped key's reach stops at its projects
-                    (k, v), = it["key"].items()
-                    if it.get("outcome") is None:
-                        cleared += e.ungrade_by_key(k, str(v), self._scope())
-                    else:
-                        e.grade_by_key(k, str(v), it["outcome"], it.get("reason"), who, it.get("match", "last"), self._scope())
-                        graded += 1
-                for it in items:
-                    if it.get("outcome") is None:          # null clears: back to feedback, then inference
-                        cleared += e.ungrade(it["task_id"])
-                    else:
-                        e.grade(it["task_id"], it["outcome"], it.get("reason"), who)
-                        graded += 1
-                e.refresh()                                  # one re-finalize for the whole request
-                return self._send(200, {"ok": True, "graded": graded, "cleared": cleared})
+                return self._send(*self._grade(items, self._key_name(), self._scope()))
+            # ---- outcomes from the systems that know them (outcome_hooks.py): signed, not keyed
+            if p.startswith("/hooks/"):
+                conf = outcome_hooks.find(e.cfg, unquote(p[len("/hooks/"):]))
+                if not conf:
+                    return self._send(404, {"error": "no such outcome webhook ([[outcomes.webhooks]])"})
+                try:
+                    items = outcome_hooks.items_for(conf, self.headers, self._body())
+                except outcome_hooks.HookError as ex:
+                    return self._send(ex.code, {"error": str(ex)})
+                if not items:
+                    return self._send(202, {"ok": True, "graded": 0, "ignored": True})
+                scope = list(conf["projects"]) if isinstance(conf.get("projects"), list) else None
+                return self._send(*self._grade(items, f"webhook:{conf['name']}", scope))
             # ---- operations
             if p == "/api/refresh":
                 if not self._require("read"):
@@ -735,6 +754,10 @@ def warnings_for(cfg, host, tls):
         out.append("[[auth.access]] match = \"*\" lets in anyone your identity provider signs in")
     if (auth.get("oidc") or auth.get("proxy")) and not auth.get("access"):
         out.append("people can sign in but no [[auth.access]] rule gives anyone a role")
+    for h in (cfg.get("outcomes") or {}).get("webhooks") or []:
+        if isinstance(h, dict) and not outcome_hooks.secret_of(h):
+            out.append(f"the outcome webhook {h.get('name')!r} has no secret ({h.get('secret_env') or 'secret_env'} is "
+                       "unset): it refuses every delivery")
     return out
 
 

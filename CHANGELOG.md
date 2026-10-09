@@ -13,7 +13,8 @@ serve HTTPS, keys are stored as hashes, and an internal review of the HTTP layer
 under **Fixed**. [SECURITY.md](SECURITY.md) has the threat model and a deployment checklist; there has still been no
 external review.
 
-**Upgrading.** With auth off, the server now answers only requests that name it (localhost, its own address, or
+**Upgrading.** `SCHEMA_VERSION` 20: Claude Code sessions carry the branch they worked on as metadata, so the
+derived tables are rebuilt from the sources on first start. With auth off, the server now answers only requests that name it (localhost, its own address, or
 `[server] allowed_hosts`) and refuses state-changing requests a browser sends from another site; a client that
 isn't a browser is unaffected. Keys created before this release stay in clear in `keys.json` until
 `agentdynamics keys rehash` (or the next `keys create` / `revoke`), and keep working either way. `/api/whoami`
@@ -34,6 +35,11 @@ adds `name` and `via`.
   existing `keys.json`.
 - **Security headers** on every response: a strict Content-Security-Policy (the console runs no inline script and
   loads nothing from elsewhere), `frame-ancestors 'none'`, `X-Frame-Options`, `Referrer-Policy`.
+- **Outcomes by webhook, with no code.** `[[outcomes.webhooks]]` gives a system that knows how the work turned out
+  a signed URL (`POST /hooks/<name>`; a shared secret, not an API key). GitHub's pull request events grade the
+  tasks on the branch: merged `completed`, closed without merging `failed`, reverted `rework`. Claude Code
+  sessions carry their branch, so a coding agent's success rate can rest on whether its pull requests landed.
+  A generic hook takes `/api/outcomes`' own body, signed, for ticket systems and scripts. `projects` limits a hook.
 - **Chunked uploads** are read (`Transfer-Encoding: chunked`), within the same 64 MB limit.
 - **Startup warnings** for what is unsafe about how the server was started: auth off on a reachable address, keys
   over plain HTTP, a short key, a proxy trusted from anywhere, sign-in with no access rules.

@@ -102,6 +102,7 @@ def parse_file(path, root=DEFAULT_ROOT):
         "steps": [],
     }
     steps = run["steps"]
+    branch = None                # the last branch the session worked on: where its work ended up
     llm_by_msg = {}
     tool_by_id = {}
     last_ts = None
@@ -120,6 +121,8 @@ def parse_file(path, root=DEFAULT_ROOT):
                 run["agent_name"] = e.get("agentName")
                 continue
             ts = parse_ts(e.get("timestamp"))
+            if e.get("gitBranch") and e["gitBranch"] != "HEAD":
+                branch = e["gitBranch"]
             if e.get("cwd") and not run["cwd"]:
                 run["cwd"] = e["cwd"]
                 run["version"] = e.get("version")
@@ -250,6 +253,8 @@ def parse_file(path, root=DEFAULT_ROOT):
     run["ended"] = max(tss) if tss else None
     if is_sub and steps and steps[0]["kind"] == "prompt":
         steps[0]["name"] = "delegated"
+    # metadata an outcome can be stated by (outcome_hooks.py: a pull request's fate grades its branch)
+    run["metadata"] = {"branch": branch} if branch else None
     return run
 
 

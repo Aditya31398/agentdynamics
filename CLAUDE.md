@@ -141,6 +141,8 @@ AGENTDYNAMICS_URL=http://127.0.0.1:8790 python examples/governed_agent.py 45   #
 agentdynamics/
   autotrace.py        SDK: init/trace/span/tool/llm_call, Anthropic+OpenAI patches, hook points (_hooks)
   integrations/aegis.py  instrument(): decisions -> steps, ModelSpendGate, Watchdog, TripwireGuard, ReviewGuard, policy identity
+  auth.py             who is calling: hashed keys, OIDC sign-in and sessions, a sign-in proxy; cross-site and Host checks
+  outcome_hooks.py    outcomes by signed webhook (/hooks/<name>): GitHub pull requests, or /api/outcomes' body
   tripwires.py        decoy tools and canary values: matching and step marks, shared by the server and the SDK
   incidents.py        security signals about one agent grouped into incidents (durable, with verdicts)
   trust.py            each agent's trust score from its evidence (tasks.agents), decayed, verdicts applied
@@ -162,7 +164,7 @@ agentdynamics/
   web/                index.html, app.js (helpers, router, boot), pages/<area>.js (each area's pages), charts.js, style.css
 tests/                test_core, test_integrations, test_autotrace, test_aegis_integration, test_ecosystem, test_live_anthropic,
                       test_console_ui, test_outcomes, test_token_accounting, test_policy_coverage, test_incremental,
-                      test_scoped_keys, test_security, test_alerts, test_rollups, test_postgres, test_revocations, test_tripwires,
+                      test_scoped_keys, test_security, test_outcome_hooks, test_alerts, test_rollups, test_postgres, test_revocations, test_tripwires,
                       test_incidents, test_trust, test_checker, test_apdex, test_ground_truth, test_calibrate, test_sketch, test_billing, test_allocation,
                       test_console_interaction (+ cdp.py, its Chrome DevTools driver)
 bench/                bench.py: ingest / rebuild / incremental timings and the CI scaling gate
@@ -179,8 +181,9 @@ deploy/               Dockerfile companion: compose, OTel Collector config, exam
    ([docs/BENCHMARKS.md](docs/BENCHMARKS.md)). Next is a store backend (#7); making the rest of that pass
    incremental needs dependency tracking for threads and time-dependent outcomes.
 2. **Most outcomes are still inferred, unless someone wires up ground truth.** They can be graded
-   (`agentdynamics.outcome`, `/api/outcomes` by task id or by the app's own key in trace metadata) and every task
-   says which (`outcome_source`). The checker grades a blind sample of people-graded tasks and, with
+   (`agentdynamics.outcome`, `/api/outcomes` by task id or by the app's own key in trace metadata, or a signed
+   webhook from the system that knows: a GitHub pull request merged, closed or reverted grades its branch's tasks,
+   Claude Code sessions included) and every task says which (`outcome_source`). The checker grades a blind sample of people-graded tasks and, with
    `apply_grades`, replaces inferred outcomes once its Cohen's kappa against people's grades clears the bar. On
    an install with no grading at all, "completed" still means "didn't visibly fail".
 3. **Coding-task typing is still keyword rules.** Traced apps use the workflow name; every task records
