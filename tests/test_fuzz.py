@@ -184,6 +184,14 @@ class FuzzTest(unittest.TestCase):
                                     "ORDER BY seq").fetchone()[0]
         self.assertEqual(tool, "unknown")
 
+    def test_strings_any_store_can_hold(self):
+        # SQLite takes a NUL, Postgres refuses it (the Postgres CI job caught a refresh broken that way); no UTF-8
+        # store takes a lone surrogate
+        from agentdynamics.collectors import sanitize
+        self.assertEqual(sanitize.text("a\x00b"), "ab")
+        self.assertEqual(sanitize.text("x" + SURROGATE), "x?")
+        self.assertEqual(sanitize.text("plain"), "plain")
+
     def test_varints_are_at_most_ten_bytes(self):
         # protobuf varints encode 64 bits; a longer one is malformed, not a 1000-digit token count
         with self.assertRaises(ValueError):

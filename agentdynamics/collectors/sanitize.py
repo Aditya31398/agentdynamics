@@ -40,7 +40,7 @@ def text(v, limit=MAX_TEXT):
             v.encode("utf-8")
         except UnicodeEncodeError:     # a lone surrogate ("\ud800" is valid JSON): no store can hold it
             v = v.encode("utf-8", "replace").decode("utf-8")
-        return v
+        return v.replace("\x00", "") if "\x00" in v else v     # nor can Postgres hold a NUL in text
     if isinstance(v, bool) or (isinstance(v, (int, float)) and math.isfinite(v)):
         return str(v)
     return DROP                        # a list or an object where a string belongs
