@@ -420,6 +420,33 @@ source at its directory. Records are grouped into runs by `details.ctx.run_id`, 
 Aegis hashes arguments instead of storing them, so these runs show decisions but can't feed policy export.
 Runs already recorded in-process are not double-counted.
 
+## Tools no in-process kernel reaches
+
+Aegis can only refuse a call that passes through a kernel. Two kinds of tool don't, and aegis-kernel (from the
+release after 0.6) covers both:
+
+- **MCP servers**: configure the client (Claude Code, Claude Desktop, Cursor, an Agent SDK app) to start
+  `aegis gateway --policy p.yaml --audit audit/mcp.jsonl -- <the server's command>` instead of the server. Every
+  `tools/call` goes through `Kernel.invoke`, budgets and taint included, and `tools/list` shows only what the grant
+  holds. `aegis mcp --server-cmd ...` writes a hardened policy for the server first; `--prefix <server>.` lines its
+  names up.
+- **Claude Code's own tools** (Bash, Edit, Write, WebFetch...): `aegis hook --policy p.yaml --audit
+  audit/claude-code.jsonl` as a `PreToolUse` hook refuses what the policy forbids and never approves anything, so
+  Claude Code's own permission prompts still apply. Each call is its own process: budgets and taint aren't kept.
+
+Point an `inbox` source at the audit directory and the decisions arrive here:
+
+```toml
+[[sources]]
+type = "inbox"
+path = "/home/me/.aegis/audit"      # a directory of its own: the inbox reads every *.jsonl in it
+```
+
+The hook stamps each record with its Claude Code session, so its decisions for one session form one run
+(`aegis-claude-code:<session>`, project `aegis`), beside the session's own task in its project; the Governance,
+Incidents and Trust pages count its refusals. Joining them into the session's task, so its tool calls show as
+governed there, is not done yet.
+
 ## Try it
 
 ```bash
