@@ -4,9 +4,26 @@
 [server]
 host = "0.0.0.0"
 port = 8787
+# tls_cert = "/data/tls/cert.pem"   # serve HTTPS itself; or terminate TLS in a proxy and keep this port private
+# tls_key = "/data/tls/key.pem"
 
 [auth]
 enabled = true
+
+# People sign in with your identity provider (OpenID Connect). Register
+# https://agentdynamics.example.com/auth/callback as the redirect URI.
+# [auth.oidc]
+# issuer = "https://login.example.com"
+# client_id = "agentdynamics"
+# client_secret_env = "AGENTDYNAMICS_OIDC_SECRET"
+# redirect_url = "https://agentdynamics.example.com/auth/callback"
+#
+# [[auth.access]]                    # the first rule that matches gives the role; nobody else gets in
+# match = "group:platform"
+# role = "admin"
+# [[auth.access]]
+# match = "*@example.com"
+# role = "read"
 
 # The store: the SQLite file on the data volume by default. For several instances or managed backups, point
 # it at Postgres (the image includes the driver). AGENTDYNAMICS_DB_URL keeps the password out of this file.

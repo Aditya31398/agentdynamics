@@ -88,7 +88,8 @@ button, .btn {
   padding: 5px 12px; font: inherit; font-size: 13px; cursor: pointer;
 }
 button:hover { background: var(--surface-2); }
-button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.primary, .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+a.btn { display: inline-block; text-decoration: none; }
 .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
 .seg button { border: 0; border-radius: 0; padding: 5px 10px; }
 .seg button.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }

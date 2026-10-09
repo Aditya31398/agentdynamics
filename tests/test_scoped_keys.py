@@ -186,7 +186,7 @@ class ScopedKeysTest(unittest.TestCase):
 
     def test_whoami_reports_the_scope(self):
         self.assertEqual(json.loads(self.call("/api/whoami", "k-alpha")[1]),
-                         {"role": "read", "projects": ["alpha"]})
+                         {"role": "read", "projects": ["alpha"], "name": "team-alpha", "via": "key"})
         self.assertIsNone(json.loads(self.call("/api/whoami", "k-admin")[1])["projects"])
 
     def test_a_scoped_key_grades_only_its_own_tasks(self):

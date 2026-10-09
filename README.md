@@ -197,8 +197,13 @@ write the analysis; the others serve the console and take ingest, and one takes 
 An existing install moves with its history: `agentdynamics store copy --to postgresql://...`, then
 `agentdynamics store verify`.
 
-- **Security:** role-based API keys, optionally scoped to projects. A scoped key reads only its projects' tasks,
-  runs, steps and events, on every endpoint, and can't write into or over another project's traces.
+- **Security:** role-based API keys (stored as hashes), optionally scoped to projects. A scoped key reads only its
+  projects' tasks, runs, steps and events, on every endpoint, and can't write into or over another project's
+  traces. People sign in with your identity provider (`[auth.oidc]`, OpenID Connect) or through a sign-in proxy
+  (`[auth.proxy]`), and `[[auth.access]]` rules give them a role, scoped to projects too. `serve --tls-cert` serves
+  HTTPS itself. Requests from other sites are refused, bodies are bounded, and `serve` warns about anything unsafe
+  in how it was started. [SECURITY.md](SECURITY.md) has the threat model, what has been reviewed (no external
+  audit yet), and a checklist for deploying it.
 - **Privacy:** redaction of emails, API keys and card numbers, or `store_content = false` to keep metadata only.
 - **Operations:** retention, Prometheus `/metrics`, `/healthz`, a status page for every source, and alerts to Slack,
   PagerDuty or any webhook: health-rule events and SLO burn-rate pages, delivered in order with retries

@@ -255,6 +255,16 @@ def cmd_revoke(a, data):
     return 0
 
 
+def _hashed(k):
+    """A key record that no longer holds the key: its SHA-256, and a prefix to recognise it by."""
+    if not k.get("key"):
+        return k
+    from .auth import hash_key
+    out = {n: v for n, v in k.items() if n != "key"}
+    out.update(hash=hash_key(k["key"]), prefix=k["key"][:10])
+    return out
+
+
 def cmd_keys(a, data):
     from .config import keys_path, load_keys, save_keys
     keys = load_keys(data)
@@ -263,26 +273,42 @@ def cmd_keys(a, data):
             print("admin keys cover the whole install and cannot be scoped to projects; "
                   "use --role read or --role ingest", file=sys.stderr)
             return 2
-        k = {"name": a.name or f"{a.role}-{len(keys) + 1}", "role": a.role, "key": f"ad_{a.role[0]}_{secrets.token_urlsafe(24)}",
-             "created": int(time.time())}
+        secret = f"ad_{a.role[0]}_{secrets.token_urlsafe(24)}"
+        k = {"name": a.name or f"{a.role}-{len(keys) + 1}", "role": a.role, "key": secret, "created": int(time.time())}
         if a.project:
             k["projects"] = sorted(set(a.project))
-        keys.append(k)
+        keys = [_hashed(x) for x in keys] + [_hashed(k)]    # the file never holds a usable key
         save_keys(data, keys)
         scope = f" for project(s) {', '.join(k['projects'])}" if a.project else ""
-        print(f"Created {k['role']} key '{k['name']}'{scope}:\n\n  {k['key']}\n\nAuth is now ON for the server using {keys_path(data)} (restart it).")
+        print(f"Created {k['role']} key '{k['name']}'{scope}:\n\n  {secret}\n\nOnly its hash is kept: copy it now. "
+              f"Auth is now ON for the server using {keys_path(data)} (restart it).")
         if a.role == "ingest":
-            print(f"Use it in your app:  export AGENTDYNAMICS_API_KEY={k['key']}")
+            print(f"Use it in your app:  export AGENTDYNAMICS_API_KEY={secret}")
     elif a.action == "list":
         if not keys:
             print("No keys: auth is off (local mode).")
         for k in keys:
             scope = ", ".join(k["projects"]) or "no projects" if isinstance(k.get("projects"), list) else "all projects"
-            print(f"  {k['name']:<20} {k['role']:<7} {k['key'][:8]}...  created "
-                  f"{time.strftime('%Y-%m-%d', time.localtime(k.get('created', 0)))}  {scope}")
+            clear = "  (stored in clear: agentdynamics keys rehash)" if k.get("key") else ""
+            print(f"  {k['name']:<20} {k['role']:<7} {(k.get('prefix') or k.get('key') or '')[:8]}...  created "
+                  f"{time.strftime('%Y-%m-%d', time.localtime(k.get('created', 0)))}  {scope}{clear}")
+    elif a.action == "rehash":
+        n = sum(1 for k in keys if k.get("key"))
+        save_keys(data, [_hashed(k) for k in keys])
+        print(f"{n} key(s) now stored as hashes; they keep working.")
     elif a.action == "revoke":
-        left = [k for k in keys if k["name"] != a.name and not k["key"].startswith(a.name or "\0")]
-        save_keys(data, left)
+        # by name, by the whole key, or by its start as `list` shows it (8 characters at least: "ad_" is every key)
+        from .auth import hash_key
+
+        def hit(k):
+            if k["name"] == a.name:
+                return True
+            if not a.name or len(a.name) < 8:
+                return False
+            return (k.get("hash") == hash_key(a.name)
+                    or (k.get("key") or k.get("prefix") or "").startswith(a.name))
+        left = [k for k in keys if not hit(k)]
+        save_keys(data, [_hashed(k) for k in left])
         print(f"Revoked {len(keys) - len(left)} key(s).")
 
 
@@ -406,6 +432,8 @@ def main(argv=None):
     s.add_argument("--port", type=int, default=None)
     s.add_argument("--interval", type=int, default=None, help="seconds between source re-scans")
     s.add_argument("--open", action="store_true", help="open the browser")
+    s.add_argument("--tls-cert", default=None, help="serve HTTPS with this PEM certificate (default: [server] tls_cert)")
+    s.add_argument("--tls-key", default=None, help="its private key, if not in the certificate file")
     r = sub.add_parser("run", help="run a Python program with zero-code instrumentation")
     r.add_argument("--project", default=None)
     r.add_argument("command", nargs=argparse.REMAINDER)
@@ -416,7 +444,7 @@ def main(argv=None):
     d.add_argument("--url", default=DEFAULT_URL)
     d.add_argument("--key", default=None)
     k = sub.add_parser("keys", help="manage API keys")
-    k.add_argument("action", choices=["create", "list", "revoke"])
+    k.add_argument("action", choices=["create", "list", "revoke", "rehash"])
     k.add_argument("--role", choices=["ingest", "read", "admin"], default="ingest")
     k.add_argument("--name", default=None)
     k.add_argument("--project", action="append", default=None, metavar="NAME",
@@ -523,9 +551,11 @@ def main(argv=None):
     if (a.interval or 1) > 0:
         eng.watch(a.interval)
     from .server import serve
+    tls_cert = a.tls_cert or eng.cfg["server"].get("tls_cert")
+    tls_key = a.tls_key or eng.cfg["server"].get("tls_key")
     if a.open:
-        webbrowser.open(f"http://{host}:{port}/#/start")
-    serve(eng, host, port)
+        webbrowser.open(f"{'https' if tls_cert else 'http'}://{host}:{port}/#/start")
+    serve(eng, host, port, tls_cert, tls_key)
     return 0
 
 

@@ -418,5 +418,59 @@ class ConsoleInteractionTest(unittest.TestCase):
         self.assertNothingWentWrong()
 
 
+@unittest.skipUnless(BROWSER, "no Chrome or Edge found (set AGENTDYNAMICS_BROWSER)")
+class SignInTest(unittest.TestCase):
+    """Single sign-on as a person does it: the console's sign-in card, the identity provider (a local one, see
+    test_security), back signed in with their name in the top bar, and signing out."""
+
+    @classmethod
+    def setUpClass(cls):
+        from test_security import FakeIdP, start
+        cls.tmp = tempfile.mkdtemp()
+        data = os.path.join(cls.tmp, "data")
+        eng = Engine(data, None)
+        eng.ingest(run("sso-1", "shop", HOUR, False))
+        eng.refresh(force=True)
+        eng.con.close()
+        cls.idp, idp_url = start(FakeIdP)
+        with open(os.path.join(data, "agentdynamics.toml"), "w", encoding="utf-8") as f:
+            f.write(f'[auth.oidc]\nissuer = "{idp_url}"\nclient_id = "agentdynamics"\n'
+                    'client_secret_env = "AD_TEST_OIDC_SECRET"\n\n'
+                    '[[auth.access]]\nmatch = "*@example.com"\nrole = "read"\n')
+        cls.old_env = os.environ.get("AD_TEST_OIDC_SECRET")
+        os.environ["AD_TEST_OIDC_SECRET"] = "s3cret"           # the server process reads its client secret here
+        cls.srv, cls.url = cdp.serve(data)
+        cls.browser = cdp.Browser(BROWSER)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.browser.close()
+        cdp.stop(cls.srv)
+        cls.idp.shutdown()
+        cls.idp.server_close()
+        if cls.old_env is None:
+            os.environ.pop("AD_TEST_OIDC_SECRET", None)
+        else:
+            os.environ["AD_TEST_OIDC_SECRET"] = cls.old_env
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def test_sign_in_with_single_sign_on_then_sign_out(self):
+        page = self.browser.page()
+        self.addCleanup(page.close)
+        page.goto(self.url + "/#/tasks")
+        page.wait("!!document.querySelector('#sso-go')", what="the sign-in card's single sign-on button")
+        page.click("#sso-go")                                     # to the provider and back
+        page.wait("document.querySelector('#whoami') && document.querySelector('#whoami').innerText.includes('alice@example.com')",
+                  timeout=30, what="the signed-in name in the top bar")
+        self.assertTrue(page.eval("location.hash === '#/tasks'"), "back on the page they started from")
+        page.settle()
+        page.wait("document.querySelector('#page').innerText.includes('shop request sso-1')", what="the tasks")
+        page.click("#btn-signout")
+        page.wait("!!document.querySelector('#sso-go')", timeout=30, what="the sign-in card again")
+        # the only errors are the 401s that showed the sign-in card
+        unexpected = [p for p in page.problems() if "401" not in p]
+        self.assertEqual(unexpected, [], "the console logged an error or got an HTTP error")
+
+
 if __name__ == "__main__":
     unittest.main()

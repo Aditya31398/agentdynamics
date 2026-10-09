@@ -31,7 +31,7 @@
   const authHeaders = () => { const k = store.get("apikey", ""); return k ? { Authorization: `Bearer ${k}` } : {}; };
   async function api(path, extra, opts = {}) {
     const r = await fetch(`/api/${path}${path.includes("?") ? "&" : "?"}${qs(extra)}`, { ...opts, headers: { ...authHeaders(), ...(opts.headers || {}) } });
-    if (r.status === 401) { showLogin(); throw new Error("API key required"); }
+    if (r.status === 401) { showLogin((await r.json().catch(() => ({}))).sso); throw new Error("sign-in required"); }
     if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
     return r.json();
   }
@@ -40,12 +40,35 @@
     if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
     return r.json();
   }
-  function showLogin() {
+  // A 401 shows the sign-in card; whatever was loading then fails, and must not draw its error over the card.
+  let signingIn = false;
+  function showLogin(sso) {
+    // sso: the server signs people in with an identity provider (auth.py); a stored key that no longer works
+    // would be sent ahead of the session cookie, so signing in that way forgets it
+    signingIn = true;
+    const next = encodeURIComponent("/" + location.hash);
     $("#page").innerHTML = `<div class="card" style="max-width:420px;margin:60px auto"><h2>Sign in</h2>
-      <p class="small muted">This AgentDynamics server requires an API key with the <b>read</b> or <b>admin</b> role.</p>
+      ${sso ? `<p><a class="btn primary" id="sso-go" href="${esc(sso)}?next=${next}">Sign in with single sign-on</a></p>
+      <p class="small muted">Or use an API key with the <b>read</b> or <b>admin</b> role.</p>`
+    : `<p class="small muted">This AgentDynamics server requires an API key with the <b>read</b> or <b>admin</b> role.</p>`}
       <input type="password" id="apikey" placeholder="API key" style="width:100%;margin:8px 0">
-      <button class="primary" id="apikey-go">Continue</button></div>`;
+      <button class="${sso ? "" : "primary"}" id="apikey-go">Continue</button></div>`;
     $("#apikey-go").onclick = () => { store.set("apikey", $("#apikey").value.trim()); location.reload(); };
+    if (sso) $("#sso-go").onclick = () => store.set("apikey", "");
+  }
+  // who is signed in, in the top bar: a person (single sign-on or a proxy) or a stored key, with a way out
+  async function showWho() {
+    const w = await api("whoami").catch(() => null);
+    const el = $("#whoami");
+    if (!w || !el || !w.via || w.via === "local") return;
+    el.innerHTML = `<span title="${esc(w.role || "")}${w.projects ? " · " + esc(w.projects.join(", ")) : ""}">${esc(w.name || w.role || "")}</span>`
+      + (w.via === "proxy" ? "" : ` <button id="btn-signout">Sign out</button>`);
+    const b = $("#btn-signout");
+    if (b) b.onclick = async () => {
+      store.set("apikey", "");
+      if (w.via === "sso") await fetch("/auth/logout", { method: "POST" }).catch(() => null);
+      location.reload();
+    };
   }
 
   // ------------------------------------------------------------------ nav
@@ -114,6 +137,7 @@
     try {
       await page(host, arg, params, () => token === current);
     } catch (e) {
+      if (signingIn) return;                 // the sign-in card is the page now
       host.innerHTML = `<div class="card empty">Failed to load: ${esc(e.message)}</div>`;
       console.error(e);
     }
@@ -221,7 +245,9 @@
   // ------------------------------------------------------------------ boot
   // On DOMContentLoaded, not here: the page scripts come after this one, and routing before they
   // have registered would render a page that doesn't exist yet.
-  const boot = () => initFilters().then(route).catch((e) => { $("#page").innerHTML = `<div class="card empty">Cannot reach the AgentDynamics server: ${esc(e.message)}</div>`; });
+  const boot = () => initFilters().then(() => { showWho(); return route(); }).catch((e) => {
+    if (!signingIn) $("#page").innerHTML = `<div class="card empty">Cannot reach the AgentDynamics server: ${esc(e.message)}</div>`;
+  });
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();
 })();

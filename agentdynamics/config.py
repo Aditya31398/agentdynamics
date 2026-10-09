@@ -5,6 +5,10 @@ Example agentdynamics.toml:
     [server]
     host = "0.0.0.0"
     port = 8787
+    tls_cert = "/etc/agentdynamics/tls.pem"     # serve HTTPS (TLS 1.2+); or AGENTDYNAMICS_TLS_CERT / _KEY
+    tls_key = "/etc/agentdynamics/tls.key"      # omit when the key is in the certificate file
+    allowed_hosts = ["agentdynamics.internal"]  # names the Host header may carry (DNS-rebinding guard; with auth
+                                                # off, a server bound to one address answers only to it and localhost)
 
     [auth]
     enabled = true
@@ -14,6 +18,27 @@ Example agentdynamics.toml:
       { name = "sre-team",       key = "ad_read_xxx",   role = "read" },
       { name = "platform-admin", key = "ad_admin_xxx",  role = "admin" },
     ]
+
+    [auth.oidc]                     # people sign in with your identity provider (auth.py): Okta, Entra ID,
+    issuer = "https://login.example.com"        # Google, Keycloak, Auth0... anything with OpenID Connect discovery
+    client_id = "agentdynamics"
+    client_secret_env = "AGENTDYNAMICS_OIDC_SECRET"
+    redirect_url = "https://agentdynamics.internal/auth/callback"   # register this with the provider
+    groups_claim = "groups"         # the claim that lists a person's groups (else the userinfo endpoint's)
+    session_hours = 12
+
+    [auth.proxy]                    # or: a proxy in front signs people in (oauth2-proxy, Cloudflare Access, ...)
+    user_header = "X-Forwarded-Email"
+    groups_header = "X-Forwarded-Groups"
+    trusted = ["127.0.0.1", "10.0.0.0/8"]   # the headers count only on connections from these addresses
+
+    [[auth.access]]                 # who gets which role, signed in either way: the first match wins
+    match = "group:platform"        # an email, "*@example.com", "group:<name>", or "*" (anyone who signs in)
+    role = "admin"
+    [[auth.access]]
+    match = "*@example.com"
+    role = "read"
+    projects = ["checkout"]         # optional, as on a key: only these projects
 
     [privacy]
     store_content = true            # false keeps only sizes/metadata, never prompt or tool text
@@ -191,6 +216,11 @@ def load(data_dir):
     if file_keys:
         cfg["auth"]["enabled"] = True
         cfg["auth"]["keys"] = list(cfg["auth"]["keys"]) + file_keys
+    if cfg["auth"].get("oidc") or cfg["auth"].get("proxy"):
+        cfg["auth"]["enabled"] = True    # people sign in: nobody else gets in
+    for name in ("tls_cert", "tls_key"):
+        if os.environ.get(f"AGENTDYNAMICS_{name.upper()}"):
+            cfg["server"][name] = os.environ[f"AGENTDYNAMICS_{name.upper()}"]
     # the store: a Postgres URL (the SQLite file in the data directory otherwise), and its schema
     if os.environ.get("AGENTDYNAMICS_DB_URL"):
         cfg["store"]["url"] = os.environ["AGENTDYNAMICS_DB_URL"]
@@ -206,7 +236,10 @@ def load(data_dir):
 def public_view(cfg):
     """Config safe to show in the UI (no secrets)."""
     v = copy.deepcopy(cfg)
-    v["auth"]["keys"] = [{"name": k.get("name"), "role": k.get("role"), "key": (k.get("key") or "")[:6] + "…"} for k in v["auth"]["keys"]]
+    v["auth"]["keys"] = [{"name": k.get("name"), "role": k.get("role"),
+                          "key": (k.get("key") or k.get("prefix") or "")[:6] + "…"} for k in v["auth"]["keys"]]
+    if (v["auth"].get("oidc") or {}).get("client_secret"):
+        v["auth"]["oidc"]["client_secret"] = "…"
     if v.get("store", {}).get("url"):
         from .pg import redact_url
         v["store"]["url"] = redact_url(v["store"]["url"])

@@ -13,7 +13,8 @@ APM for AI agents. Telemetry from many sources is normalized into one run/step m
 - `agentdynamics/analysis.py`: tasks, metrics, flow metrics, governance metrics, scores, baselines, health rules.
 - `agentdynamics/engine.py`: ingestion pipeline and incremental refresh.
 - `agentdynamics/server.py`: HTTP handler, receivers and auth; the read endpoints live in `agentdynamics/api/`, one
-  module per area of the console. `agentdynamics/web/`: the console (vanilla JS), `app.js` plus `pages/<area>.js`.
+  module per area of the console. `agentdynamics/auth.py`: who is calling (keys, OIDC sessions, a sign-in proxy)
+  and the cross-site and Host checks. `agentdynamics/web/`: the console (vanilla JS), `app.js` plus `pages/<area>.js`.
 - `agentdynamics/autotrace.py`: the in-process SDK (`init`, `trace`, `span`, `tool`, `llm_call`).
 - `agentdynamics/integrations/aegis.py` + `govern.py`: the Aegis bridge (decisions, spend gating, watchdog,
   policy export).
@@ -98,6 +99,10 @@ AGENTDYNAMICS_URL=http://127.0.0.1:8790 python examples/governed_agent.py 45   #
   either derive it from those views or refuse a scoped key, as `/metrics` and `/api/config` do. Ingest paths take
   a `scope` and check the whole request under `self.lock` before writing. `tests/test_scoped_keys.py` calls every
   route in `server.py` with a scoped key; plant new install-wide data (like its SLO fixture) there when you add some.
+- **State changes are POST or PATCH, never GET.** `_unread_body_closes` refuses a cross-site request (CSRF) and a
+  Host that isn't this server's (DNS rebinding) before any POST/PATCH handler runs; a GET that changed something
+  would have neither. A browser on the console sends `Sec-Fetch-Site: same-origin`; SDKs and exporters send no
+  Origin at all. `tests/test_security.py` attacks these, and signs in against a local identity provider.
 - **Alerts leave the building.** Anything in an alert must be what the stored copy would hold: rule messages
   are formatted from redacted text (`finalize(..., redact=)`), bodies are queued without secrets, and the
   JSON webhook body `{"source", "events"}` is a contract. Delivery is `alert_outbox` (durable, ordered per
@@ -157,7 +162,7 @@ agentdynamics/
   web/                index.html, app.js (helpers, router, boot), pages/<area>.js (each area's pages), charts.js, style.css
 tests/                test_core, test_integrations, test_autotrace, test_aegis_integration, test_ecosystem, test_live_anthropic,
                       test_console_ui, test_outcomes, test_token_accounting, test_policy_coverage, test_incremental,
-                      test_scoped_keys, test_alerts, test_rollups, test_postgres, test_revocations, test_tripwires,
+                      test_scoped_keys, test_security, test_alerts, test_rollups, test_postgres, test_revocations, test_tripwires,
                       test_incidents, test_trust, test_checker, test_apdex, test_ground_truth, test_calibrate, test_sketch, test_billing, test_allocation,
                       test_console_interaction (+ cdp.py, its Chrome DevTools driver)
 bench/                bench.py: ingest / rebuild / incremental timings and the CI scaling gate

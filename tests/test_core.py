@@ -491,13 +491,13 @@ class ClientDisconnectTest(unittest.TestCase):
 
     def test_a_client_hanging_up_mid_response(self):
         s = socket.create_connection(self.addr)
-        s.sendall(b"GET /api/overview HTTP/1.1\r\nHost: test\r\n\r\n")
+        s.sendall(b"GET /api/overview HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
         s.close()                                                # before reading a byte of the answer
         self.assert_still_serving_quietly()
 
     def test_a_client_resetting_an_idle_keep_alive_connection(self):
         s = socket.create_connection(self.addr)
-        s.sendall(b"GET /healthz HTTP/1.1\r\nHost: test\r\n\r\n")
+        s.sendall(b"GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
         r = http.client.HTTPResponse(s)
         r.begin()
         r.read()
@@ -507,7 +507,7 @@ class ClientDisconnectTest(unittest.TestCase):
 
     def test_a_client_hanging_up_mid_upload(self):
         s = socket.create_connection(self.addr)
-        s.sendall(b"POST /api/ingest HTTP/1.1\r\nHost: test\r\nContent-Length: 100000\r\n\r\n[{\"id\": ")
+        s.sendall(b"POST /api/ingest HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 100000\r\n\r\n[{\"id\": ")
         self.assertTrue(self.reading.wait(10))
         reset(s)
         self.assert_still_serving_quietly()

@@ -8,6 +8,50 @@ bumps the minor version.
 
 ## [Unreleased]
 
+Securing the server itself. People sign in with your identity provider or through a sign-in proxy, the server can
+serve HTTPS, keys are stored as hashes, and an internal review of the HTTP layer found and fixed the issues listed
+under **Fixed**. [SECURITY.md](SECURITY.md) has the threat model and a deployment checklist; there has still been no
+external review.
+
+**Upgrading.** With auth off, the server now answers only requests that name it (localhost, its own address, or
+`[server] allowed_hosts`) and refuses state-changing requests a browser sends from another site; a client that
+isn't a browser is unaffected. Keys created before this release stay in clear in `keys.json` until
+`agentdynamics keys rehash` (or the next `keys create` / `revoke`), and keep working either way. `/api/whoami`
+adds `name` and `via`.
+
+### Added
+- **Single sign-on.** `[auth.oidc]` signs people in with any OpenID Connect provider (Okta, Entra ID, Google,
+  Keycloak, Auth0...): the authorization code flow with PKCE, the ID token's issuer, audience, expiry and nonce
+  checked, groups from the token or the userinfo endpoint. `[[auth.access]]` rules give a role by email, domain
+  (`*@example.com`) or group, scoped to projects like a key; the first match wins and nobody else gets in. Sessions
+  are signed cookies (`HttpOnly`, `SameSite=Strict`, `Secure` over https) that hold who someone is, never their role.
+  The console offers "Sign in with single sign-on", shows who is signed in, and signs out.
+- **Sign-in through a proxy.** `[auth.proxy]` takes the person from a header set by oauth2-proxy, Cloudflare
+  Access or an ingress, only on connections from the addresses in `trusted`.
+- **HTTPS.** `serve --tls-cert/--tls-key` (or `[server] tls_cert` / `AGENTDYNAMICS_TLS_CERT`): TLS 1.2 or later,
+  the handshake on the connection's own thread, HSTS on a named host.
+- **Keys are kept as hashes.** `agentdynamics keys create` stores only a key's SHA-256; `keys rehash` converts an
+  existing `keys.json`.
+- **Security headers** on every response: a strict Content-Security-Policy (the console runs no inline script and
+  loads nothing from elsewhere), `frame-ancestors 'none'`, `X-Frame-Options`, `Referrer-Policy`.
+- **Chunked uploads** are read (`Transfer-Encoding: chunked`), within the same 64 MB limit.
+- **Startup warnings** for what is unsafe about how the server was started: auth off on a reachable address, keys
+  over plain HTTP, a short key, a proxy trusted from anywhere, sign-in with no access rules.
+
+### Fixed
+- A gzip or deflate body was decompressed without a limit: a few kilobytes could become gigabytes in memory. Bodies
+  are now limited to 64 MB after decompression too, zstd included.
+- A negative `Content-Length` made the server read until the client hung up.
+- With auth off, a web page could change rules or revoke agents through a visitor's browser (CSRF), and read the
+  API by DNS rebinding.
+- Another site could frame the console.
+- A key containing non-ASCII characters caused a server error instead of a 401.
+- `agentdynamics keys revoke --name ad` revoked every key whose value started with "ad"; a prefix now needs 8
+  characters.
+- An idle connection held its thread forever; connections now close after 120 s of silence.
+- With auth on, the console's sign-in card was replaced by "Cannot reach the AgentDynamics server" before anyone
+  could use it.
+
 ## [0.9.0] - 2026-10-07
 
 Two themes. **Securing agents:** tripwires, incidents with verdicts, a trust score per agent, restricting an agent

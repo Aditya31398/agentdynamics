@@ -197,12 +197,12 @@ def zstd_available():
         return False
 
 
-def zstd_decompress(body):
+def zstd_decompress(body, limit=-1):
     import io
 
     import zstandard
-    # the SDK streams frames without a content size, so read through a stream reader
-    return zstandard.ZstdDecompressor().stream_reader(io.BytesIO(body)).read()
+    # the SDK streams frames without a content size, so read through a stream reader; at most `limit` bytes
+    return zstandard.ZstdDecompressor().stream_reader(io.BytesIO(body)).read(limit)
 
 
 def info():

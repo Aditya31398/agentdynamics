@@ -1,14 +1,17 @@
 """HTTP API + static web console (stdlib only)."""
-import gzip
-import hmac
+import html
 import json
 import mimetypes
 import os
+import ssl
+import sys
+import threading
 import traceback
 import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
+from . import auth as authn
 from .analysis import OUTCOMES
 from .api.assess import AssessMixin
 from .api.base import DAY, ApiBase, mcp_group  # noqa: F401  (re-exported)
@@ -42,9 +45,72 @@ class ClientGone(Exception):
     """The client hung up while its request body was being read: there is no one left to answer."""
 
 
+class BadRequest(ValueError):
+    """A request body that can't be read as sent (its length, its encoding, its size): the client's error,
+    answered 400 without a traceback in the server's log."""
+
+
+# On every response. The console loads nothing from elsewhere and runs no inline script, so the policy can be
+# strict: a script injected into a page has nowhere to come from, and no other site may frame the console (its
+# buttons revoke agents).
+SECURITY_HEADERS = {
+    "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+                               "img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; "
+                               "base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+    "Cross-Origin-Opener-Policy": "same-origin",
+}
+
+
+def _inflate(body, wbits):
+    """Decompress at most MAX_BODY bytes: a few kilobytes of gzip can expand to gigabytes."""
+    out = bytearray()
+    while body:
+        d = zlib.decompressobj(wbits)
+        try:
+            out += d.decompress(body, MAX_BODY + 1 - len(out))
+        except zlib.error as ex:
+            raise BadRequest(f"corrupt compressed body: {ex}") from None
+        if len(out) > MAX_BODY or d.unconsumed_tail:
+            raise BadRequest("payload too large")
+        if not d.eof:
+            raise BadRequest("truncated compressed body")
+        body = d.unused_data if wbits > zlib.MAX_WBITS else b""     # gzip may hold several members
+    return bytes(out)
+
+
+class AuthState:
+    """What signing people in needs, made once per server on first use: the session key and the OIDC client."""
+
+    def __init__(self, engine):
+        self.e = engine
+        self._lock = threading.Lock()
+        self._secret = None
+        self._oidc = None
+
+    def secret(self):
+        with self._lock:
+            if self._secret is None:
+                self._secret = authn.session_secret(self.e)
+            return self._secret
+
+    def oidc(self):
+        conf = self.e.cfg["auth"].get("oidc")
+        if not conf:
+            return None
+        secret = self.secret()
+        with self._lock:
+            if self._oidc is None or self._oidc.conf is not conf:
+                self._oidc = authn.Oidc(conf, secret)
+            return self._oidc
+
+
 class Handler(BaseHTTPRequestHandler):
     api = None
+    tls = False                      # served over TLS by this process (make_server)
     protocol_version = "HTTP/1.1"
+    timeout = 120                    # a connection silent this long is closed: idle threads aren't held forever
 
     def log_message(self, fmt, *args):
         pass
@@ -52,9 +118,12 @@ class Handler(BaseHTTPRequestHandler):
     def handle_one_request(self):
         # Covers the socket I/O http.server does itself: the request line and headers (a keep-alive
         # connection reset while idle) and its own error replies. Ours goes through _send and _body.
+        # A TLS handshake that fails (plain HTTP to the TLS port, a client that doesn't trust the certificate)
+        # is the client's problem, not a server error.
+        self._who = None
         try:
             super().handle_one_request()
-        except CLIENT_GONE:
+        except CLIENT_GONE + (ssl.SSLError,):
             self.close_connection = True
 
     def _send(self, code, body, ctype="application/json", extra_headers=None):
@@ -69,7 +138,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
-        for k, v in (extra_headers or {}).items():
+        for k, v in SECURITY_HEADERS.items():
+            self.send_header(k, v)
+        if self.tls and not authn.is_loopback(self.headers.get("Host") if self.headers else ""):
+            self.send_header("Strict-Transport-Security", "max-age=31536000")
+        for k, v in (extra_headers.items() if isinstance(extra_headers, dict) else extra_headers or ()):
             self.send_header(k, v)
         try:
             self.end_headers()
@@ -77,24 +150,55 @@ class Handler(BaseHTTPRequestHandler):
         except CLIENT_GONE:
             self.close_connection = True
 
-    # --- auth: API keys with roles ingest < read < admin
+    # --- auth: API keys with roles ingest < read < admin, and people (auth.py)
+    def _authstate(self):
+        api = self.api
+        st = api.__dict__.get("_authstate")
+        if st is None:
+            st = api.__dict__.setdefault("_authstate", AuthState(api.e))
+        return st
+
     def _key(self):
-        """The key record this request authenticated with, or None. Auth off: the local admin."""
+        """Who this request is, or None: a key record or a signed-in person ({name, role, projects?, via}).
+        Auth off: the local admin. Worked out once per request."""
+        if getattr(self, "_who", None) is None:
+            self._who = self._authenticate() or False
+        return self._who or None
+
+    def _authenticate(self):
         auth = self.api.e.cfg["auth"]
         if not auth.get("enabled"):
-            return {"name": "local", "role": "admin"}
+            return {"name": "local", "role": "admin", "via": "local"}
         key = self.headers.get("x-api-key") or ""
         h = self.headers.get("Authorization") or ""
         if h.lower().startswith("bearer "):
             key = h[7:].strip()
-        for k in auth.get("keys") or []:
-            if key and hmac.compare_digest(key, str(k.get("key", ""))):
-                if k.get("role") == "admin" and "projects" in k:
-                    # admin edits install-wide rules and SLOs; a "scoped admin" can't mean anything
-                    # safe, so the key is refused rather than guessed at
-                    return {"name": k.get("name"), "role": None,
-                            "invalid": "admin keys cannot be scoped to projects; use a read or ingest key"}
-                return k
+        if key:                                  # a wrong key is refused, not rescued by a cookie
+            k = authn.find_key(key, auth.get("keys") or [])
+            if not k:
+                return None
+            if k.get("role") == "admin" and "projects" in k:
+                # admin edits install-wide rules and SLOs; a "scoped admin" can't mean anything
+                # safe, so the key is refused rather than guessed at
+                return {"name": k.get("name"), "role": None,
+                        "invalid": "admin keys cannot be scoped to projects; use a read or ingest key"}
+            return dict(k, via="key")
+        person, via = None, None
+        if auth.get("oidc"):
+            c = self._cookie(authn.SESSION_COOKIE)
+            person = authn.read_session(self._authstate().secret(), c) if c else None
+            via = "sso"
+        if person is None and auth.get("proxy"):
+            person, via = authn.from_proxy(auth["proxy"], self.client_address[0], self.headers), "proxy"
+        if person is None:
+            return None
+        return dict(authn.access_for(person, auth.get("access")), via=via)
+
+    def _cookie(self, name):
+        for part in (self.headers.get("Cookie") or "").split(";"):
+            k, _, v = part.strip().partition("=")
+            if k == name:
+                return v
         return None
 
     def _role(self):
@@ -122,9 +226,90 @@ class Handler(BaseHTTPRequestHandler):
         if CAN.get(r, set()) & set(need):
             return True
         want = " or ".join(f"'{n}'" for n in need)
-        self._send(401 if r == 0 else 403, {"error": "unauthorized" if r == 0 else f"requires {want} role"},
-                   extra_headers={"WWW-Authenticate": "Bearer"} if r == 0 else None)
+        body = {"error": "unauthorized" if r == 0 else f"requires {want} role"}
+        if r == 0 and self.api.e.cfg["auth"].get("oidc"):
+            body["sso"] = "/auth/login"          # the console offers to sign in with the identity provider
+        self._send(401 if r == 0 else 403, body, extra_headers={"WWW-Authenticate": "Bearer"} if r == 0 else None)
         return False
+
+    # --- requests from elsewhere
+    def _own_hosts(self):
+        """The names this server answers to: the Host header, a proxy's X-Forwarded-Host, and configured ones."""
+        cfg = self.api.e.cfg
+        hosts = [self.headers.get("Host"), self.headers.get("X-Forwarded-Host")]
+        hosts += [str(h) for h in cfg["server"].get("allowed_hosts") or ()]
+        for url in (cfg["alerts"].get("console_url"), (cfg["auth"].get("oidc") or {}).get("redirect_url")):
+            if url:
+                hosts.append(urlparse(url).netloc)
+        return hosts
+
+    def _host_refused(self):
+        """Answers 403 if the Host header names a server this isn't. With auth off nothing else stands between
+        a web page and the API, and DNS rebinding points the page's own domain at 127.0.0.1: so on a server bound
+        to one address the Host must be a loopback name, that address, or one in [server] allowed_hosts."""
+        cfg = self.api.e.cfg
+        allowed = [str(h).lower() for h in cfg["server"].get("allowed_hosts") or ()]
+        bound = str(self.server.server_address[0])
+        if not allowed and (cfg["auth"].get("enabled") or bound in ("0.0.0.0", "::", "")):
+            return False                 # keys guard the API; a wildcard bind could be reached by any name
+        name = authn.host_name(self.headers.get("Host"))
+        if name in allowed or "*" in allowed or name == bound.lower() or authn.is_loopback(name):
+            return False
+        self._send(403, {"error": f"this server does not answer to {name!r}: add it to [server] allowed_hosts"})
+        return True
+
+    def _cross_site_refused(self):
+        """Answers 403 for a state-changing request a browser sent from another site (CSRF): with auth off, or a
+        session cookie the browser adds by itself, it would act with the person's authority."""
+        if not authn.cross_site(self.headers, self._own_hosts()):
+            return False
+        self._send(403, {"error": "refused: a request from another site"})
+        return True
+
+    # --- signing people in (OIDC)
+    def _base_url(self):
+        url = self.api.e.cfg["alerts"].get("console_url")
+        if url:
+            return url.rstrip("/")
+        return f"{'https' if self.tls else 'http'}://{self.headers.get('Host') or 'localhost'}"
+
+    def _secure_cookies(self):
+        return self.tls or self._base_url().startswith("https://") or str(
+            (self.api.e.cfg["auth"].get("oidc") or {}).get("redirect_url") or "").startswith("https://")
+
+    def _auth_page(self, code, message):
+        page = (f"<!doctype html><meta charset=utf-8><title>AgentDynamics</title><link rel=stylesheet href=/style.css>"
+                f"<div class=card style='max-width:460px;margin:60px auto'><h2>Sign in</h2>"
+                f"<p>{html.escape(message)}</p><p><a href=/auth/login>Try again</a></p></div>")
+        self._send(code, page, "text/html; charset=utf-8",
+                   extra_headers=[("Set-Cookie", authn.cookie(authn.STATE_COOKIE, "", "/auth", 0, self._secure_cookies(), "Lax"))])
+
+    def _auth_get(self, p, q):
+        try:
+            oidc = self._authstate().oidc()
+        except authn.AuthError as ex:
+            return self._auth_page(500, str(ex))
+        if not oidc:
+            return self._send(404, {"error": "single sign-on is not configured ([auth.oidc])"})
+        try:
+            if p == "/auth/login":
+                where, state = oidc.login(self._base_url(), q.get("next") or "/")
+                return self._send(302, b"", "text/plain", extra_headers=[
+                    ("Location", where),
+                    ("Set-Cookie", authn.cookie(authn.STATE_COOKIE, state, "/auth", 600, self._secure_cookies(), "Lax"))])
+            person, nxt = oidc.callback(self._base_url(), q, self._cookie(authn.STATE_COOKIE))
+        except authn.AuthError as ex:
+            return self._auth_page(400, str(ex))
+        rules = self.api.e.cfg["auth"].get("access")
+        who = authn.access_for(person, rules)
+        if not who.get("role"):
+            return self._auth_page(403, who.get("invalid") or "no access")
+        secure = self._secure_cookies()
+        return self._send(302, b"", "text/plain", extra_headers=[
+            ("Location", nxt),
+            ("Set-Cookie", authn.cookie(authn.SESSION_COOKIE, oidc.session(person, rules), "/",
+                                        oidc.session_hours * 3600, secure)),
+            ("Set-Cookie", authn.cookie(authn.STATE_COOKIE, "", "/auth", 0, secure, "Lax"))])
 
     def _scoped_api(self):
         """The Api this request may use: the shared one, or a per-request one confined to the key's
@@ -142,30 +327,69 @@ class Handler(BaseHTTPRequestHandler):
     def _refuse(self, ex):
         return self._send(403, {"error": ex.reason, "ids": ex.ids})
 
+    def _content_length(self):
+        """The declared body length; -1 if it isn't a number of bytes (the body can't be found then)."""
+        v = (self.headers.get("Content-Length") or "").strip()
+        if not v:
+            return 0
+        return int(v) if v.isdigit() else -1
+
+    def _chunked(self):
+        return (self.headers.get("Transfer-Encoding") or "").strip().lower() not in ("", "identity")
+
+    def _read_chunked(self):
+        """A Transfer-Encoding: chunked body, at most MAX_BODY bytes."""
+        out, total = [], 0
+        while True:
+            size = self.rfile.readline(1024).split(b";")[0].strip()
+            if not size or any(c not in b"0123456789abcdefABCDEF" for c in size):
+                raise BadRequest("malformed chunked body")
+            n = int(size, 16)
+            if n == 0:
+                while self.rfile.readline(1024) not in (b"\r\n", b"\n", b""):    # trailers
+                    pass
+                return b"".join(out)
+            total += n
+            if total > MAX_BODY:
+                raise BadRequest("payload too large")
+            out.append(self.rfile.read(n))
+            self.rfile.readline(4)                                            # the chunk's CRLF
+
     def _body(self):
-        n = int(self.headers.get("Content-Length") or 0)
-        if n > MAX_BODY:
-            raise ValueError("payload too large")
         try:
-            body = self.rfile.read(n) if n else b""
-            self._body_read = True
+            if self._chunked():
+                if (self.headers.get("Transfer-Encoding") or "").strip().lower() != "chunked":
+                    self.close_connection = True
+                    raise BadRequest("unsupported Transfer-Encoding")
+                self._body_read = True                   # whatever happens next, the connection can't be reused
+                self.close_connection = True
+                body = self._read_chunked()
+                self.close_connection = False
+            else:
+                n = self._content_length()
+                if n < 0:
+                    raise BadRequest("bad Content-Length")
+                if n > MAX_BODY:
+                    raise BadRequest("payload too large")
+                body = self.rfile.read(n) if n else b""
+                self._body_read = True
         except CLIENT_GONE as ex:
             self.close_connection = True
             raise ClientGone() from ex
         enc = (self.headers.get("Content-Encoding") or "").lower()
         if enc == "gzip":
-            body = gzip.decompress(body)
+            body = _inflate(body, 16 + zlib.MAX_WBITS)
         elif enc == "deflate":
-            body = zlib.decompress(body)
+            body = _inflate(body, zlib.MAX_WBITS)
         elif enc == "zstd":
             from .collectors.langsmith import zstd_available, zstd_decompress
             if not zstd_available():
-                raise ValueError("Content-Encoding zstd needs `pip install zstandard`")
-            body = zstd_decompress(body)
+                raise BadRequest("Content-Encoding zstd needs `pip install zstandard`")
+            body = zstd_decompress(body, MAX_BODY + 1)
             if len(body) > MAX_BODY:
-                raise ValueError("payload too large")
+                raise BadRequest("payload too large")
         elif enc and enc != "identity":
-            raise ValueError(f"unsupported Content-Encoding {enc}")
+            raise BadRequest(f"unsupported Content-Encoding {enc}")
         return body
 
     def do_GET(self):
@@ -173,6 +397,10 @@ class Handler(BaseHTTPRequestHandler):
         q = {k: v[0] for k, v in parse_qs(u.query).items() if v and v[0] != ""}
         p = u.path
         api = self.api
+        if self._host_refused():
+            return
+        if p in ("/auth/login", "/auth/callback"):
+            return self._auth_get(p, q)
         try:
             if p == "/healthz":
                 return self._send(200, api.healthz())
@@ -211,8 +439,9 @@ class Handler(BaseHTTPRequestHandler):
             if p == "/api/rules":
                 return self._send(200, {"rules": api.e.rules()})
             if p == "/api/whoami":
+                k = self._key() or {}
                 return self._send(200, {"role": {3: "admin", 2: "read", 1: "ingest"}.get(self._role()),
-                                        "projects": self._scope()})
+                                        "projects": self._scope(), "name": k.get("name"), "via": k.get("via")})
             if p.startswith("/api/") or p.startswith("/langsmith/"):
                 return self._send(404 if p.startswith("/api/") else 200, {"error": "not found"} if p.startswith("/api/") else {})
         except Exception as ex:  # surface errors to the console instead of a dropped connection
@@ -225,7 +454,11 @@ class Handler(BaseHTTPRequestHandler):
         # static console
         rel = "index.html" if p in ("/", "") else p.lstrip("/")
         path = os.path.normpath(os.path.join(WEB_DIR, rel))
-        if not path.startswith(WEB_DIR) or not os.path.isfile(path):
+        try:
+            inside = os.path.commonpath([path, WEB_DIR]) == WEB_DIR
+        except ValueError:                 # another drive on Windows
+            inside = False
+        if not inside or not os.path.isfile(path):
             path = os.path.join(WEB_DIR, "index.html")
         with open(path, "rb") as f:
             self._send(200, f.read(), mimetypes.guess_type(path)[0] or "application/octet-stream")
@@ -236,10 +469,14 @@ class Handler(BaseHTTPRequestHandler):
         connection -- "{}GET /api/..." answered 501 -- so that connection is closed after the response."""
         self._body_read = False
         try:
+            if self._host_refused() or self._cross_site_refused():
+                return None
             return handler()
         finally:
-            n = int(self.headers.get("Content-Length") or 0)
-            if not self._body_read and n > 0:
+            n = self._content_length()
+            if not self._body_read and (n < 0 or self._chunked()):
+                self.close_connection = True     # where this body ends is unknown: the connection can't continue
+            elif not self._body_read and n > 0:
                 if n <= 1 << 20:             # small (the console's "{}"): read it off, the connection stays usable
                     try:
                         self.rfile.read(n)
@@ -277,6 +514,9 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         p = u.path
         e = self.api.e
+        if p == "/auth/logout":
+            return self._send(200, {"ok": True}, extra_headers=[
+                ("Set-Cookie", authn.cookie(authn.SESSION_COOKIE, "", "/", 0, self._secure_cookies()))])
         try:
             # ---- telemetry ingestion (role: ingest)
             if p in ("/v1/traces", "/otlp/v1/traces"):
@@ -452,18 +692,61 @@ class Handler(BaseHTTPRequestHandler):
             return self._refuse(ex)
         except ClientGone:
             return
+        except BadRequest as ex:
+            return self._send(400, {"error": str(ex)})
         except Exception as ex:
             traceback.print_exc()
             return self._send(400, {"error": str(ex)})
         self._send(404, {"error": "not found"})
 
 
-def serve(engine, host="127.0.0.1", port=8787):
-    Handler.api = Api(engine)
-    httpd = ThreadingHTTPServer((host, port), Handler)
+def make_server(engine, host="127.0.0.1", port=8787, tls_cert=None, tls_key=None):
+    """The console and receivers on (host, port); over TLS when given a certificate (PEM; the key may be in the
+    same file). TLS 1.2 or later. The handshake happens on the connection's own thread, so a client that stalls in
+    it holds up no one else."""
+    handler = type("Handler", (Handler,), {"api": Api(engine), "tls": bool(tls_cert)})
+    httpd = ThreadingHTTPServer((host, port), handler)
     httpd.daemon_threads = True
-    print(f"AgentDynamics console: http://{host}:{port}")
-    print(f"  OTLP/HTTP traces : http://{host}:{port}/v1/traces")
-    print(f"  LangSmith API    : http://{host}:{port}/langsmith   (set LANGSMITH_ENDPOINT to this)")
-    print(f"  auth             : {'on' if engine.cfg['auth']['enabled'] else 'off (local mode)'}")
+    if tls_cert:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        ctx.load_cert_chain(tls_cert, tls_key or None)
+        httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True, do_handshake_on_connect=False)
+    return httpd
+
+
+def warnings_for(cfg, host, tls):
+    """What is unsafe about serving this way, in words for the operator."""
+    out, auth = [], cfg["auth"]
+    exposed = not authn.is_loopback(host)
+    if exposed and not auth.get("enabled"):
+        out.append(f"auth is off and the server listens on {host}: anyone who can reach it can read every prompt and "
+                   "revoke agents. Create a key (agentdynamics keys create) or sign people in ([auth.oidc]).")
+    if exposed and auth.get("enabled") and not tls:
+        out.append("keys and session cookies cross the network in clear: serve with --tls-cert/--tls-key, or keep a "
+                   "TLS proxy in front and the port closed to everything else.")
+    for k in auth.get("keys") or []:
+        if k.get("key") and len(str(k["key"])) < 20:
+            out.append(f"the key named {k.get('name')!r} is short enough to guess: make one with agentdynamics keys create")
+    for n in (auth.get("proxy") or {}).get("trusted") or ():
+        if str(n).endswith("/0"):
+            out.append(f"[auth.proxy] trusts {n}: anyone can then send the user header and sign in as anyone")
+    if auth.get("oidc") and auth.get("access") and any(str(r.get("match")).strip() == "*" for r in auth["access"]):
+        out.append("[[auth.access]] match = \"*\" lets in anyone your identity provider signs in")
+    if (auth.get("oidc") or auth.get("proxy")) and not auth.get("access"):
+        out.append("people can sign in but no [[auth.access]] rule gives anyone a role")
+    return out
+
+
+def serve(engine, host="127.0.0.1", port=8787, tls_cert=None, tls_key=None):
+    httpd = make_server(engine, host, port, tls_cert, tls_key)
+    scheme = "https" if tls_cert else "http"
+    a = engine.cfg["auth"]
+    how = [w for w, on in (("keys", a.get("keys")), ("single sign-on", a.get("oidc")), ("proxy sign-in", a.get("proxy"))) if on]
+    print(f"AgentDynamics console: {scheme}://{host}:{port}")
+    print(f"  OTLP/HTTP traces : {scheme}://{host}:{port}/v1/traces")
+    print(f"  LangSmith API    : {scheme}://{host}:{port}/langsmith   (set LANGSMITH_ENDPOINT to this)")
+    print(f"  auth             : {'on (' + ', '.join(how or ['keys']) + ')' if a['enabled'] else 'off (local mode)'}")
+    for w in warnings_for(engine.cfg, host, bool(tls_cert)):
+        print(f"  WARNING: {w}", file=sys.stderr)
     httpd.serve_forever()
