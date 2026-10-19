@@ -466,7 +466,8 @@ class KeysAtRestTest(unittest.TestCase):
         self.assertIn(auth.hash_key(key), stored)
         cfg = config.load(self.tmp)
         self.assertEqual(auth.find_key(key, cfg["auth"]["keys"])["name"], "sre")
-        self.assertIsNone(auth.find_key(key[:-1] + "x", cfg["auth"]["keys"]))
+        wrong = key[:-1] + ("y" if key[-1] == "x" else "x")      # always another key (1 in 64 already ends in x)
+        self.assertIsNone(auth.find_key(wrong, cfg["auth"]["keys"]))
         self.assertIn(key[:6], json.dumps(config.public_view(cfg)))
 
     def test_old_keys_in_clear_are_rehashed_and_keep_working(self):

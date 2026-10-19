@@ -197,7 +197,8 @@ class AutotraceTest(unittest.TestCase):
         self.assertIn("app finished", p.stdout)
         self.eng.refresh()
         ts = self.tasks("zero-code")
-        self.assertEqual(len(ts), 1)
+        self.assertEqual(len(ts), 1, "one model call is one task; got: " + "; ".join(
+            f"{t['source']}/{t['framework']} {t['workflow']!r} {str(t['prompt'])[:60]!r} models={t['models']}" for t in ts))
         self.assertEqual(ts[0]["models"], "claude-sonnet-5")
 
     def test_4_doctor(self):
