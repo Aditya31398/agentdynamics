@@ -730,8 +730,10 @@ def _self_traced(span):
     scope_name = str(getattr(scope, "name", "") or "").lower()
     span_name = str(getattr(span, "name", "") or "").lower()
     for sdk in SELF_TRACING_SDKS:
-        # the SDK's own tracer is named after it; a span with no scope at all is judged by its name
-        if sdk in _patched and (scope_name.startswith(sdk) or (not scope_name and span_name.startswith(sdk + "."))):
+        # the SDK's own tracer is named after it, plainly or reverse-DNS (anthropic's is "com.anthropic.sdk.python",
+        # with the platform after it for Bedrock and Vertex clients); a span with no scope is judged by its name
+        if sdk in _patched and (scope_name.startswith((sdk, f"com.{sdk}."))
+                                or (not scope_name and span_name.startswith(sdk + "."))):
             return True
     return False
 

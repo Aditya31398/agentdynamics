@@ -228,8 +228,9 @@ class SelfTracedSdkTest(unittest.TestCase):
         inner = types.SimpleNamespace(export=lambda spans: sent.append([s.name for s in spans]) or "ok",
                                       shutdown=lambda: None, force_flush=lambda t=30000: True)
         exporter = at._SkipSelfTraced(inner)
-        spans = [self.span("anthropic", "anthropic.messages.create"),
-                 self.span("anthropic-sdk-python", "anthropic.messages.count_tokens"),
+        spans = [self.span("com.anthropic.sdk.python", "anthropic.messages.create"),     # anthropic 1.14's own
+                 self.span("com.anthropic.sdk.python.bedrock", "anthropic.messages.create"),
+                 self.span("anthropic", "anthropic.messages.count_tokens"),
                  self.span(None, "anthropic.messages.create"),
                  self.span("opentelemetry.instrumentation.anthropic", "chat claude-sonnet-5"),   # the app's choice
                  self.span("openinference.instrumentation.anthropic", "Messages"),
