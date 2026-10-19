@@ -55,6 +55,11 @@ adds `name` and `via`.
   over plain HTTP, a short key, a proxy trusted from anywhere, sign-in with no access rules.
 
 ### Fixed
+- With anthropic 1.14 or later, every model call made under `agentdynamics.init()` or `agentdynamics run` was
+  counted twice: the SDK now traces its own requests once a global OpenTelemetry tracer provider exists, and
+  `init()` registers one, so each call arrived from the patch and again as a trace of its own (the nightly job
+  against the newest SDKs caught it). AgentDynamics' exporter now skips the spans an SDK makes of a call its
+  patch already records; other exporters on the provider still get them.
 - One malformed value in accepted telemetry -- a stop reason that was a number, a token count that was an object,
   a cost of infinity, a lone surrogate in a string, a tool call with no name -- failed the analysis for the whole
   install on every refresh, because the payload is stored and re-read on each rebuild. Every collector now hands

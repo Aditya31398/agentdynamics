@@ -716,6 +716,47 @@ def _setup_langchain():
     return True
 
 
+SELF_TRACING_SDKS = ("anthropic", "openai")
+
+
+def _self_traced(span):
+    """Whether `span` is one an SDK made of its own request, for a call the patch for that SDK already records.
+    anthropic 1.14 traces each request natively once a global tracer provider exists -- the one `_setup_otel`
+    registers -- so every call arrived twice: from the patch, and as a trace of its own (the nightly ecosystem job
+    caught it). Third-party instrumentors are the app's own choice and pass through: their scopes
+    (`opentelemetry.instrumentation.anthropic`, `openinference.instrumentation.anthropic`) don't begin with the SDK's
+    name."""
+    scope = getattr(span, "instrumentation_scope", None) or getattr(span, "instrumentation_info", None)
+    scope_name = str(getattr(scope, "name", "") or "").lower()
+    span_name = str(getattr(span, "name", "") or "").lower()
+    for sdk in SELF_TRACING_SDKS:
+        # the SDK's own tracer is named after it; a span with no scope at all is judged by its name
+        if sdk in _patched and (scope_name.startswith(sdk) or (not scope_name and span_name.startswith(sdk + "."))):
+            return True
+    return False
+
+
+class _SkipSelfTraced:
+    """The OTLP exporter, minus the spans `_self_traced` names. Only this exporter skips them: any other processor
+    on the app's provider still gets every span."""
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def export(self, spans):
+        keep = [s for s in spans if not _self_traced(s)]
+        if keep or not spans:
+            return self._inner.export(keep)
+        from opentelemetry.sdk.trace.export import SpanExportResult
+        return SpanExportResult.SUCCESS
+
+    def shutdown(self):
+        return self._inner.shutdown()
+
+    def force_flush(self, timeout_millis=30000):
+        return self._inner.force_flush(timeout_millis)
+
+
 def _setup_otel():
     try:
         from opentelemetry import trace as ot
@@ -726,7 +767,7 @@ def _setup_otel():
     except ImportError:
         return False
     headers = {"Authorization": f"Bearer {_cfg['key']}"} if _cfg["key"] else {}
-    exporter = OTLPSpanExporter(endpoint=_cfg["url"] + "/v1/traces", headers=headers)
+    exporter = _SkipSelfTraced(OTLPSpanExporter(endpoint=_cfg["url"] + "/v1/traces", headers=headers))
     provider = ot.get_tracer_provider()
     if not hasattr(provider, "add_span_processor"):
         attrs = {"service.name": _cfg["project"] or "agent"}

@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import types
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -209,6 +210,42 @@ class AutotraceTest(unittest.TestCase):
                              capture_output=True, text=True, timeout=60)
         self.assertEqual(bad.returncode, 1)
         self.assertIn("keys create", bad.stdout)
+
+
+class SelfTracedSdkTest(unittest.TestCase):
+    """anthropic 1.14 traces each request natively once a global tracer provider exists, and `init()` registers
+    one: every call arrived twice, from the patch and as a trace of its own (the nightly ecosystem job caught it).
+    The OTLP exporter skips the spans an SDK makes of a call the patch already records; nothing else."""
+
+    def span(self, scope, name):
+        return types.SimpleNamespace(instrumentation_scope=types.SimpleNamespace(name=scope) if scope is not None else None,
+                                     name=name)
+
+    def test_the_sdks_own_spans_are_skipped_when_its_calls_are_patched(self):
+        from agentdynamics import autotrace as at
+        sent = []
+        inner = types.SimpleNamespace(export=lambda spans: sent.append([s.name for s in spans]) or "ok",
+                                      shutdown=lambda: None, force_flush=lambda t=30000: True)
+        exporter = at._SkipSelfTraced(inner)
+        spans = [self.span("anthropic", "anthropic.messages.create"),
+                 self.span("anthropic-sdk-python", "anthropic.messages.count_tokens"),
+                 self.span(None, "anthropic.messages.create"),
+                 self.span("opentelemetry.instrumentation.anthropic", "chat claude-sonnet-5"),   # the app's choice
+                 self.span("openinference.instrumentation.anthropic", "Messages"),
+                 self.span("myapp", "anthropic.wrapper"),                                       # the app's own span
+                 self.span("langchain", "agent")]
+        old = set(at._patched)
+        try:
+            at._patched.clear()
+            at._patched.add("anthropic")
+            self.assertEqual(exporter.export(spans), "ok")
+            self.assertEqual(sent[-1], ["chat claude-sonnet-5", "Messages", "anthropic.wrapper", "agent"])
+            at._patched.clear()                       # not patched: nothing records those calls, so they are kept
+            exporter.export(spans)
+            self.assertEqual(len(sent[-1]), len(spans))
+        finally:
+            at._patched.clear()
+            at._patched.update(old)
 
 
 if __name__ == "__main__":
