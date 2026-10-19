@@ -8,10 +8,16 @@ bumps the minor version.
 
 ## [Unreleased]
 
-Securing the server itself. People sign in with your identity provider or through a sign-in proxy, the server can
-serve HTTPS, keys are stored as hashes, and an internal review of the HTTP layer found and fixed the issues listed
-under **Fixed**. [SECURITY.md](SECURITY.md) has the threat model and a deployment checklist; there has still been no
-external review.
+## [0.10.0] - 2026-10-19
+
+Ready to share beyond one team. **Securing the server itself:** people sign in with your identity provider or
+through a sign-in proxy, the server can serve HTTPS, keys are stored as hashes, and an internal review of the HTTP
+layer found and fixed the issues listed under **Fixed**. [SECURITY.md](SECURITY.md) has the threat model and a
+deployment checklist; there has still been no external review. **Ground truth without code:** a signed webhook
+lets GitHub (or any system) state how work turned out. **Robust to bad input:** malformed telemetry can no longer
+break the analysis. **A contract you can build on:** the API's fields are held by a test, and
+[docs/STABILITY.md](docs/STABILITY.md) says what 0.x promises. Works with aegis-kernel 0.4.0 and later;
+`aegis gateway` and `aegis hook` (MCP servers and Claude Code's own tools under a policy) need 0.7.0.
 
 **Upgrading.** `SCHEMA_VERSION` 20: Claude Code sessions carry the branch they worked on as metadata, so the
 derived tables are rebuilt from the sources on first start. With auth off, the server now answers only requests that name it (localhost, its own address, or

@@ -422,8 +422,8 @@ Runs already recorded in-process are not double-counted.
 
 ## Tools no in-process kernel reaches
 
-Aegis can only refuse a call that passes through a kernel. Two kinds of tool don't, and aegis-kernel (from the
-release after 0.6) covers both:
+Aegis can only refuse a call that passes through a kernel. Two kinds of tool don't, and aegis-kernel 0.7 covers
+both:
 
 - **MCP servers**: configure the client (Claude Code, Claude Desktop, Cursor, an Agent SDK app) to start
   `aegis gateway --policy p.yaml --audit audit/mcp.jsonl -- <the server's command>` instead of the server. Every
